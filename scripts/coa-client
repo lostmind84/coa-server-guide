@@ -1,0 +1,78 @@
+#!/bin/bash
+# Launch the Conquest of Azeroth (Ascension) client with umu-launcher + GE-Proton.
+# Install: cp scripts/coa-client ~/.local/bin/ && chmod +x ~/.local/bin/coa-client
+# Paths can be overridden with COA_CLIENT_DIR, COA_WINEPREFIX, COA_PROTONPATH and COA_LOG.
+
+CLIENT_DIR="${COA_CLIENT_DIR:-$HOME/CoaServer/client/ascension-live}"
+PREFIX="${COA_WINEPREFIX:-$HOME/Games/umu/coa-client}"
+PROTON="${COA_PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64}"
+LOG="${COA_LOG:-$HOME/CoaServer/logs/client.log}"
+
+DEBUG=0
+
+case "${1:-}" in
+  --debug)
+    # Proton log: Wine traces for exceptions (+seh), thread names, debug strings and loaded DLLs.
+    # This is not an attached debugger.
+    DEBUG=1
+    ;;
+  --kill)
+    pkill -f 'ascension-live\\Ascension.exe' && echo "Client stopped." || echo "Client is not running."
+    exit 0
+    ;;
+  -h|--help)
+    cat <<'EOF'
+Usage: coa-client [--debug | --kill]
+
+  (no option)  Launch the client. Output goes to ~/CoaServer/logs/client.log
+               when not started from a terminal.
+  --debug      Launch with a Proton log (exceptions, thread names, debug strings,
+               loaded DLLs) written next to the client log as steam-*.log. Slower
+               and the log grows fast: stop the client soon after the problem shows.
+  --kill       Stop a frozen client (only this client, not other Wine games).
+EOF
+    exit 0
+    ;;
+  "") ;;
+  *)
+    echo "Unknown argument: $1 (try --help)" >&2
+    exit 1
+    ;;
+esac
+
+notify() {
+  echo "$1" >&2
+  command -v notify-send >/dev/null && notify-send "CoA client" "$1"
+}
+
+if [[ ! -f $CLIENT_DIR/Ascension.exe ]]; then
+  notify "Ascension.exe not found in $CLIENT_DIR"
+  exit 1
+fi
+
+if pgrep -f 'ascension-live\\Ascension.exe' >/dev/null; then
+  notify "The client is already running (coa-client --kill to stop it)."
+  exit 1
+fi
+
+if ! (exec 3<>/dev/tcp/127.0.0.1/3724) 2>/dev/null; then
+  notify "Warning: no authserver on 127.0.0.1:3724. Start it with: docker compose up -d ac-authserver ac-worldserver"
+fi
+
+if [[ ! -t 1 ]]; then
+  mkdir -p "$(dirname "$LOG")"
+  exec >>"$LOG" 2>&1
+  echo "=== $(date '+%F %T') coa-client ==="
+fi
+
+# divxtac=d: DivxTac.dll is a mixed-mode .NET assembly; loading it through wine-mono
+# deadlocks the client on the world loading screen (100%). Same effect as removing the file.
+env_args=(WINEPREFIX="$PREFIX" GAMEID=0 PROTONPATH="$PROTON" WINEDLLOVERRIDES="divxtac=d")
+if (( DEBUG )); then
+  mkdir -p "$(dirname "$LOG")"
+  env_args+=(PROTON_LOG=1 PROTON_LOG_DIR="$(dirname "$LOG")")
+fi
+
+# The client reads Data/ relative to the working directory.
+cd "$CLIENT_DIR" || exit 1
+exec env "${env_args[@]}" umu-run Ascension.exe

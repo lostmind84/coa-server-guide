@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=Conquest of Azeroth
+GenericName=Game Client
+Comment=Ascension CoA client for the local server (umu-launcher + GE-Proton)
+Exec=/home/USER/.local/bin/coa-client
+Icon=applications-games
+Terminal=false
+Categories=Game;
+StartupNotify=true
+StartupWMClass=ascension.exe
+Actions=debug;kill;
+
+[Desktop Action debug]
+Name=Launch with Proton log (debug)
+Exec=/home/USER/.local/bin/coa-client --debug
+
+[Desktop Action kill]
+Name=Stop frozen client
+Exec=/home/USER/.local/bin/coa-client --kill
