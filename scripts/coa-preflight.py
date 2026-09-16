@@ -223,6 +223,47 @@ def describe_drift(name, client, server):
     return drift
 
 
+def server_formats(repo):
+    """{dbc file name: format string} for every DBC the core loads, read from the checked-out sources."""
+    import re
+    fmt_source = (repo / "src/server/shared/DataStores/DBCfmt.h").read_text()
+    stores_source = (repo / "src/server/game/DataStores/DBCStores.cpp").read_text()
+    formats = dict(re.findall(r'char constexpr (\w+)\[\] = "([^"]+)"', fmt_source))
+    store_format = dict(re.findall(r'DBCStorage\s*<\s*\w+\s*>\s*(\w+)\((\w+)\)', stores_source))
+    files = {}
+    for store, file_name in re.findall(r'LOAD_DBC\((\w+),\s*"([^"]+)"', stores_source):
+        fmt = formats.get(store_format.get(store, ""))
+        if fmt:
+            files[file_name] = fmt
+    return files
+
+
+def loadable_by_server(raw, fmt):
+    """None when the core can load the file with this format, otherwise the reason it would assert."""
+    if len(raw) < 20:
+        return f"{len(raw)} bytes, no WDBC header"
+    magic, count, fields, size, strings_size = struct.unpack_from("<4s4I", raw)
+    if magic != b"WDBC" or len(raw) != 20 + count * size + strings_size:
+        return "not a complete WDBC file"
+    # Only the string-offset check is proven (a real assert in DBCFileLoader::getString). Field-count and layout
+    # rules have exceptions in the core (GetFileFormat, packed records), so files whose field count does not match
+    # the format one to one are left to the worldserver's own startup check, which the server step verifies.
+    if fields != len(fmt) or size != 4 * fields:
+        return None
+    string_fields = [i for i, c in enumerate(fmt) if c == "s"]
+    bad, first = 0, None
+    for index in range(count):
+        row = struct.unpack_from(f"<{fields}I", raw, 20 + index * size)
+        for field in string_fields:
+            if row[field] >= strings_size:
+                bad += 1
+                first = first or (row[0], field, row[field])
+    if bad:
+        return (f"{bad} string offset(s) past the string block (first: record {first[0]}, field {first[1]}); "
+                "the worldserver asserts in DBCFileLoader::getString")
+    return None
+
+
 def latest_coa_patch(client_root):
     """The newest CoA-Client-Patch-revN folder next to the client, or None."""
     candidates = []
@@ -264,8 +305,10 @@ def write_baseline(path, rows, coa_patch):
     path.write_text("\n".join(lines) + "\n")
 
 
-def check_dbc(report, client_data, server_dbc, expectations, baseline_path, update_baseline):
-    names = sorted(p.name for p in server_dbc.glob("*.dbc"))
+def check_dbc(report, repo, client_data, server_dbc, expectations, baseline_path, update_baseline):
+    # The core loads dbc/*.dbc; mod-ascension-compat also reads dbc/Ascension/*.dbc (AscensionCompat.DbcDirectory).
+    server_files = {p.name: p for p in sorted(server_dbc.glob("*.dbc")) + sorted(server_dbc.glob("Ascension/*.dbc"))}
+    names = sorted(server_files)
     archives = sorted(client_data.glob("*.MPQ")) + sorted(client_data.glob("*/*.MPQ"))
     coa_patch = latest_coa_patch(client_data.parent.parent)
     coa_archives = {str(p.relative_to(coa_patch / "Data")) for p in (coa_patch / "Data").rglob("*.MPQ")} \
@@ -293,9 +336,14 @@ def check_dbc(report, client_data, server_dbc, expectations, baseline_path, upda
             for name, (digest, _) in hash_members(archive, names, workdir).items():
                 carriers[name].append((archive, rel, digest))
 
+        formats = server_formats(repo)
         for name in names:
-            server_raw = (server_dbc / name).read_bytes()
+            server_raw = server_files[name].read_bytes()
             server_digest = hashlib.sha256(server_raw).hexdigest()
+            if name in formats:
+                problem = loadable_by_server(server_raw, formats[name])
+                if problem:
+                    report.line("FAIL", "dbc", f"{name}: the server copy cannot be loaded — {problem}")
             copies = carriers.get(name.lower(), [])
             coa = [c for c in copies if c[1] in coa_archives]
             others = [c for c in copies if c[1] not in coa_archives and c[1] not in STOCK_ARCHIVES]
@@ -317,6 +365,11 @@ def check_dbc(report, client_data, server_dbc, expectations, baseline_path, upda
                 report.line("WARN", "dbc", f"{name}: {rel} is the CoA copy, but "
                             + ", ".join(r for _, r, d in others if d != digest)
                             + " carries different content; which one the client loads is not verified")
+            if name in formats and digest != server_digest:
+                problem = loadable_by_server(extract_one(archive, name, workdir), formats[name])
+                if problem:
+                    report.line("WARN", "dbc", f"{name}: the CoA client copy in {rel} cannot be copied to the "
+                                f"server as is — {problem}")
             if digest == server_digest:
                 if expected:
                     report.line("WARN", "dbc", f"{name}: identical in {rel}, yet differences are expected for "
@@ -405,7 +458,7 @@ def main():
         elif shutil.which("smpq") is None:
             report.line("FAIL", "dbc", "smpq not installed (AUR package smpq): client data cannot be verified")
         else:
-            check_dbc(report, args.client_data, args.server_dbc, read_expectations(args.expected),
+            check_dbc(report, args.repo, args.client_data, args.server_dbc, read_expectations(args.expected),
                       args.baseline, args.write_baseline)
     except (RuntimeError, ValueError, OSError) as error:
         report.line("FAIL", "setup", str(error))
