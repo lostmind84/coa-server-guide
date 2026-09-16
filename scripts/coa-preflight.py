@@ -8,8 +8,13 @@ Every check below caught a real false result on 2026-09-16:
   server  the running worldserver was built from the checked-out commit and finished starting
   db      every SQL update shipped by the checkout is recorded as applied (a missing module migration
           put the worldserver in a restart loop)
-  dbc     each DBC the server loads is byte-identical to the copy the client actually uses
-          (the client Spell.dbc was ahead of the server's by 559 texts and 10 numeric records)
+  client  the archives of the newest CoA-Client-Patch-revN folder are installed unchanged
+  dbc     each DBC the server loads matches the client (the client Spell.dbc was ahead of the server's by
+          559 texts and 10 numeric records)
+
+DBC files shipped by the CoA client patch must match the server exactly. DBC files the client inherits from
+the Ascension client (patch-M, patch-S, area-52 ...) differ from the server in large numbers for every CoA
+player; that drift is recorded once with --write-baseline, after review, and any later change to it fails.
 
 Differences that belong to work in progress are declared in an expectations file, one per line:
 
@@ -29,6 +34,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -173,8 +179,11 @@ def extract_one(archive, name, workdir):
 
 
 def wdbc_records(raw):
+    if raw is None or len(raw) < 20:
+        return None
     magic, count, fields, size, strings_size = struct.unpack_from("<4s4I", raw)
-    if magic != b"WDBC":
+    # Records shorter than an id cannot be matched by id: CharBaseInfo.dbc stores two bytes (race, class).
+    if magic != b"WDBC" or size < 4 or len(raw) != 20 + count * size + strings_size:
         return None
     records = {struct.unpack_from("<I", raw, 20 + i * size)[0]: raw[20 + i * size:20 + (i + 1) * size]
                for i in range(count)}
@@ -182,10 +191,14 @@ def wdbc_records(raw):
 
 
 def describe_drift(name, client, server):
-    """Return {record id: kind} for records that differ, kind being added/removed/text/numeric/changed."""
+    """Return {record id: kind} for records that differ, kind being client only/server only/text/numeric/changed.
+
+    An empty result for files whose bytes differ means the records are equal and only the string block or
+    its offsets moved; the caller reports that as a layout difference.
+    """
     c, s = wdbc_records(client), wdbc_records(server)
     if c is None or s is None:
-        return {"*": "not a WDBC file"}
+        return {"*": "not comparable record by record (incomplete file, or records without an id)"}
     (crec, cstr, cfields), (srec, sstr, sfields) = c, s
     drift = {i: "client only" for i in set(crec) - set(srec)}
     drift.update({i: "server only" for i in set(srec) - set(crec)})
@@ -210,9 +223,69 @@ def describe_drift(name, client, server):
     return drift
 
 
-def check_dbc(report, client_data, server_dbc, expectations):
+def latest_coa_patch(client_root):
+    """The newest CoA-Client-Patch-revN folder next to the client, or None."""
+    candidates = []
+    for folder in client_root.glob("CoA-Client-Patch-rev*"):
+        suffix = folder.name.rsplit("rev", 1)[-1]
+        if suffix.isdigit() and (folder / "Data").is_dir():
+            candidates.append((int(suffix), folder))
+    return max(candidates)[1] if candidates else None
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_baseline(path):
+    baseline = {}
+    if not path.exists():
+        return None
+    for raw in path.read_text().splitlines():
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        name, carriers, client, server = raw.split("\t")
+        baseline[name.lower()] = (carriers, client, server)
+    return baseline
+
+
+def write_baseline(path, rows, coa_patch):
+    lines = [
+        "# Inherited client/server DBC drift accepted as the reference state by coa-preflight.py --write-baseline.",
+        f"# Written {time.strftime('%Y-%m-%d %H:%M')} against CoA client patch {coa_patch.name if coa_patch else 'none'}.",
+        "# Any change to a row (client copy, server copy, carrier archives) makes the preflight fail.",
+        "# <dbc>\t<client archives carrying it>\t<client sha256>\t<server sha256>",
+    ]
+    lines += ["\t".join(row) for row in sorted(rows, key=lambda r: r[0].lower())]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def check_dbc(report, client_data, server_dbc, expectations, baseline_path, update_baseline):
     names = sorted(p.name for p in server_dbc.glob("*.dbc"))
     archives = sorted(client_data.glob("*.MPQ")) + sorted(client_data.glob("*/*.MPQ"))
+    coa_patch = latest_coa_patch(client_data.parent.parent)
+    coa_archives = {str(p.relative_to(coa_patch / "Data")) for p in (coa_patch / "Data").rglob("*.MPQ")} \
+        if coa_patch else set()
+
+    if not coa_patch:
+        report.line("WARN", "client", "no CoA-Client-Patch-revN folder found next to the client: every non-stock "
+                    "archive is treated as inherited")
+    for rel in sorted(coa_archives):
+        installed, shipped = client_data / rel, coa_patch / "Data" / rel
+        if not installed.exists():
+            report.line("FAIL", "client", f"{rel} from {coa_patch.name} is not installed")
+        elif sha256_file(installed) != sha256_file(shipped):
+            report.line("WARN", "client", f"{rel} differs from {coa_patch.name}: a newer patch or a local "
+                        "development build is installed")
+        else:
+            report.line("PASS", "client", f"{rel} matches {coa_patch.name}")
+
+    baseline = read_baseline(baseline_path)
+    inherited_rows = []
     with tempfile.TemporaryDirectory(prefix="coa-preflight-") as workdir:
         carriers = defaultdict(list)  # dbc -> [(archive, relative name, sha256)]
         for archive in archives:
@@ -224,49 +297,88 @@ def check_dbc(report, client_data, server_dbc, expectations):
             server_raw = (server_dbc / name).read_bytes()
             server_digest = hashlib.sha256(server_raw).hexdigest()
             copies = carriers.get(name.lower(), [])
-            custom = [c for c in copies if c[1] not in STOCK_ARCHIVES]
+            coa = [c for c in copies if c[1] in coa_archives]
+            others = [c for c in copies if c[1] not in coa_archives and c[1] not in STOCK_ARCHIVES]
             expected = expectations.get(name.lower(), {})
 
-            if not copies:
-                report.line("WARN", "dbc", f"{name}: loaded by the server but not found in any client archive")
-                continue
-            if not custom:
-                if any(d == server_digest for _, _, d in copies):
-                    continue  # matches a stock copy; stock DBCs are silent when fine
-                report.line("FAIL", "dbc", f"{name}: server copy matches none of the stock client copies")
-                continue
-            if len({d for _, _, d in custom}) > 1:
-                report.line("FAIL", "dbc", f"{name}: carried with different content by "
-                            + ", ".join(rel for _, rel, _ in custom) + "; resolve which archive the client loads")
+            if not coa:
+                # Not shipped by CoA: stock or inherited from the Ascension client. Silent when it matches,
+                # otherwise part of the reference drift.
+                if copies and any(d == server_digest for _, _, d in (others or copies)) and \
+                        len({d for _, _, d in others}) <= 1:
+                    continue
+                carried_by = ",".join(rel for _, rel, _ in (others or copies)) or "-"
+                client_digest = ",".join(sorted({d for _, _, d in (others or copies)})) or "-"
+                inherited_rows.append((name, carried_by, client_digest, server_digest))
                 continue
 
-            archive, rel, digest = custom[0]
+            archive, rel, digest = coa[0]
+            if others and any(d != digest for _, _, d in others):
+                report.line("WARN", "dbc", f"{name}: {rel} is the CoA copy, but "
+                            + ", ".join(r for _, r, d in others if d != digest)
+                            + " carries different content; which one the client loads is not verified")
             if digest == server_digest:
                 if expected:
                     report.line("WARN", "dbc", f"{name}: identical in {rel}, yet differences are expected for "
                                 + ", ".join(f"{k} ({v})" for k, v in expected.items()) + " — patch not installed?")
                 else:
-                    report.line("PASS", "dbc", f"{name}: identical to the client copy in {rel}")
+                    report.line("PASS", "dbc", f"{name}: identical to the CoA copy in {rel}")
                 continue
 
             drift = describe_drift(name, extract_one(archive, name, workdir), server_raw)
             if "*" in expected:
                 report.line("PASS", "dbc", f"{name}: differs from {rel} as expected ({expected['*']})")
                 continue
+            if not drift:
+                report.line("FAIL", "dbc", f"{name}: bytes differ from {rel} although every record is equal "
+                            "(string block or layout)")
+                continue
             unexpected = {i: k for i, k in drift.items() if str(i) not in expected}
-            absent = [k for k in expected if k.isdigit() and int(k) not in drift]
-            for key in absent:
+            for key in (k for k in expected if k.isdigit() and int(k) not in drift):
                 report.line("WARN", "dbc", f"{name}: record {key} expected to differ ({expected[key]}) but does not")
             if not unexpected:
                 report.line("PASS", "dbc", f"{name}: differs from {rel} only on expected record(s) "
-                            + ", ".join(sorted(expected)))
+                            + ", ".join(sorted(k for k in expected if str(k).isdigit() and int(k) in drift)))
                 continue
             kinds = defaultdict(list)
             for i, kind in unexpected.items():
                 kinds[kind].append(i)
-            summary = "; ".join(f"{len(ids)} {kind}: " + ", ".join(map(str, sorted(ids)[:10]))
+            summary = "; ".join(f"{len(ids)} {kind}: " + ", ".join(map(str, sorted(ids, key=str)[:10]))
                                 + (" ..." if len(ids) > 10 else "") for kind, ids in sorted(kinds.items()))
-            report.line("FAIL", "dbc", f"{name}: server copy is out of sync with {rel} — {summary}")
+            report.line("FAIL", "dbc", f"{name}: server copy is out of sync with the CoA copy in {rel} — {summary}")
+
+    if update_baseline:
+        write_baseline(baseline_path, inherited_rows, coa_patch)
+        report.line("WARN", "dbc", f"baseline written to {baseline_path} with {len(inherited_rows)} inherited "
+                    "difference(s); review it, it is now the reference")
+        return
+    if baseline is None:
+        report.line("FAIL", "dbc", f"{len(inherited_rows)} inherited DBC difference(s) and no baseline at "
+                    f"{baseline_path}: review them, then run once with --write-baseline")
+        return
+
+    current = {row[0].lower(): row[1:] for row in inherited_rows}
+    changed = []
+    for key in sorted(set(current) | set(baseline)):
+        before, now = baseline.get(key), current.get(key)
+        if before == now:
+            continue
+        if before is None:
+            changed.append(f"{key}: new difference ({now[0]})")
+        elif now is None:
+            changed.append(f"{key}: difference gone (now matches)")
+        else:
+            parts = [label for label, a, b in (("carrier", before[0], now[0]), ("client copy", before[1], now[1]),
+                                                ("server copy", before[2], now[2])) if a != b]
+            changed.append(f"{key}: {', '.join(parts)} changed")
+    for line in changed:
+        report.line("FAIL", "dbc", f"inherited drift changed since the baseline — {line}")
+    if not changed:
+        by_carrier = defaultdict(int)
+        for _, carried_by, _, _ in inherited_rows:
+            by_carrier[carried_by] += 1
+        report.line("WARN", "dbc", f"{len(inherited_rows)} inherited DBC difference(s) unchanged since the baseline ("
+                    + ", ".join(f"{c}: {n}" for c, n in sorted(by_carrier.items(), key=lambda kv: -kv[1])) + ")")
 
 
 def main():
@@ -275,6 +387,9 @@ def main():
     parser.add_argument("--client-data", type=Path, default=HOME / "CoaServer/client/ascension-live/Data")
     parser.add_argument("--server-dbc", type=Path, default=Path("/srv/coa/server-data/dbc"))
     parser.add_argument("--expected", type=Path, default=HOME / "CoaServer/preflight-expected.txt")
+    parser.add_argument("--baseline", type=Path, default=HOME / "CoaServer/preflight-baseline.tsv")
+    parser.add_argument("--write-baseline", action="store_true",
+                        help="accept the current inherited DBC drift as the reference state")
     parser.add_argument("--worldserver", default="ac-worldserver")
     parser.add_argument("--database", default="ac-database")
     parser.add_argument("--skip-dbc", action="store_true", help="skip the DBC comparison (about a minute)")
@@ -290,7 +405,8 @@ def main():
         elif shutil.which("smpq") is None:
             report.line("FAIL", "dbc", "smpq not installed (AUR package smpq): client data cannot be verified")
         else:
-            check_dbc(report, args.client_data, args.server_dbc, read_expectations(args.expected))
+            check_dbc(report, args.client_data, args.server_dbc, read_expectations(args.expected),
+                      args.baseline, args.write_baseline)
     except (RuntimeError, ValueError, OSError) as error:
         report.line("FAIL", "setup", str(error))
 
