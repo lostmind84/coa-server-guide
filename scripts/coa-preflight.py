@@ -390,8 +390,9 @@ def check_dbc(report, repo, client_data, server_dbc, expectations, baseline_path
             for key in (k for k in expected if k.isdigit() and int(k) not in drift):
                 report.line("WARN", "dbc", f"{name}: record {key} expected to differ ({expected[key]}) but does not")
             if not unexpected:
-                report.line("PASS", "dbc", f"{name}: differs from {rel} only on expected record(s) "
-                            + ", ".join(sorted(k for k in expected if str(k).isdigit() and int(k) in drift)))
+                matched = sorted((k for k in expected if str(k).isdigit() and int(k) in drift), key=int)
+                report.line("PASS", "dbc", f"{name}: differs from {rel} only on {len(matched)} expected record(s): "
+                            + ", ".join(matched[:10]) + (" ..." if len(matched) > 10 else ""))
                 continue
             kinds = defaultdict(list)
             for i, kind in unexpected.items():
