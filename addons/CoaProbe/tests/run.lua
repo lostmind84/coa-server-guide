@@ -1,24 +1,25 @@
 -- Tests for the CoaProbe addon, outside the game client.
 -- Run from the repository root: lua5.1 addons/CoaProbe/tests/run.lua
 local passed, failures = 0, 0
+local write = print
 
 local function check(name, got, want)
     if got == want then
         passed = passed + 1
-        print("ok   " .. name)
+        write("ok   " .. name)
     else
         failures = failures + 1
-        print("FAIL " .. name .. ": expected [" .. tostring(want) .. "], got [" .. tostring(got) .. "]")
+        write("FAIL " .. name .. ": expected [" .. tostring(want) .. "], got [" .. tostring(got) .. "]")
     end
 end
 
 local function contains(name, text, part)
     if type(text) == "string" and text:find(part, 1, true) then
         passed = passed + 1
-        print("ok   " .. name)
+        write("ok   " .. name)
     else
         failures = failures + 1
-        print("FAIL " .. name .. ": [" .. part .. "] not in [" .. tostring(text) .. "]")
+        write("FAIL " .. name .. ": [" .. part .. "] not in [" .. tostring(text) .. "]")
     end
 end
 
