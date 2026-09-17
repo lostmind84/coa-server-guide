@@ -217,6 +217,49 @@ cmd_screenshot() {
     echo "$path"
 }
 
+cmd_stop() {
+    local pid child changed waited file
+    if [[ ! -e "$LOCK" ]]; then
+        echo "not running"
+        return 0
+    fi
+    if pid=$(gamescope_pid); then
+        # Stop the Windows client first: gamescope exits when its child does (spike findings).
+        for child in $(descendants "$pid"); do
+            if tr '\0' '\n' < "/proc/$child/cmdline" 2>/dev/null | head -1 | grep -q '\\Ascension\.exe$'; then
+                kill "$child" 2>/dev/null || true
+            fi
+        done
+        for ((waited = 0; waited < 30; waited++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            sleep 5
+            kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+        fi
+    fi
+    if [[ -e "$STATE_DIR/started" ]]; then
+        changed=$(cd "$USER_CLIENT" && find WTF Interface -type f -newer "$STATE_DIR/started" 2>/dev/null | head -20) || true
+        if [[ -n "$changed" ]]; then
+            echo "WARN: the user's client changed during the lab run (the user playing, or a defect):"
+            while IFS= read -r file; do
+                echo "WARN:   $file"
+            done <<< "$changed"
+        fi
+    fi
+    rm -f "$LOCK" "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/started"
+    echo "lab client stopped"
+}
+
+cmd_preflight() {
+    local n="${1:-}"
+    [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab preflight N"
+    shift
+    exec coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@"
+}
+
 main() {
     local command="${1:-}"
     [[ $# -gt 0 ]] && shift
@@ -230,6 +273,8 @@ main() {
         chat) cmd_chat "$@" ;;
         login) cmd_login "$@" ;;
         screenshot) cmd_screenshot "$@" ;;
+        stop) cmd_stop ;;
+        preflight) cmd_preflight "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage >&2; exit 2 ;;
     esac

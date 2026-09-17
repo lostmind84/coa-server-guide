@@ -51,7 +51,9 @@ make_fakes() {
 printf 'hyprctl %s\n' "$*" >> "$FAKE_LOG"
 if [[ "$1" == eval ]]; then
     cmd=$(sed -n 's/^hl\.exec_cmd(\[\[\(.*\)\]\], .*/\1/p' <<< "$2")
-    setsid bash -c "$cmd" > /dev/null 2>&1 &
+    if [[ "${FAKE_NO_LAUNCH:-}" != 1 ]]; then
+        setsid bash -c "$cmd" > /dev/null 2>&1 &
+    fi
 fi
 echo ok
 EOF
@@ -160,7 +162,40 @@ assert_contains "screenshot uses the lab display" "$FAKE_LOG" "magick DISPLAY=:7
 run_lab screenshot
 assert_file "default screenshot written" "$(cat "$WORK/out")"
 
-# STOP TESTS (Task 4)
+: > "$FAKE_LOG"
+run_lab preflight 3
+assert_contains "preflight on lab data" "$FAKE_LOG" "coa-slot preflight 3 --client-data $COA_LAB_ROOT/ascension-lab/Data"
+
+gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid")
+sleep 1
+touch "$COA_USER_CLIENT/WTF/Account/LOCAL/SavedVariables.lua"
+run_lab stop
+assert_eq "stop exits 0" "$?" "0"
+assert_contains "stop warns about user client" "$WORK/out" "WARN"
+assert_contains "stop names changed file" "$WORK/out" "WTF/Account/LOCAL/SavedVariables.lua"
+assert_absent "lock released" "$COA_LAB_ROOT/state/lock"
+kill -0 "$gs_pid" 2>/dev/null && fail "gamescope stopped" || pass "gamescope stopped"
+
+run_lab stop
+assert_contains "stop when not running" "$WORK/out" "not running"
+
+run_lab start 3
+gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid")
+pkill -P "$gs_pid"
+kill "$gs_pid" 2>/dev/null
+sleep 1
+run_lab stop
+assert_absent "stale lock released" "$COA_LAB_ROOT/state/lock"
+
+if FAKE_NO_LAUNCH=1 COA_LAB_WINDOW_TIMEOUT=1 run_lab start 3; then
+    fail "timed-out start refused"
+else
+    pass "timed-out start refused"
+fi
+assert_contains "timed-out start message" "$WORK/out" "no client window after 1s"
+assert_file "timed-out start lock present" "$COA_LAB_ROOT/state/lock"
+run_lab stop
+assert_absent "timed-out start lock released" "$COA_LAB_ROOT/state/lock"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))
