@@ -47,16 +47,27 @@ What the tools cannot observe today: UI Lua errors, action-bar contents, 3D mode
 visual. Pure visuals are judged from screenshots and marked "visual, needs user confirmation"; the rest is
 **inconclusive** with the missing capability named.
 
-## 3. Setup
+## 3. Setup and action: Ghost first
 
-Put the character in the state the issue names, cheapest first:
+The Ghost e2e harness builds a character in seconds (race and class at login, `SetLevel`, `SetSpecialization`
+through `.localspec`, `Learn`, `AddItem`/`EquipEntry`, `Teleport`, `Spawn` for a fixture target) and can cast the
+spell itself, checking both the server's aura list and the one the client receives. Typing GM commands into the lab
+client is slower, blind and fails silently: use it only for a last tweak.
 
-1. GM chat commands through `coa-client-lab chat` (`.learn <spell>`, `.aura <spell>`, `.levelup`, `.localspec`,
-   `.additem`, `.gm off` before anything that needs the world to react to a player).
-2. A Ghost scenario when the state needs more than commands (class and spec creation, talents, a second actor).
-   The character itself is created by a Ghost login: the CoA creation screen is not driven by input.
+Split the work:
 
-Record what you did: every command lands in the evidence folder.
+1. **Ghost** does the setup: account, character of the right race, class and level, spec, spells, equipment,
+   position, and the target creature. It also performs the action (cast, use, pull) whenever the check is about
+   values or about which unit carries an aura, and reports what the server and the packets say.
+2. **The lab client** logs in afterwards on the same character and only observes what is *displayed*: tooltip
+   text, aura on the unit frame, icon, model. It acts only when the action itself is a UI interaction that Ghost
+   cannot perform.
+
+A Ghost run that already contradicts the issue is a finding on its own: say so and check the display only if the
+issue is about the display.
+
+Record what you ran: the scenario or test name, the GM commands, the character. Everything lands in the evidence
+folder.
 
 ## 4. Observe
 
