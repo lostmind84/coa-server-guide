@@ -41,6 +41,7 @@ check("array", encode({ 1, "two", false }), '[1,"two",false]')
 check("object sorted", encode({ b = 1, a = "x" }), '{"a":"x","b":1}')
 check("nested", encode({ list = { { n = 1 } } }), '{"list":[{"n":1}]}')
 check("sparse is object", encode({ [1] = "a", [3] = "c" }), '{"1":"a","3":"c"}')
+check("gapped keys are object", encode({ [2] = "b", [3] = "c", [5] = "e" }), '{"2":"b","3":"c","5":"e"}')
 
 -- COMMANDS TESTS (Task 2)
 
@@ -147,7 +148,6 @@ local printed = {}
 print_original = print
 print = function(text) printed[#printed + 1] = text end
 dofile(root .. "/CoaProbe.lua")
-print = print_original
 
 check("slash registered", SLASH_COAPROBE1, "/coaprobe")
 CoaProbeDB = nil
@@ -164,10 +164,10 @@ check("db capped", #CoaProbeDB, 50)
 contains("oldest dropped", CoaProbeDB[1], '"req":"bulk11"')
 
 printed = {}
-print = function(text) printed[#printed + 1] = text end
 CoaProbe.handle(stub, "s2 dance")
-print = print_original
 check("error line", printed[1], "COAPROBE s2 error: unknown command dance")
+
+print = print_original
 
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)

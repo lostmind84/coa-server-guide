@@ -17,13 +17,17 @@ end
 
 local function isArray(t)
     local count = 0
+    local maxKey = 0
     for key in pairs(t) do
         if type(key) ~= "number" or key < 1 or math.floor(key) ~= key then
             return false
         end
         count = count + 1
+        if key > maxKey then
+            maxKey = key
+        end
     end
-    return count == #t
+    return count == maxKey
 end
 
 function Json.encode(value)
