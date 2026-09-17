@@ -44,6 +44,102 @@ check("sparse is object", encode({ [1] = "a", [3] = "c" }), '{"1":"a","3":"c"}')
 
 -- COMMANDS TESTS (Task 2)
 
+dofile(root .. "/Commands.lua")
+local run = CoaProbe.Commands.run
+
+local function fontString(text)
+    return { GetText = function() return text end }
+end
+
+local function makeApi()
+    local api = {}
+    api.time = function() return 1000 end
+    api.UIParent = {}
+    local lines = {}
+    api.GameTooltip = {
+        SetOwner = function() end,
+        SetHyperlink = function(_, link)
+            lines = { link, "second line" }
+        end,
+        NumLines = function() return #lines end,
+        Hide = function() end,
+    }
+    setmetatable(api, { __index = function(_, key)
+        local i = key:match("^GameTooltipTextLeft(%d+)$")
+        if i then return fontString(lines[tonumber(i)]) end
+        if key:match("^GameTooltipTextRight%d+$") then return fontString(nil) end
+    end })
+    api.GetSpellInfo = function(id)
+        if id == 501281 then
+            return "Fel Fireball", "Rank 2", "Interface\\Icons\\spell_fire_fireballgreen", 35, false, 3, 2000, 0, 30
+        end
+    end
+    api.IsSpellKnown = function(id) return id == 501281 end
+    api.UnitAura = function(unit, index, filter)
+        if unit == "player" and index == 1 and filter == "HELPFUL" then
+            return "PvE Mode", "", "icon", 0, nil, 0, 0, "player", nil, nil, 9931032
+        end
+    end
+    local book = { { "Auto Attack", "", "|cff71d5ff|Hspell:6603|h[Auto Attack]|h|r" } }
+    api.GetSpellName = function(index, bookType)
+        local entry = bookType == "spell" and book[index]
+        if entry then return entry[1], entry[2] end
+    end
+    api.GetSpellLink = function(index, bookType)
+        local entry = bookType == "spell" and book[index]
+        return entry and entry[3]
+    end
+    return api
+end
+
+local api = makeApi()
+local answer = run(api, "r1 ping")
+check("ping req", answer.req, "r1")
+check("ping command", answer.command, "ping")
+check("ping time", answer.time, 1000)
+check("ping result", answer.result.pong, true)
+
+answer = run(api, "r2 spell 501281")
+check("spell name", answer.result.name, "Fel Fireball")
+check("spell cast time", answer.result.castTime, 2000)
+check("spell known", answer.result.known, true)
+check("spell tooltip line", answer.result.tooltip[1].left, "spell:501281")
+check("spell tooltip right empty", answer.result.tooltip[1].right, "")
+
+answer = run(api, "r3 spell 42")
+check("unknown spell error", answer.error, "unknown spell 42")
+check("unknown spell no result", answer.result, nil)
+
+answer = run(api, "r4 spell")
+check("spell usage", answer.error, "usage: spell <id>")
+
+answer = run(api, "r5 item 6948")
+check("item tooltip", answer.result.tooltip[1].left, "item:6948")
+
+answer = run(api, "r6 auras")
+check("auras unit", answer.result.unit, "player")
+check("auras count", #answer.result.auras, 1)
+check("aura spell id", answer.result.auras[1].spellId, 9931032)
+check("aura harmful", answer.result.auras[1].harmful, false)
+
+answer = run(api, "r7 spellbook")
+check("spellbook count", #answer.result.spells, 1)
+check("spellbook id from link", answer.result.spells[1].id, 6603)
+check("spellbook name", answer.result.spells[1].name, "Auto Attack")
+
+answer = run(api, "r8 known 78")
+check("known false", answer.result.known, false)
+
+answer = run(api, "r9 dance")
+check("unknown command", answer.error, "unknown command dance")
+
+answer = run(api, "")
+check("missing req", answer.error, "usage: /coaprobe <req> <command> [args]")
+
+api.GetSpellInfo = function() error("boom") end
+answer = run(api, "r10 spell 1")
+contains("handler error captured", answer.error, "boom")
+
 -- ADDON TESTS (Task 3)
 
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
