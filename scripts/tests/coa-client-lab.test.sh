@@ -33,6 +33,7 @@ assert_eq() { [[ "$2" == "$3" ]] && pass "$1" || fail "$1: expected [$3], got [$
 assert_file() { [[ -e "$2" ]] && pass "$1" || fail "$1: missing $2"; }
 assert_absent() { [[ ! -e "$2" ]] && pass "$1" || fail "$1: still present $2"; }
 assert_contains() { grep -qF -- "$3" "$2" 2>/dev/null && pass "$1" || fail "$1: [$3] not in $2"; }
+assert_not_contains() { grep -qF -- "$3" "$2" 2>/dev/null && fail "$1: [$3] still in $2" || pass "$1"; }
 run_lab() { "$SCRIPT" "$@" > "$WORK/out" 2>&1; }
 
 make_user_client() {
@@ -40,7 +41,8 @@ make_user_client() {
     touch "$COA_USER_CLIENT/Ascension.exe" "$COA_USER_CLIENT/WTF/Account/LOCAL/SavedVariables.lua" \
         "$COA_USER_CLIENT/WTF/Custom/GlueConfig.json" "$COA_USER_CLIENT/Cache/wdb" "$COA_USER_PREFIX/system.reg"
     printf 'set realmlist 127.0.0.1:3824\r\n' > "$COA_USER_CLIENT/Data/enUS/realmlist.wtf"
-    printf 'SET realmList "127.0.0.1:3824"\nSET gxResolution "800x600"\n' > "$COA_USER_CLIENT/WTF/Config.wtf"
+    printf 'SET realmList "127.0.0.1:3824"\nSET gxResolution "800x600"\nSET accountName "someone"\n' \
+        > "$COA_USER_CLIENT/WTF/Config.wtf"
     cp "$COA_USER_CLIENT/WTF/Config.wtf" "$WORK/user-config-before.wtf"
 }
 
@@ -108,6 +110,10 @@ assert_absent "user accounts dropped" "$COA_LAB_ROOT/ascension-lab/WTF/Account"
 assert_absent "glue config dropped" "$COA_LAB_ROOT/ascension-lab/WTF/Custom"
 assert_absent "cache dropped" "$COA_LAB_ROOT/ascension-lab/Cache"
 assert_contains "lab resolution" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" 'SET gxResolution "1920x1080"'
+assert_not_contains "lab drops remembered account" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" "accountName"
+assert_contains "user account kept" "$COA_USER_CLIENT/WTF/Config.wtf" 'SET accountName "someone"'
+assert_file "lab root marker written" "$COA_LAB_ROOT/.coa-client-lab"
+assert_file "lab prefix marker written" "$COA_LAB_PREFIX/.coa-client-lab"
 cmp -s "$COA_USER_CLIENT/WTF/Config.wtf" "$WORK/user-config-before.wtf" \
     && pass "user Config.wtf unchanged" || fail "user Config.wtf changed"
 
@@ -116,6 +122,7 @@ assert_contains "second create message" "$WORK/out" "already exists"
 
 # destroy
 if run_lab destroy; then fail "destroy without --yes refused"; else pass "destroy without --yes refused"; fi
+assert_file "destroy without --yes leaves lab client" "$COA_LAB_ROOT/ascension-lab/Ascension.exe"
 run_lab destroy --yes
 assert_absent "lab client removed" "$COA_LAB_ROOT"
 assert_absent "lab prefix removed" "$COA_LAB_PREFIX"
@@ -123,8 +130,34 @@ assert_file "user client kept" "$COA_USER_CLIENT/Ascension.exe"
 
 # same-path guard in create
 if COA_LAB_PREFIX="$COA_USER_PREFIX" run_lab create; then fail "create over user prefix refused"; else pass "create over user prefix refused"; fi
-assert_contains "same-path guard message" "$WORK/out" "lab paths equal user paths"
+assert_contains "same-path guard message" "$WORK/out" "aliases the user's path"
 assert_file "user prefix protected" "$COA_USER_PREFIX/system.reg"
+
+# I2: a trailing slash must not defeat the same-path guard (realpath -m normalizes it away)
+if COA_LAB_PREFIX="$COA_USER_PREFIX/" run_lab create; then
+    fail "create over user prefix with trailing slash refused"
+else
+    pass "create over user prefix with trailing slash refused"
+fi
+assert_contains "trailing-slash guard message" "$WORK/out" "aliases the user's path"
+assert_file "user prefix protected (trailing slash)" "$COA_USER_PREFIX/system.reg"
+
+# I2: destroy refused when the lab prefix override is an ancestor of the user prefix
+if COA_LAB_PREFIX="$(dirname "$COA_USER_PREFIX")" run_lab destroy --yes; then
+    fail "destroy over parent of user prefix refused"
+else
+    pass "destroy over parent of user prefix refused"
+fi
+assert_contains "destroy parent guard message" "$WORK/out" "aliases the user's path"
+assert_file "user prefix protected (destroy parent)" "$COA_USER_PREFIX/system.reg"
+
+# I2: destroy refuses a directory that create did not mark, even with --yes, and leaves it alone
+mkdir -p "$COA_LAB_ROOT"
+if run_lab destroy --yes; then fail "destroy without marker refused"; else pass "destroy without marker refused"; fi
+assert_contains "destroy without marker message" "$WORK/out" "no .coa-client-lab marker"
+assert_file "unmarked lab root kept" "$COA_LAB_ROOT"
+rm -rf "$COA_LAB_ROOT"
+
 run_lab create
 
 run_lab start 3

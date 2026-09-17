@@ -54,8 +54,27 @@ set_wtf() {
     fi
 }
 
+# I2: shared by create and destroy. Resolve every lab and user path with `realpath -m` (symlinks, "..",
+# trailing slashes) and refuse if any lab path equals, contains or is contained by any user path, so a
+# moved COA_LAB_ROOT, a trailing-slash COA_LAB_PREFIX or a symlinked alias cannot reach the user's data.
+check_lab_paths() {
+    local lab_root lab_client lab_prefix user_client user_prefix lab user
+    lab_root=$(realpath -m -- "$LAB_ROOT")
+    lab_client=$(realpath -m -- "$LAB_CLIENT")
+    lab_prefix=$(realpath -m -- "$LAB_PREFIX")
+    user_client=$(realpath -m -- "$USER_CLIENT")
+    user_prefix=$(realpath -m -- "$USER_PREFIX")
+    for lab in "$lab_root" "$lab_client" "$lab_prefix"; do
+        for user in "$user_client" "$user_prefix"; do
+            [[ "$lab/" == "$user/"* || "$user/" == "$lab/"* ]] \
+                && die "lab path aliases the user's path: $lab vs $user"
+        done
+    done
+    return 0
+}
+
 cmd_create() {
-    [[ "$LAB_CLIENT" != "$USER_CLIENT" && "$LAB_PREFIX" != "$USER_PREFIX" ]] || die "lab paths equal user paths"
+    check_lab_paths
     [[ -e "$LAB_CLIENT" || -e "$LAB_PREFIX" ]] && die "lab already exists: $LAB_CLIENT or $LAB_PREFIX"
     [[ -f "$USER_CLIENT/Ascension.exe" ]] || die "Ascension.exe not found in $USER_CLIENT"
     [[ -d "$USER_PREFIX" ]] || die "Wine prefix not found: $USER_PREFIX"
@@ -63,16 +82,25 @@ cmd_create() {
     step "Copying the client and its prefix (reflink: shared blocks, no full copy)"
     cp -a --reflink=always "$USER_CLIENT" "$LAB_CLIENT" || die "reflink copy failed (needs btrfs or xfs)"
     cp -a --reflink=always "$USER_PREFIX" "$LAB_PREFIX" || die "reflink copy failed (needs btrfs or xfs)"
+    # Mark both as ours: destroy refuses to rm -rf anything without this marker (I2).
+    touch "$LAB_ROOT/.coa-client-lab" "$LAB_PREFIX/.coa-client-lab"
     # The user's remembered account, characters, addon settings and caches stay out of the lab.
     rm -rf "$LAB_CLIENT/WTF/Account" "$LAB_CLIENT/WTF/Custom" "$LAB_CLIENT/Cache" "$LAB_CLIENT/Screenshots"
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" gxResolution "${WIDTH}x${HEIGHT}"
+    # A remembered login (SET accountName ...) is account data too; drop it if the user ever ticked "remember".
+    sed -i '/^SET accountName /Id' "$LAB_CLIENT/WTF/Config.wtf"
     echo "lab created: $LAB_CLIENT"
 }
 
 cmd_destroy() {
     [[ "${1:-}" == --yes ]] || die "usage: coa-client-lab destroy --yes"
     [[ -e "$LOCK" ]] && die "the lab client is running or its lock is stale: coa-client-lab stop"
-    [[ "$LAB_CLIENT" != "$USER_CLIENT" && "$LAB_PREFIX" != "$USER_PREFIX" ]] || die "lab paths equal user paths"
+    check_lab_paths
+    local dir
+    for dir in "$LAB_ROOT" "$LAB_PREFIX"; do
+        [[ -e "$dir" && ! -e "$dir/.coa-client-lab" ]] \
+            && die "$dir has no .coa-client-lab marker (not created by coa-client-lab create?): refusing to remove it"
+    done
     rm -rf "$LAB_ROOT" "$LAB_PREFIX"
     echo "lab removed"
 }
