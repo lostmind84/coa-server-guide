@@ -14,6 +14,11 @@ WORKSPACE="${COA_LAB_WORKSPACE:-9}"
 WINDOW_TIMEOUT="${COA_LAB_WINDOW_TIMEOUT:-120}"
 STOP_TIMEOUT="${COA_LAB_STOP_TIMEOUT:-30}"
 SLEEP="${COA_LAB_SLEEP:-sleep}"
+PROBE_TIMEOUT="${COA_LAB_PROBE_TIMEOUT:-30}"
+RELOAD_WAIT="${COA_LAB_RELOAD_WAIT:-10}"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ADDON_SRC="$SCRIPT_DIR/../addons/CoaProbe"
+PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
 WIDTH=1920
 HEIGHT=1080
 STATE_DIR="$LAB_ROOT/state"
@@ -35,6 +40,8 @@ Running (one lab client at a time):
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
   screenshot [PATH]        save a PNG of the client window and print its path
+  probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID);
+                           prints JSON
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window
   preflight N              coa-slot preflight N against the lab client's data
@@ -178,6 +185,10 @@ cmd_start() {
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
     printf 'set realmlist %s\r\n' "$auth" > "$LAB_CLIENT/Data/enUS/realmlist.wtf"
     rm -rf "$LAB_CLIENT/Cache"
+    # The client only loads addon folders present at launch.
+    rm -rf "$LAB_CLIENT/Interface/AddOns/CoaProbe"
+    cp -r "$ADDON_SRC" "$LAB_CLIENT/Interface/AddOns/CoaProbe"
+    rm -rf "$LAB_CLIENT/Interface/AddOns/CoaProbe/tests"
 
     step "Launching the lab client on workspace $WORKSPACE for slot $n ($auth)"
     local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
@@ -251,6 +262,7 @@ cmd_chat() {
 cmd_login() {
     [[ $# -eq 2 ]] || die "usage: coa-client-lab login ACCOUNT PASSWORD"
     require_running
+    echo "$1" > "$STATE_DIR/account"
     local account="$1" password="$2" backspaces geometry
     backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
@@ -279,6 +291,28 @@ cmd_screenshot() {
     mkdir -p "$(dirname "$path")"
     magick import -window "$WINDOW" "$path"
     echo "$path"
+}
+
+# The addon answers in SavedVariables, which the client writes on /reload (spike findings Q3).
+cmd_probe() {
+    [[ $# -ge 1 ]] || die "usage: coa-client-lab probe COMMAND [ARGS...]"
+    [[ "$*" != *'|'* ]] || die "probe arguments cannot contain | (the chat edit box doubles it)"
+    require_running
+    local account file req waited
+    account=$(cat "$STATE_DIR/account" 2>/dev/null) || die "no login recorded: coa-client-lab login ACCOUNT PASSWORD"
+    file="$LAB_CLIENT/WTF/Account/${account^^}/SavedVariables/CoaProbe.lua"
+    req="p$(date +%s%N)"
+    cmd_chat "/coaprobe $req $*"
+    "$SLEEP" 1
+    cmd_chat "/reload"
+    for ((waited = 0; waited < PROBE_TIMEOUT; waited++)); do
+        if python3 "$PROBE_READER" "$file" "$req"; then
+            "$SLEEP" "$RELOAD_WAIT"
+            return 0
+        fi
+        sleep 1
+    done
+    die "no CoaProbe answer for $req after ${PROBE_TIMEOUT}s, see $file"
 }
 
 cmd_stop() {
@@ -324,7 +358,7 @@ cmd_stop() {
         fi
     fi
     rm -f "$LOCK" "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/started" \
-        "$STATE_DIR/gamescope.starttime"
+        "$STATE_DIR/gamescope.starttime" "$STATE_DIR/account"
     echo "lab client stopped"
 }
 
@@ -348,6 +382,7 @@ main() {
         chat) cmd_chat "$@" ;;
         login) cmd_login "$@" ;;
         screenshot) cmd_screenshot "$@" ;;
+        probe) cmd_probe "$@" ;;
         stop) cmd_stop ;;
         preflight) cmd_preflight "$@" ;;
         -h|--help|help|"") usage ;;

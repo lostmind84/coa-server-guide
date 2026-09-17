@@ -85,6 +85,13 @@ EOF
     cat > "$WORK/bin/xdotool" <<'EOF'
 #!/usr/bin/env bash
 printf 'xdotool DISPLAY=%s %s\n' "$DISPLAY" "$*" >> "$FAKE_LOG"
+if [[ "$1" == type && "${*: -1}" == /reload && "${FAKE_PROBE_SILENT:-}" != 1 ]]; then
+    req=$(grep -o '/coaprobe [^ ]*' "$FAKE_LOG" | tail -1 | cut -d' ' -f2)
+    dir="$COA_LAB_ROOT/ascension-lab/WTF/Account/LABSPIKE/SavedVariables"
+    mkdir -p "$dir"
+    printf 'CoaProbeDB = {\n\t"{\\"command\\":\\"ping\\",\\"req\\":\\"%s\\",\\"result\\":{\\"pong\\":true}}", -- [1]\n}\n' \
+        "$req" > "$dir/CoaProbe.lua"
+fi
 case "$1" in
     search) [[ "${FAKE_NO_WINDOW:-}" == 1 ]] || echo 4242 ;;
     getwindowgeometry) printf 'WINDOW=4242\nX=0\nY=0\nWIDTH=1280\nHEIGHT=720\nSCREEN=0\n' ;;
@@ -395,6 +402,33 @@ COA_LAB_STOP_TIMEOUT=1 run_lab stop
 assert_absent "escalation lock released" "$COA_LAB_ROOT/state/lock"
 kill -0 "$gs_pid" 2>/dev/null && fail "escalation kills gamescope" || pass "escalation kills gamescope"
 kill -0 "$child_pid" 2>/dev/null && fail "escalation kills orphaned child" || pass "escalation kills orphaned child"
+
+# PROBE TESTS (Milestone 2)
+run_lab start 3
+assert_file "addon installed" "$COA_LAB_ROOT/ascension-lab/Interface/AddOns/CoaProbe/CoaProbe.toc"
+assert_absent "addon tests not installed" "$COA_LAB_ROOT/ascension-lab/Interface/AddOns/CoaProbe/tests"
+run_lab login labspike secretpw
+assert_eq "account recorded" "$(cat "$COA_LAB_ROOT/state/account")" "labspike"
+
+: > "$FAKE_LOG"
+run_lab probe ping
+assert_eq "probe exits 0" "$?" "0"
+assert_contains "probe types the request" "$FAKE_LOG" "type --window 4242 --delay 40 /coaprobe p"
+assert_contains "probe reloads" "$FAKE_LOG" "type --window 4242 --delay 40 /reload"
+assert_contains "probe prints the answer" "$WORK/out" '"pong": true'
+
+if run_lab probe 'spell 1|2'; then fail "probe refuses a pipe"; else pass "probe refuses a pipe"; fi
+assert_contains "pipe message" "$WORK/out" "cannot contain |"
+
+if FAKE_PROBE_SILENT=1 COA_LAB_PROBE_TIMEOUT=1 run_lab probe ping; then
+    fail "probe times out without an answer"
+else
+    pass "probe times out without an answer"
+fi
+assert_contains "probe timeout message" "$WORK/out" "no CoaProbe answer"
+
+run_lab stop
+assert_absent "account cleared by stop" "$COA_LAB_ROOT/state/account"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))
