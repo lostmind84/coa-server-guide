@@ -514,6 +514,7 @@ coa-client-lab start 2
 coa-client-lab login <compte> <mot de passe>  # compte GM sur ce slot ; environ 90 secondes
 coa-client-lab chat "/say bonjour"
 coa-client-lab screenshot                     # affiche le chemin du PNG
+coa-client-lab probe spell 501281             # interroge l'addon CoaProbe ; affiche du JSON (ping, spell, item, auras, spellbook, known)
 coa-client-lab stop                           # avertit si ton propre client a changé entre-temps
 ```
 
@@ -522,6 +523,13 @@ La copie de labo retire tes comptes, ton identifiant mémorisé et les caches. A
 sur le slot ; créer le personnage par une connexion de bot Ghost plutôt que par l'écran de création. Tests :
 `scripts/tests/coa-client-lab.test.sh`. Conception et résultats du spike :
 `docs/superpowers/specs/2026-09-17-client-issue-agent-*.md`.
+
+`start` installe l'addon CoaProbe ([`addons/CoaProbe`](addons/CoaProbe)) dans le client de labo. Un probe tape
+`/coaprobe`, puis `/reload` pour que le client écrive la réponse dans ses SavedVariables, que
+[`scripts/coa-probe-read.py`](scripts/coa-probe-read.py) lit ; chaque probe coûte un rechargement (environ
+15 secondes, dont 10 secondes d'attente pour que l'interface rechargée accepte de nouveau la saisie). Tests :
+`lua5.1 addons/CoaProbe/tests/run.lua` et `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`
+(`scripts/tests/coa-client-lab.test.sh` a besoin de `python3`).
 
 ## Déployer sur un VPS (pas testé)
 

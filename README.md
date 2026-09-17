@@ -496,6 +496,7 @@ coa-client-lab start 2
 coa-client-lab login <account> <password>  # GM account on that slot; takes about 90 seconds
 coa-client-lab chat "/say hello"
 coa-client-lab screenshot                  # prints the PNG path
+coa-client-lab probe spell 501281          # ask the CoaProbe addon; prints JSON (ping, spell, item, auras, spellbook, known)
 coa-client-lab stop                        # warns if your own client changed meanwhile
 ```
 
@@ -504,6 +505,13 @@ The lab copy drops your accounts, remembered login and caches. After a client pa
 slot; create the character through a Ghost bot login rather than the character creation screen. Tests:
 `scripts/tests/coa-client-lab.test.sh`. Design and spike results:
 `docs/superpowers/specs/2026-09-17-client-issue-agent-*.md`.
+
+`start` installs the CoaProbe addon ([`addons/CoaProbe`](addons/CoaProbe)) into the lab client. A probe types
+`/coaprobe`, then `/reload` so the client writes the answer to its SavedVariables, which
+[`scripts/coa-probe-read.py`](scripts/coa-probe-read.py) reads; each probe takes a reload (about 15 seconds,
+including a 10-second wait so the reloaded interface accepts input again). Tests:
+`lua5.1 addons/CoaProbe/tests/run.lua` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`
+(`scripts/tests/coa-client-lab.test.sh` needs `python3`).
 
 ## Deploying to a VPS (not tested)
 

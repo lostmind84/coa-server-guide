@@ -153,3 +153,23 @@ server behaviour is concluded from them.
   printed its own `UI Error: an interface error occured. Click here and send the error to a developer.` and
   `Logs/Error.txt` did not record it. How to capture UI errors is unknown; not part of Milestone 2.
 - `Logs/Error.txt` is written by the client's C++ side (`ChallengeMgr::UpdateChallengeDataStores ...`), not by Lua.
+
+## Milestone 2 real run (2026-09-17, lab client on slot 2)
+
+- Server: `coa-slot deploy 2 origin/main` failed to build `77e98c4f8`
+  (`modules/mod-ascension-compat/src/AscensionChronomancerMovement.cpp:171: no matching member function for call to
+  'NearTeleportTo'`), so slot 2 kept `d212cbdb0` and `coa-client-lab preflight 2` was FAIL (worldserver and 3 world
+  SQL updates behind). The run only checks the addon and the launcher; no server behaviour is concluded from it.
+- `start` installed `Interface/AddOns/CoaProbe` (`CoaProbe.lua`, `CoaProbe.toc`, `Commands.lua`, `Json.lua`, no
+  `tests/`) and the addon loaded: the first `probe ping` answered.
+- Timing: each probe took about 15 s including the default 10 s `COA_LAB_RELOAD_WAIT`; `chat "/say after-probe"`
+  sent right after a probe appeared in the chat, so 10 s is enough.
+- Answers: `spell 501281` gave `Fel Fireball`, cost 35, castTime 2000, tooltip lines including the CoA description;
+  `item 6948` gave 6 lines from `Hearthstone` to `ID 6948`; `spellbook` gave 15 spells starting with `Auto Attack`
+  (6603); `known 78` gave false.
+- `UnitAura(unit, i, "HELPFUL")` works: `auras` listed `PvE Mode` (9931032), `War Mode` (1004119) and
+  `Power Word: Fortitude` (1243, applied with `.aura 1243`), none harmful.
+- SavedVariables escaping: the file line starts `"{\"command\":\"ping\",...`, and the JSON `Interface\\Icons` is
+  written `Interface\\\\Icons`: WoW escapes `"` as `\"` and doubles backslashes, which `coa-probe-read.py` decodes.
+  The Hearthstone line with quotes (`"Counts as an Air, Earth, Fire, and Water totem."`) and colour codes
+  round-tripped.
