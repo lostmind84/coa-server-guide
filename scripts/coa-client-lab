@@ -113,16 +113,17 @@ descendants() {
     done
 }
 
-# Field 22 of /proc/<pid>/stat (process start time, clock ticks since boot). Parsed after the last `)`
+# Field 22 of /proc/<pid>/stat (process start time, clock ticks since boot), parsed after the last `)`
 # so a comm field containing spaces or parens (unlikely here, but stat's format allows it) cannot shift
-# the fixed fields that follow it.
+# the fixed fields that follow it. That split starts at field 3 (state), so field N is index N-3;
+# field 22 (starttime) is index 19. Index 17 is field 20 (num_threads), not the start time.
 gamescope_starttime() {
     local pid="$1" stat rest fields
     stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
     rest="${stat##*) }"
     read -r -a fields <<< "$rest"
-    [[ -n "${fields[17]:-}" ]] || return 1
-    echo "${fields[17]}"
+    [[ -n "${fields[19]:-}" ]] || return 1
+    echo "${fields[19]}"
 }
 
 # I1: a stale gamescope.pid can survive a crash or reboot; if its PID were reused by an unrelated

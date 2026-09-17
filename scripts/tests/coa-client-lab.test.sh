@@ -36,6 +36,17 @@ assert_contains() { grep -qF -- "$3" "$2" 2>/dev/null && pass "$1" || fail "$1: 
 assert_not_contains() { grep -qF -- "$3" "$2" 2>/dev/null && fail "$1: [$3] still in $2" || pass "$1"; }
 run_lab() { "$SCRIPT" "$@" > "$WORK/out" 2>&1; }
 
+# C1: call the launcher's own gamescope_starttime() directly, without running main(). The script's last
+# line runs `main "$@"; exit $?` on the same line by design, so it is dropped before sourcing.
+gamescope_starttime_from_script() {
+    local pid="$1" tmp out
+    tmp=$(mktemp)
+    sed '$d' "$SCRIPT" > "$tmp"
+    out=$(bash -c "source \"$tmp\"; gamescope_starttime \"$pid\"")
+    rm -f "$tmp"
+    printf '%s' "$out"
+}
+
 make_user_client() {
     mkdir -p "$COA_USER_CLIENT"/{Data/enUS,WTF/Account/LOCAL,WTF/Custom,Cache,Interface/AddOns} "$COA_USER_PREFIX"
     touch "$COA_USER_CLIENT/Ascension.exe" "$COA_USER_CLIENT/WTF/Account/LOCAL/SavedVariables.lua" \
@@ -245,6 +256,91 @@ kill -0 "$unrelated_pid" 2>/dev/null && pass "stale pid: unrelated process left 
 assert_absent "stale pid: lock released" "$COA_LAB_ROOT/state/lock"
 kill "$unrelated_pid" 2>/dev/null
 wait "$unrelated_pid" 2>/dev/null
+
+# C1: gamescope_starttime must read stat field 22 (process start time), not field 20 (thread count).
+# Real gamescope and its Wine/Proton children are multi-threaded, and their thread count can change
+# during the run (field 20 would then no longer match what was recorded at start); the bash fakes above
+# are single-threaded bash and cannot expose that. This uses a real multi-threaded process (python3 with
+# a background thread) run under an `exec -a` name containing "gamescope" so the cmdline check in
+# gamescope_pid does not short-circuit the comparison, with a child whose argv0 is the lab client path
+# and DISPLAY=:77.
+cat > "$WORK/fake-gamescope-mt.py" <<'PYEOF'
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+state_dir, sync_file = sys.argv[1], sys.argv[2]
+
+with open(os.path.join(state_dir, "gamescope.pid"), "w") as f:
+    f.write(str(os.getpid()))
+
+env = dict(os.environ)
+env["DISPLAY"] = ":77"
+child = subprocess.Popen(
+    ["X:\\ascension-lab\\Ascension.exe", "600"], executable=shutil.which("sleep"), env=env
+)
+
+# Wait for the test to record the start time while this process is still single-threaded.
+while not os.path.exists(sync_file):
+    time.sleep(0.05)
+
+# Real gamescope/Wine processes are multi-threaded, and the thread count can change after start; that
+# mismatch is exactly what a wrong stat field exposes. Add a second OS thread now.
+threading.Thread(target=lambda: time.sleep(600), daemon=True).start()
+
+child.wait()
+PYEOF
+
+mkdir -p "$COA_LAB_ROOT/state"
+mt_sync="$WORK/fake-gamescope-mt.sync"
+rm -f "$mt_sync"
+( exec -a gamescope-fake python3 "$WORK/fake-gamescope-mt.py" "$COA_LAB_ROOT/state" "$mt_sync" ) &
+mt_pid=$!
+
+for _ in $(seq 1 50); do
+    [[ -s "$COA_LAB_ROOT/state/gamescope.pid" ]] && break
+    sleep 0.1
+done
+pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid" 2>/dev/null)
+assert_eq "C1 setup: fake gamescope pid recorded" "$pid" "$mt_pid"
+threads_before=$(awk '{print $20}' "/proc/$pid/stat" 2>/dev/null)
+assert_eq "C1 setup: fake starts single-threaded" "${threads_before:-}" "1"
+
+recorded=$(gamescope_starttime_from_script "$pid")
+printf '%s' "$recorded" > "$COA_LAB_ROOT/state/gamescope.starttime"
+
+touch "$mt_sync"
+threads_after=0
+for _ in $(seq 1 50); do
+    threads_after=$(awk '{print $20}' "/proc/$pid/stat" 2>/dev/null) || threads_after=0
+    [[ "${threads_after:-0}" -gt 1 ]] && break
+    sleep 0.1
+done
+[[ "${threads_after:-0}" -gt 1 ]] && pass "C1 setup: fake becomes multi-threaded" \
+    || fail "C1 setup: fake becomes multi-threaded"
+
+: > "$COA_LAB_ROOT/state/lock"
+run_lab status
+assert_contains "C1: status reports the multi-threaded fake as running" "$WORK/out" "gamescope: running (pid $pid)"
+
+child_pid=$(pgrep -P "$pid" 2>/dev/null | head -1)
+run_lab stop
+assert_eq "C1: stop exits 0" "$?" "0"
+assert_absent "C1: stop releases the lock" "$COA_LAB_ROOT/state/lock"
+kill -0 "$pid" 2>/dev/null && fail "C1: stop kills the fake" || pass "C1: stop kills the fake"
+if [[ -n "$child_pid" ]]; then
+    kill -0 "$child_pid" 2>/dev/null && fail "C1: stop kills its child" || pass "C1: stop kills its child"
+else
+    fail "C1: stop kills its child (no child pid captured)"
+fi
+
+# Unconditional cleanup: under the bug, stop above does not kill the fake or its child.
+kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+[[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null && kill -9 "$child_pid" 2>/dev/null
+rm -f "$COA_LAB_ROOT/state/lock" "$COA_LAB_ROOT/state/gamescope.pid" "$COA_LAB_ROOT/state/gamescope.starttime"
 
 if FAKE_NO_LAUNCH=1 COA_LAB_WINDOW_TIMEOUT=1 run_lab start 3; then
     fail "timed-out start refused"
