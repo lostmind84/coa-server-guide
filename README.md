@@ -481,6 +481,30 @@ coa-slot stop 2 && coa-slot release 2         # batch done
 - Resources: a running slot used about 5 GiB of RAM here (worldserver 3.8 GiB, MySQL 1.3 GiB). Builds of different
   slots wait for each other at the compile step because the Dockerfile's ccache mount is `sharing=locked`.
 
+## Client lab for agents
+
+[`scripts/coa-client-lab`](scripts/coa-client-lab) (linked as `~/.local/bin/coa-client-lab`) runs a separate copy
+of the client so an agent can reproduce client-side issues without touching your client. The lab client runs in a
+nested gamescope window (1920x1080) on Hyprland workspace 9; you can watch it there. Keyboard input and screenshots
+go through gamescope's own X display, so your focus and mouse are never used. One lab client runs at a time.
+
+```bash
+coa-client-lab create                      # once: reflink copy of the client and prefix (near-zero disk space)
+coa-slot claim 2 "client check"            # the lab client talks to a claimed slot
+coa-client-lab preflight 2                 # server and lab client data must match
+coa-client-lab start 2
+coa-client-lab login <account> <password>  # GM account on that slot; takes about 90 seconds
+coa-client-lab chat "/say hello"
+coa-client-lab screenshot                  # prints the PNG path
+coa-client-lab stop                        # warns if your own client changed meanwhile
+```
+
+The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:
+`coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
+slot; create the character through a Ghost bot login rather than the character creation screen. Tests:
+`scripts/tests/coa-client-lab.test.sh`. Design and spike results:
+`docs/superpowers/specs/2026-09-17-client-issue-agent-*.md`.
+
 ## Deploying to a VPS (not tested)
 
 Same repository, same `/srv/coa` layout. Differences:

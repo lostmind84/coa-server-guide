@@ -154,7 +154,9 @@ Each milestone is usable on its own.
 
 0. **Spike**: done 2026-09-17, go. All questions answered yes (nested gamescope, keyboard injection, local
    addon with SavedVariables output, server-message requests, screenshots). Details in the spike findings.
-1. Lab client, `coa-client-lab` (start, login, stop, screenshot, type, key), preflight extended to the lab client.
+1. **Lab client and launcher**: done 2026-09-17 (`scripts/coa-client-lab`, tests in
+   `scripts/tests/coa-client-lab.test.sh`, preflight through `coa-client-lab preflight N`). Real run on slot 2:
+   login, chat, screenshots and stop (3 s, no process left) worked.
 2. CoaProbe: tooltip, auras, known spells, Lua errors.
 3. `coa-client-check` in repro mode, validated by the controls above.
 4. Verify mode and `/coa-triage` integration.

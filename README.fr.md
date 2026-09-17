@@ -498,6 +498,31 @@ coa-slot stop 2 && coa-slot release 2         # lot terminé
   de slots différents s'attendent à l'étape de compilation, car le montage ccache du Dockerfile est
   `sharing=locked`.
 
+## Client de labo pour les agents
+
+[`scripts/coa-client-lab`](scripts/coa-client-lab) (lié en `~/.local/bin/coa-client-lab`) lance une copie séparée
+du client pour qu'un agent reproduise les issues côté client sans toucher à ton client. Le client de labo tourne
+dans une fenêtre gamescope imbriquée (1920x1080) sur le workspace Hyprland 9 ; tu peux le regarder. Le clavier et
+les captures passent par l'affichage X propre à gamescope : ton focus et ta souris ne sont jamais utilisés. Un seul
+client de labo à la fois.
+
+```bash
+coa-client-lab create                         # une fois : copie reflink du client et du préfixe (quasi sans espace disque)
+coa-slot claim 2 "client check"               # le client de labo parle à un slot réservé
+coa-client-lab preflight 2                    # données serveur et client de labo identiques
+coa-client-lab start 2
+coa-client-lab login <compte> <mot de passe>  # compte GM sur ce slot ; environ 90 secondes
+coa-client-lab chat "/say bonjour"
+coa-client-lab screenshot                     # affiche le chemin du PNG
+coa-client-lab stop                           # avertit si ton propre client a changé entre-temps
+```
+
+La copie de labo retire tes comptes, ton identifiant mémorisé et les caches. Après un patch client, la recréer :
+`coa-client-lab destroy --yes && coa-client-lab create`. Le client de labo a besoin d'un compte et d'un personnage
+sur le slot ; créer le personnage par une connexion de bot Ghost plutôt que par l'écran de création. Tests :
+`scripts/tests/coa-client-lab.test.sh`. Conception et résultats du spike :
+`docs/superpowers/specs/2026-09-17-client-issue-agent-*.md`.
+
 ## Déployer sur un VPS (pas testé)
 
 Même dépôt, même organisation `/srv/coa`. Différences :
