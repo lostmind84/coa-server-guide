@@ -1,7 +1,6 @@
 # Client issue agent: spike findings
 
 Date: 2026-09-17
-Plan: docs/superpowers/plans/2026-09-17-client-issue-agent-spike.md
 
 ## Setup
 
@@ -109,12 +108,12 @@ Result: **untouched by the spike**
 
 - `sha256sum -c` against the baseline reported 12 changed files, and 221 files exist against 189 in the
   baseline (taken 11:30:18).
-- Every changed or new file is under account `LOCAL` or `WTF/Custom`, dated 11:40:24 to 11:55:29, for characters
-  the lab never used (Gdfgfdgdf, Dsqdsq, Dzadaz). The lab client first started at 12:02:02 and uses account
-  `LABSPIKE` in its own directory. No file of the user's client changed after 11:56.
-- Conclusion: the user's client was used between 11:40 and 11:55 (its realmlist points at slot 2, port 3824),
-  independently of the spike (the user confirmed manual tests). The baseline approach works, but a baseline must be taken right before the lab
-  starts, or the check must be limited to files modified after the lab start.
+- Every changed or new file belonged to the user's own account and characters the lab never used, and was written
+  before the lab client first started (the lab uses account `LABSPIKE` in its own directory). No file of the
+  user's client changed after the lab started.
+- Conclusion: the user played on their own client during the baseline window, independently of the spike. The
+  baseline approach works, but a baseline must be taken right before the lab starts, or the check must be limited
+  to files modified after the lab start.
 
 ## Verdict and spec changes
 Result: **go for Milestones 1-4**

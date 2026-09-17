@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run a lab copy of the CoA client for agents: nested gamescope on its own Hyprland workspace, keyboard input
 # and screenshots through gamescope's X display, one lab client at a time. The user's client is never modified;
-# it is only read by `create`. Design: docs/superpowers/specs/2026-09-17-client-issue-agent-design.md.
+# it is only read by `create`. Design: docs/design/client-issue-agent.md.
 set -euo pipefail
 
 USER_CLIENT="${COA_USER_CLIENT:-$HOME/CoaServer/client/ascension-live}"

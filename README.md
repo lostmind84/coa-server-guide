@@ -3,7 +3,6 @@
 Step-by-step guide to run the **Conquest of AzerothCore** server on a Linux PC without installing its build
 dependencies on the host, laid out so it can later move to a VPS with few changes.
 
-- French version: [README.fr.md](README.fr.md)
 - Commands only: [QUICKSTART.md](QUICKSTART.md)
 - Automated steps 8–11: [`scripts/setup-coa-server.sh`](scripts/setup-coa-server.sh)
 
@@ -504,7 +503,7 @@ The lab copy drops your accounts, remembered login and caches. After a client pa
 `coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
 slot; create the character through a Ghost bot login rather than the character creation screen. Tests:
 `scripts/tests/coa-client-lab.test.sh`. Design and spike results:
-`docs/superpowers/specs/2026-09-17-client-issue-agent-*.md`.
+[`docs/design/`](docs/design/).
 
 `start` installs the CoaProbe addon ([`addons/CoaProbe`](addons/CoaProbe)) into the lab client. A probe types
 `/coaprobe`, then `/reload` so the client writes the answer to its SavedVariables, which

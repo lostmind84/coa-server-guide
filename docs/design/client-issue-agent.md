@@ -1,7 +1,7 @@
 # Client issue agent: design
 
 Date: 2026-09-17
-Status: approved design, spike done (see `2026-09-17-client-issue-agent-spike-findings.md`)
+Status: approved design, spike done (see `client-issue-agent-spike-findings.md`)
 
 ## Goal
 
