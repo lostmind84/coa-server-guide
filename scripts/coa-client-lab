@@ -12,6 +12,7 @@ LAB_PREFIX="${COA_LAB_PREFIX:-$HOME/Games/umu/coa-client-lab}"
 PROTON="${COA_PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64}"
 WORKSPACE="${COA_LAB_WORKSPACE:-9}"
 WINDOW_TIMEOUT="${COA_LAB_WINDOW_TIMEOUT:-120}"
+STOP_TIMEOUT="${COA_LAB_STOP_TIMEOUT:-30}"
 SLEEP="${COA_LAB_SLEEP:-sleep}"
 WIDTH=1920
 HEIGHT=1080
@@ -218,26 +219,35 @@ cmd_screenshot() {
 }
 
 cmd_stop() {
-    local pid child changed waited file
+    local pid child tree changed waited file
     if [[ ! -e "$LOCK" ]]; then
         echo "not running"
         return 0
     fi
     if pid=$(gamescope_pid); then
+        # Snapshot once, before any signal: descendants come and go, and the escalation branch below
+        # needs the same PID list it started with to sweep up anything gamescope's own death orphans.
+        tree=$(descendants "$pid")
         # Stop the Windows client first: gamescope exits when its child does (spike findings).
-        for child in $(descendants "$pid"); do
+        for child in $tree; do
             if tr '\0' '\n' < "/proc/$child/cmdline" 2>/dev/null | head -1 | grep -q '\\Ascension\.exe$'; then
                 kill "$child" 2>/dev/null || true
             fi
         done
-        for ((waited = 0; waited < 30; waited++)); do
+        for ((waited = 0; waited < STOP_TIMEOUT; waited++)); do
             kill -0 "$pid" 2>/dev/null || break
             sleep 1
         done
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
             sleep 5
-            kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null || true
+                # gamescope dying does not take its children with it: reap whatever the snapshot still has.
+                for child in $tree; do
+                    kill -0 "$child" 2>/dev/null && kill -9 "$child" 2>/dev/null || true
+                done
+            fi
         fi
     fi
     if [[ -e "$STATE_DIR/started" ]]; then

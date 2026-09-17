@@ -59,7 +59,14 @@ echo ok
 EOF
     cat > "$WORK/bin/gamescope" <<'EOF'
 #!/usr/bin/env bash
-DISPLAY=:77 bash -c "exec -a 'X:\\lab\\Ascension.exe' sleep 600" &
+if [[ "${FAKE_STUBBORN:-}" == 1 ]]; then
+    # Ignores SIGTERM itself, and its "Ascension.exe" child ignores SIGTERM too: only SIGKILL on both
+    # PIDs stops this pair, exercising cmd_stop's escalation (Task 4 fix round 1).
+    trap '' TERM
+    DISPLAY=:77 bash -c 'exec -a "X:\lab\Ascension.exe" bash -c "trap : TERM; while :; do sleep 1; done"' &
+else
+    DISPLAY=:77 bash -c "exec -a 'X:\\lab\\Ascension.exe' sleep 600" &
+fi
 wait
 EOF
     cat > "$WORK/bin/xdotool" <<'EOF'
@@ -196,6 +203,18 @@ assert_contains "timed-out start message" "$WORK/out" "no client window after 1s
 assert_file "timed-out start lock present" "$COA_LAB_ROOT/state/lock"
 run_lab stop
 assert_absent "timed-out start lock released" "$COA_LAB_ROOT/state/lock"
+
+# escalation must reap the whole tree, not just gamescope (fix round 1): a gamescope and child that both
+# ignore SIGTERM force the SIGKILL branch, which must not leave the child orphaned.
+FAKE_STUBBORN=1 run_lab start 3
+assert_eq "stubborn start exits 0" "$?" "0"
+gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid")
+child_pid=$(pgrep -P "$gs_pid" | head -1)
+[[ -n "$child_pid" ]] && pass "stubborn child pid found" || fail "stubborn child pid found"
+COA_LAB_STOP_TIMEOUT=1 run_lab stop
+assert_absent "escalation lock released" "$COA_LAB_ROOT/state/lock"
+kill -0 "$gs_pid" 2>/dev/null && fail "escalation kills gamescope" || pass "escalation kills gamescope"
+kill -0 "$child_pid" 2>/dev/null && fail "escalation kills orphaned child" || pass "escalation kills orphaned child"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))
