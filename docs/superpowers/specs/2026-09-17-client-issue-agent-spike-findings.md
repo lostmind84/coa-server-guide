@@ -98,8 +98,35 @@ Result: **yes, two ways**
   screenshots (the agent had to crop and enlarge the chat to read it). The user raised it during the spike. The
   lab client must run at a higher resolution; see the resolution check below.
 
+## Resolution check
+
+At the user's request the lab client moved from 800x600 to `gxResolution "1920x1080"` with gamescope
+`-W 1920 -H 1080 -w 1920 -h 1080`. The window is 1920x1080, the chat is readable in screenshots without
+enlarging, and the scaled login click (`HEIGHT * 315 / 600`) still works. The user chose to keep 1080p.
+
 ## User client untouched
-Result: unverified
+Result: **untouched by the spike**
+
+- `sha256sum -c` against the baseline reported 12 changed files, and 221 files exist against 189 in the
+  baseline (taken 11:30:18).
+- Every changed or new file is under account `LOCAL` or `WTF/Custom`, dated 11:40:24 to 11:55:29, for characters
+  the lab never used (Gdfgfdgdf, Dsqdsq, Dzadaz). The lab client first started at 12:02:02 and uses account
+  `LABSPIKE` in its own directory. No file of the user's client changed after 11:56.
+- Conclusion: the user's client was used between 11:40 and 11:55 (its realmlist points at slot 2, port 3824),
+  independently of the spike (the user confirmed manual tests). The baseline approach works, but a baseline must be taken right before the lab
+  starts, or the check must be limited to files modified after the lab start.
 
 ## Verdict and spec changes
-Result: unverified
+Result: **go for Milestones 1-4**
+
+- Q1 yes, Q2 yes (keyboard only), Q3 yes (SavedVariables after `/reload`), Q4 yes for requests, Q5 yes.
+- Chosen for Milestone 1: `hyprctl eval` + `hl.exec_cmd` launch on workspace 9, `xdotool` on gamescope's
+  display, `magick import` screenshots, stop by PID, 1920x1080.
+- Chosen for Milestone 2: CoaProbe answers in SavedVariables, read after a typed `/reload`; requests typed, with
+  the server-message path kept as an option.
+- Spec changes: reflink copy instead of hard links, launcher commands and Hyprland 0.56 launch form, CoaProbe
+  install-before-start and output channel, lab `WTF` without the user's remembered account, 1080p, character
+  creation through Ghost, Milestone 0 marked done, open questions updated.
+- State left behind: lab copies kept (`~/CoaServer/client-lab`, `~/Games/umu/coa-client-lab`) with the throwaway
+  `CoaProbeSpike` addon; throwaway scripts in `~/CoaServer/client-lab-spike`; accounts `labspike` and `labsender`
+  (GM 3, characters `Labspike` and `Labsender`) remain in slot 3's database; slot 3 released.
