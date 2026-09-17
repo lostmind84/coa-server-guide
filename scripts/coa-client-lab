@@ -187,9 +187,10 @@ cmd_chat() {
 cmd_login() {
     [[ $# -eq 2 ]] || die "usage: coa-client-lab login ACCOUNT PASSWORD"
     require_running
-    local account="$1" password="$2" backspaces
+    local account="$1" password="$2" backspaces geometry
     backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
-    eval "$(xdotool getwindowgeometry --shell "$WINDOW")"
+    geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
+    eval "$geometry"
     "$SLEEP" 20
     xdotool mousemove --window "$WINDOW" $((WIDTH / 2)) $((HEIGHT * 315 / 600)) click 1
     "$SLEEP" 0.5

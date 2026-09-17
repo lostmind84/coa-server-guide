@@ -65,7 +65,7 @@ EOF
 printf 'xdotool DISPLAY=%s %s\n' "$DISPLAY" "$*" >> "$FAKE_LOG"
 case "$1" in
     search) echo 4242 ;;
-    getwindowgeometry) printf 'WINDOW=4242\nX=0\nY=0\nWIDTH=1920\nHEIGHT=1080\nSCREEN=0\n' ;;
+    getwindowgeometry) printf 'WINDOW=4242\nX=0\nY=0\nWIDTH=1280\nHEIGHT=720\nSCREEN=0\n' ;;
 esac
 EOF
     cat > "$WORK/bin/magick" <<'EOF'
@@ -147,7 +147,7 @@ assert_contains "key sends keys" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4
 
 : > "$FAKE_LOG"
 run_lab login labspike secretpw
-assert_contains "login clicks the account field" "$FAKE_LOG" "mousemove --window 4242 960 567 click 1"
+assert_contains "login clicks the account field" "$FAKE_LOG" "mousemove --window 4242 640 378 click 1"
 assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 60 labspike"
 assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 60 secretpw"
 assert_eq "login enters world twice Return" "$(grep -c 'key --window 4242 Return$' "$FAKE_LOG")" "2"
