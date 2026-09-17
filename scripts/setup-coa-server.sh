@@ -69,11 +69,6 @@ actual=$(sha256sum "$DUMP" | cut -c1-64)
 [[ "$expected" == "$actual" ]] || die "database dump checksum does not match snapshot.json"
 info "repack dump checksum OK"
 
-gameplay_test="$REPO/modules/mod-ascension-compat/src/CoAGameplayTest.cpp"
-if [[ -f "$gameplay_test" ]] && ! grep -q "boost/bind/placeholders.hpp" "$gameplay_test"; then
-    info "WARNING: $gameplay_test lacks the Boost placeholders include; the build fails on Linux"
-    info "         (see PR #243 in jealous-sound/azerothcore-wotlk-coa)."
-fi
 [[ "$(id -u)" == "1000" ]] || info "WARNING: uid $(id -u) != 1000; DOCKER_USER_ID/DOCKER_GROUP_ID in .env must match the owner of $COA_ROOT"
 
 cd "$REPO"

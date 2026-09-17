@@ -1,7 +1,7 @@
 # CoA server with Docker: command sequence
 
-Commands only. Explanations, checks and pitfalls: [README.md](README.md). Automated version of steps 4–8:
-[`scripts/setup-coa-server.sh`](scripts/setup-coa-server.sh).
+Commands only. Explanations, checks and pitfalls: [README.md](README.md). Automated version of the build and steps 3–6:
+[`scripts/setup-coa-server.sh`](scripts/setup-coa-server.sh) (it does not install the client DBC set of step 3).
 
 Assumes: Linux, Docker with Compose and buildx, uid 1000, the client/patch/repack archives extracted under
 `~/CoaServer/{client,repack}`.
@@ -11,10 +11,6 @@ Assumes: Linux, Docker with Compose and buildx, uid 1000, the client/patch/repac
 ```bash
 git clone https://github.com/jealous-sound/azerothcore-wotlk-coa.git ~/Projects/azerothcore-wotlk-coa
 cd ~/Projects/azerothcore-wotlk-coa
-# Until PR #243 is merged: add the Boost fix
-grep -q "boost/bind/placeholders.hpp" modules/mod-ascension-compat/src/CoAGameplayTest.cpp || \
-  sed -i 's|#include <boost/property_tree/json_parser.hpp>|#include <boost/bind/placeholders.hpp>\n&|' \
-  modules/mod-ascension-compat/src/CoAGameplayTest.cpp
 docker compose build
 ```
 

@@ -1,22 +1,31 @@
 # Conquest of Azeroth (CoA) server on Linux with Docker
 
 Step-by-step guide to run the **Conquest of AzerothCore** server on a Linux PC without installing its build
-dependencies on the host, laid out so it can later move to a VPS with few changes.
+dependencies on the host, laid out so it can later move to a VPS with few changes. A second part documents the
+tooling used to fix and test CoA issues: isolated server slots for parallel work, a preflight check, and a lab copy
+of the game client for agents.
 
 - Commands only: [QUICKSTART.md](QUICKSTART.md)
 - Automated steps 8–11: [`scripts/setup-coa-server.sh`](scripts/setup-coa-server.sh)
+- Contributor tooling: [Part 2](#part-2-contributor-tooling)
 
-Status on 2026-09-15: steps 1–13 were run and verified on the test machine: server up, Ascension data loaded, GM
-password changed, client logged in, custom-class character created and **in the world**. The setup script was
-syntax-checked and its hash conversion was checked read-only against the running database; a full run on a clean
-machine has not been done. In-game gameplay beyond world entry was not tested.
+This is a community guide, not part of the CoA project. It does not ship or link any game archive.
 
-| Item | Version used |
+**Status.** Steps 1–13 were first run end to end on 2026-09-15: server up, Ascension data loaded, GM password
+changed, client logged in, custom-class character created and **in the world**. Steps 7 and 8 were updated on
+2026-09-17 for the client DBC set required since
+[#1498](https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/1498). The setup script has not had a full run
+on a clean machine. In-game gameplay beyond world entry is out of scope. The repository moves fast: when a step
+disagrees with the code, the code wins.
+
+| Item | Version of the first walkthrough |
 | --- | --- |
-| Server repository | [`jealous-sound/azerothcore-wotlk-coa`](https://github.com/jealous-sound/azerothcore-wotlk-coa) `main` at `bb1d48a5f` (PR #235) + Boost build fix ([PR #243](https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/243)) |
-| Repack | `ability-fixes-20260914` (source `126ee7d`, after PRs #130/#133) |
+| Server repository | [`jealous-sound/azerothcore-wotlk-coa`](https://github.com/jealous-sound/azerothcore-wotlk-coa) `main` at `bb1d48a5f` |
+| Repack | `ability-fixes-20260914` (source `126ee7d`) |
 | Client patch | `ability-fixes-20260914`, client revision 3 |
-| Test machine | Arch Linux, Docker + Compose + buildx, 16 cores, 125 GB RAM, uid 1000 |
+| Host | Arch Linux x86_64, Docker with Compose and buildx, uid 1000 |
+
+# Part 1: run a CoA server
 
 ---
 
@@ -121,16 +130,8 @@ docker run --rm --entrypoint /azerothcore/env/dist/bin/worldserver acore/ac-wotl
 ```
 
 - `./acore.sh docker build` runs exactly `docker compose build`.
-- First build observed: 1,340 targets in ~392 s, 0 errors, 55 warnings. A rebuild after a one-file change took
-  ~23 s of compilation thanks to ccache.
-- On `main` at `bb1d48a5f` the build fails until PR #243 is merged (see [Known pitfalls](#known-pitfalls)).
-  Apply the one-line fix first:
-
-```bash
-grep -q "boost/bind/placeholders.hpp" modules/mod-ascension-compat/src/CoAGameplayTest.cpp || \
-  sed -i 's|#include <boost/property_tree/json_parser.hpp>|#include <boost/bind/placeholders.hpp>\n&|' \
-  modules/mod-ascension-compat/src/CoAGameplayTest.cpp
-```
+- First build observed: 1,340 targets in ~392 s on a 16-core machine, 0 errors, 55 warnings. A rebuild after a
+  one-file change took ~23 s of compilation thanks to ccache.
 
 ## 6. Download and verify the client, patch and repack
 
@@ -429,16 +430,123 @@ sudo mkdir -p /srv/coa && sudo chown "$(id -u):$(id -g)" /srv/coa
   --repack ~/CoaServer/repack/CoA-Repack
 ```
 
-- Verifies the dump checksum, warns when the Boost fix is missing, keeps existing `.env`, `coa.env`, data and module
+- Verifies the dump checksum, keeps existing `.env`, `coa.env`, data and module
   configs, never imports over an existing `acore_world`, and does not restart running servers.
 - Converts every CRLF update hash found in the checkout (guarded by the Windows hash), runs `dbimport`, fails on a
   non-zero exit, warns on `Reapplying update`, waits for `(worldserver-daemon) ready`.
 - Does not patch the client, change the GM password or launch the client.
 
-## Parallel agents: server slots
+## Deploying to a VPS (not tested)
+
+Same repository, same `/srv/coa` layout. Differences:
+
+1. Ports: `DOCKER_AUTH_EXTERNAL_PORT=3724` and `DOCKER_WORLD_EXTERNAL_PORT=8085` (all interfaces); keep MySQL and
+   SOAP on `127.0.0.1`. Open only 3724/tcp and 8085/tcp in the firewall.
+2. Realm address: `UPDATE acore_auth.realmlist SET address = '<public IP or DNS>' WHERE id = 1;`
+3. Client: `set realmlist <server address>` in `realmlist.wtf`. The patched client accepts a remote world address
+   (`apps/client-compat/README.md`) and `AllowRemoteClients = 1` is already set.
+4. Images: build on the VPS, or push them to a registry under your own name (not `acore/…`, see pitfalls).
+5. Data: copy `/srv/coa/server-data` and `coa.env` (`rsync`), then import a `mysqldump` made on the PC.
+6. Security: new MySQL root password, GM password changed, OS kept up to date.
+
+## Automated gameplay tests
+
+The repository ships scenario tests that run inside a disposable worldserver with copied databases. From the
+repository root, after building the server images:
+
+    mkdir -p .cache/coa-gameplay-tests
+    docker compose -f docker-compose.yml -f apps/coa-gameplay-test/docker/compose.yml --profile tests \
+      build ac-gameplay-test
+    docker compose -f docker-compose.yml -f apps/coa-gameplay-test/docker/compose.yml --profile tests \
+      run --rm ac-gameplay-test run apps/coa-gameplay-test/scenarios/frostbolt.json
+
+A run copies the three databases (about 3 minutes here), runs the scenario and drops the copies. Results go to
+`.cache/coa-gameplay-tests/`. Details: `apps/coa-gameplay-test/README.md`.
+
+## Known pitfalls
+
+- **Never run `docker compose pull`** (or `./acore.sh docker pull`): locally built images use the same names as
+  the official images and would be replaced by versions without the CoA module.
+- **Do not run `docker compose up` on all services before steps 8–10**: it creates a stock world database and
+  downloads stock client data over the CoA files.
+- **`.env` vs `coa.env`**: Compose settings (password, ports, paths) belong in the repository `.env`. Anything in
+  `coa.env` is injected into the server containers.
+- **Missing module configs**: without `etc/modules/*.conf`, module settings silently fall back to code defaults
+  (e.g. `AscensionCompat.PlaintextWorldHeaders` defaults to `false` in code, `1` in the config).
+- **CRLF update hashes**: a Windows-made database used by the Linux updater reapplies CRLF files unless their
+  hashes are converted (step 10).
+- **Client frozen at 100% on the world loading screen (Wine/Proton)**: when entering the world, `Extensions.dll`
+  loads `DivxTac.dll`, a mixed-mode .NET assembly (C++/CLI, `ILONLY=False`, runtime `v4.0.30319`). Wine loads it
+  through wine-mono from `_CorDllMain` while holding the DLL loader lock; the main thread never returns and every
+  other thread waits on `loader_section` (Proton log: `err:sync … blocked by <main thread>`). Server side the
+  character is online, and the client stops reading its socket. Fix: `WINEDLLOVERRIDES="divxtac=d"` (or move
+  `DivxTac.dll` out of the client folder). Ruled out while investigating: client patch revision (rev 3 and rev 4
+  behave the same), the full appearance catalog snapshot (`AscensionCompat.UnlockLocalAppearanceCatalog = 0` does
+  not help), anti-cheat alerts (none recorded), the `MemoryBridge … oversized_message` line (also present in older
+  working sessions).
+- **Ascension client and Docker networking**: `src/server/game/Server/WorldSocket.cpp` enables the Ascension
+  protocol only for loopback connections unless `AscensionCompat.AllowRemoteClients = 1`. Behind Docker networking
+  the connection does not come from `127.0.0.1` (the server sees the bridge gateway, e.g. `172.19.0.1`), hence
+  `AllowRemoteClients = 1` in step 9. Before
+  [PR #261](https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/261) (merged 2026-09-15) talent and passive
+  modifiers were missing from client tooltips behind Docker; update an older checkout if you see that.
+- **Versions must match**: server binary, database, server DBC and client patch go together. A binary older than
+  the database causes ACE00004-type errors (`Unknown column ...`).
+- **World package shipped in the repository** (`data/coa-world`, `coa-world-20260912`): older than the repack dump.
+  If used anyway, `apps/coa-world/world_data.py bootstrap` needs an empty world database, a MySQL 8.4 client
+  (`--no-login-paths` is missing from Ubuntu's 8.0 client) and Python 3.11+. Tested: `mysql:8.4` +
+  `microdnf install -y python3.12` works.
+- **Stock AzerothCore client data**: enough to start the core, but without the Ascension DBC files (empty
+  collections, partial CoA content).
+
+# Part 2: contributor tooling
+
+Tools for fixing and testing CoA issues on a Docker setup built with Part 1. They were written for one workstation
+and made configurable afterwards: defaults assume the layout of Part 1 (`~/Projects/azerothcore-wotlk-coa`,
+`~/CoaServer`, `/srv/coa`). Install them by linking the scripts into your `PATH`:
+
+```bash
+git clone https://github.com/lostmind84/coa-server-guide.git ~/Projects/coa-server-guide
+ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab} ~/.local/bin/
+```
+
+## Prerequisites
+
+| Tool | Needed by | Notes |
+| --- | --- | --- |
+| Part 1 done | everything | a working slot 1 stack, `.env` in the server checkout, `/srv/coa` layout |
+| Python 3 | `coa-preflight.py`, `coa-probe-read.py` | imports `apps/coa-dbc/client_dbc.py` from the checkout under test |
+| [mpqcli](https://github.com/TheGrayDot/mpqcli) | preflight DBC checks, step 8 | on `PATH`; without it the DBC checks FAIL (`--skip-dbc` skips them) |
+| [ConquestOfAzerothGhost](https://github.com/lostmind84/ConquestOfAzerothGhost) + Go | `coa-slot create`, e2e tests | protocol-level bot tests; `coa-slot create` derives each slot's `ghost.env` from the Ghost checkout's `.env` (see the Ghost README) |
+| btrfs or xfs | `coa-client-lab create` | the lab copy is a reflink copy of the client and its Wine prefix |
+| Hyprland 0.56 (Lua config), gamescope, xdotool, ImageMagick | `coa-client-lab` | Hyprland only: the lab client is launched with `hyprctl eval` on a dedicated workspace |
+| lua5.1 | CoaProbe addon tests | tests only |
+
+## Script configuration
+
+Every default can be overridden with an environment variable:
+
+| Variable | Default | Used by |
+| --- | --- | --- |
+| `COA_MAIN_REPO` | `~/Projects/azerothcore-wotlk-coa` | `coa-slot` (main checkout, source of `.env`) |
+| `COA_GHOST_REPO` | `~/Projects/ConquestOfAzerothGhost` | `coa-slot` |
+| `COA_SLOTS_ROOT` | `~/CoaServer/slots` | `coa-slot` |
+| `COA_REPACK_DUMP` | `~/CoaServer/repack/CoA-Repack/Database/Clean/databases.sql.gz` | `coa-slot create`, `reset-db` |
+| `COA_USER_CLIENT` | `~/CoaServer/client/ascension-live` | `coa-client-lab create` |
+| `COA_USER_PREFIX` | `~/Games/umu/coa-client` | `coa-client-lab create` |
+| `COA_LAB_ROOT`, `COA_LAB_PREFIX` | `~/CoaServer/client-lab`, `~/Games/umu/coa-client-lab` | `coa-client-lab` |
+| `COA_PROTONPATH` | `~/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64` | `coa-client`, `coa-client-lab` |
+| `COA_LAB_WORKSPACE` | `9` | `coa-client-lab` |
+| `COA_CLIENT_DIR`, `COA_WINEPREFIX`, `COA_LOG` | see `scripts/coa-client` | `coa-client` |
+
+Fixed paths: slot build clones are `~/Projects/azerothcore-wotlk-coa-build-sN`, and slot 1 uses `/srv/coa`.
+`coa-preflight.py` takes `--repo`, `--client-data`, `--server-dbc`, `--expected`, `--worldserver` and `--database`
+options instead (`--help`).
+
+## Parallel work: server slots
 
 One stack serves one agent at a time: a rebuild or restart by one agent silently invalidates the tests of another.
-[`scripts/coa-slot`](scripts/coa-slot) (linked as `~/.local/bin/coa-slot`) runs up to three isolated stacks side by
+[`scripts/coa-slot`](scripts/coa-slot) runs up to three isolated stacks side by
 side, so up to three agents can fix and test batches at once without a shared server lock.
 
 | Slot | Compose project | Containers | Image tag | Ports auth / world / MySQL / SOAP | Config and logs |
@@ -480,9 +588,31 @@ coa-slot stop 2 && coa-slot release 2         # batch done
 - Resources: a running slot used about 5 GiB of RAM here (worldserver 3.8 GiB, MySQL 1.3 GiB). Builds of different
   slots wait for each other at the compile step because the Dockerfile's ccache mount is `sharing=locked`.
 
+## Preflight: can a test result be trusted?
+
+[`scripts/coa-preflight.py`](scripts/coa-preflight.py) checks, read-only, that a test result on the local server
+means something. Run it before reproducing an issue and again after every fetch, rebuild, restart, SQL import,
+client patch or DBC install. A FAIL means no test result is trustworthy until it is fixed.
+
+| Check | Fails when |
+| --- | --- |
+| `git` | the checkout lacks commits of `origin/main` |
+| `server` | the running worldserver was not built from the checked-out commit, or is not ready |
+| `db` | an SQL update shipped by the checkout is not recorded as applied |
+| `client` | a local patch replaced an archive the launcher keeps as `NAME.ORIGINAL` (reported) |
+| `dbc` | the server's `dbc/` does not load with the checkout's formats, or differs from the DBC set the installed client loads |
+
+```bash
+coa-slot preflight 2                    # against a slot (see below)
+python3 scripts/coa-preflight.py --help # standalone, defaults to slot 1
+```
+
+Differences that belong to work in progress go in `~/CoaServer/preflight-expected.txt`, one per line:
+`<dbc file>  <record id or *>  <note>`. An expected difference that is absent is reported too.
+
 ## Client lab for agents
 
-[`scripts/coa-client-lab`](scripts/coa-client-lab) (linked as `~/.local/bin/coa-client-lab`) runs a separate copy
+[`scripts/coa-client-lab`](scripts/coa-client-lab) runs a separate copy
 of the client so an agent can reproduce client-side issues without touching your client. The lab client runs in a
 nested gamescope window (1920x1080) on Hyprland workspace 9; you can watch it there. Keyboard input and screenshots
 go through gamescope's own X display, so your focus and mouse are never used. One lab client runs at a time.
@@ -512,75 +642,6 @@ including a 10-second wait so the reloaded interface accepts input again). Tests
 `lua5.1 addons/CoaProbe/tests/run.lua` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`
 (`scripts/tests/coa-client-lab.test.sh` needs `python3`).
 
-## Deploying to a VPS (not tested)
-
-Same repository, same `/srv/coa` layout. Differences:
-
-1. Ports: `DOCKER_AUTH_EXTERNAL_PORT=3724` and `DOCKER_WORLD_EXTERNAL_PORT=8085` (all interfaces); keep MySQL and
-   SOAP on `127.0.0.1`. Open only 3724/tcp and 8085/tcp in the firewall.
-2. Realm address: `UPDATE acore_auth.realmlist SET address = '<public IP or DNS>' WHERE id = 1;`
-3. Client: `set realmlist <server address>` in `realmlist.wtf`. The patched client accepts a remote world address
-   (`apps/client-compat/README.md`) and `AllowRemoteClients = 1` is already set.
-4. Images: build on the VPS, or push them to a registry under your own name (not `acore/…`, see pitfalls).
-5. Data: copy `/srv/coa/server-data` and `coa.env` (`rsync`), then import a `mysqldump` made on the PC.
-6. Security: new MySQL root password, GM password changed, OS kept up to date.
-
-## Automated gameplay tests
-
-The repository ships scenario tests that run inside a disposable worldserver with copied databases. From the
-repository root, after building the server images:
-
-    mkdir -p .cache/coa-gameplay-tests
-    docker compose -f docker-compose.yml -f apps/coa-gameplay-test/docker/compose.yml --profile tests \
-      build ac-gameplay-test
-    docker compose -f docker-compose.yml -f apps/coa-gameplay-test/docker/compose.yml --profile tests \
-      run --rm ac-gameplay-test run apps/coa-gameplay-test/scenarios/frostbolt.json
-
-A run copies the three databases (about 3 minutes here), runs the scenario and drops the copies. Results go to
-`.cache/coa-gameplay-tests/`. Details: `apps/coa-gameplay-test/README.md`.
-
-## Known pitfalls
-
-- **Never run `docker compose pull`** (or `./acore.sh docker pull`): locally built images use the same names as
-  the official images and would be replaced by versions without the CoA module.
-- **Do not run `docker compose up` on all services before steps 8–10**: it creates a stock world database and
-  downloads stock client data over the CoA files.
-- **Build failure since PR #235** (`bb1d48a5f`): `CoAGameplayTest.cpp` fails with
-  `fatal error: no member named 'placeholders' in namespace 'boost'`. `deps/boost/CMakeLists.txt` defines
-  `BOOST_BIND_NO_PLACEHOLDERS` globally, so Boost 1.83's `bind.hpp` skips `placeholders.hpp`, which the
-  Boost.PropertyTree JSON parser needs. Fix: `#include <boost/bind/placeholders.hpp>` before
-  `<boost/property_tree/json_parser.hpp>`. Verified: full Docker build passes (1,362/1,362). Proposed upstream in
-  [PR #243](https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/243).
-- **`.env` vs `coa.env`**: Compose settings (password, ports, paths) belong in the repository `.env`. Anything in
-  `coa.env` is injected into the server containers.
-- **Missing module configs**: without `etc/modules/*.conf`, module settings silently fall back to code defaults
-  (e.g. `AscensionCompat.PlaintextWorldHeaders` defaults to `false` in code, `1` in the config).
-- **CRLF update hashes**: a Windows-made database used by the Linux updater reapplies CRLF files unless their
-  hashes are converted (step 10).
-- **Client frozen at 100% on the world loading screen (Wine/Proton)**: when entering the world, `Extensions.dll`
-  loads `DivxTac.dll`, a mixed-mode .NET assembly (C++/CLI, `ILONLY=False`, runtime `v4.0.30319`). Wine loads it
-  through wine-mono from `_CorDllMain` while holding the DLL loader lock; the main thread never returns and every
-  other thread waits on `loader_section` (Proton log: `err:sync … blocked by <main thread>`). Server side the
-  character is online, and the client stops reading its socket. Fix: `WINEDLLOVERRIDES="divxtac=d"` (or move
-  `DivxTac.dll` out of the client folder). Ruled out while investigating: client patch revision (rev 3 and rev 4
-  behave the same), the full appearance catalog snapshot (`AscensionCompat.UnlockLocalAppearanceCatalog = 0` does
-  not help), anti-cheat alerts (none recorded), the `MemoryBridge … oversized_message` line (also present in older
-  working sessions).
-- **Ascension client and Docker networking**: `src/server/game/Server/WorldSocket.cpp` enables the Ascension
-  protocol only for loopback connections unless `AscensionCompat.AllowRemoteClients = 1`. Behind Docker networking
-  the connection does not come from `127.0.0.1` (the server sees the bridge gateway, e.g. `172.19.0.1`). Until
-  [PR #261](https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/261) (issue #260) is merged, the Ascension
-  spell-modifier layout and the class-10 mapping still require the literal address `127.0.0.1`: behind Docker,
-  talent/passive modifiers are missing from client tooltips (e.g. Starcaller Moon Arrow shows 30 yd instead of 45).
-- **Versions must match**: server binary, database, server DBC and client patch go together. A binary older than
-  the database causes ACE00004-type errors (`Unknown column ...`).
-- **World package shipped in the repository** (`data/coa-world`, `coa-world-20260912`): older than the repack dump.
-  If used anyway, `apps/coa-world/world_data.py bootstrap` needs an empty world database, a MySQL 8.4 client
-  (`--no-login-paths` is missing from Ubuntu's 8.0 client) and Python 3.11+. Tested: `mysql:8.4` +
-  `microdnf install -y python3.12` works.
-- **Stock AzerothCore client data**: enough to start the core, but without the Ascension DBC files (empty
-  collections, partial CoA content).
-
 ## Contributing back
 
 - You need write access or a GitHub fork of `jealous-sound/azerothcore-wotlk-coa` (external contributors open PRs
@@ -589,8 +650,10 @@ A run copies the three databases (about 3 minutes here), runs the scenario and d
   limits*, *Data/source dependencies* (confirm applied SQL is unchanged, no credentials, profiles or game archives).
 - `.github/CONTRIBUTING.md`: focused changes; report source checks, builds and in-game tests separately. GitHub
   Actions only runs repository checks, not a server build; PRs from forks may wait for maintainer approval to run.
-- Commit/PR title: `Type(Scope): Subject`, max 50 characters, imperative, capitalized, no period; body lines max
-  72 characters. Everything in English. Disclose AI assistance.
+- Commit/PR title: `type(Scope/Subscope): short description`, imperative, max 50 characters, as in
+  `fix(CoA/Chronomancer): implement Displacement pull-and-cleanse`; the repository's
+  `.agents/skills/generate-pr-description` skill describes the PR format. Everything in English. Disclose AI
+  assistance. Put `Fixes #N` in the PR body so the issue closes on merge.
 - Local checks matching CI: `python apps/codestyle/codestyle-cpp.py --files <path>`,
   `python -B tools/check_repository.py`, `python -B apps/codestyle/tests/test_scoped_lint.py`,
   `python -B modules/mod-ascension-compat/tests/client_compat/run.py`, `git diff --check`.
@@ -614,7 +677,6 @@ CoA project
 - mod-playerbots: <https://github.com/jealous-sound/mod-playerbots>
 - AzerothCore WotLK with playerbots: <https://github.com/jealous-sound/azerothcore-wotlk-playerbot>
 - PR #235 (gameplay test harness): <https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/235>
-- PR #243 (Boost build fix): <https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/243>
 - Client, client patch and repack downloads: shared by the fork author in the project's Discord channel (not linked
   here; game archives must not be redistributed through the repository).
 
