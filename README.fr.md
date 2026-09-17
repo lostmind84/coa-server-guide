@@ -422,6 +422,56 @@ sudo mkdir -p /srv/coa && sudo chown "$(id -u):$(id -g)" /srv/coa
   `(worldserver-daemon) ready`.
 - Ne patche pas le client, ne change pas le mot de passe GM et ne lance pas le client.
 
+## Agents en parallèle : slots de serveur
+
+Une stack ne sert qu'un agent à la fois : un rebuild ou un redémarrage par un agent invalide sans prévenir les tests
+d'un autre. [`scripts/coa-slot`](scripts/coa-slot) (lien `~/.local/bin/coa-slot`) fait tourner jusqu'à trois stacks
+isolées côte à côte : jusqu'à trois agents corrigent et testent des lots en même temps, sans verrou de serveur
+partagé.
+
+| Slot | Projet Compose | Conteneurs | Tag d'image | Ports auth / world / MySQL / SOAP | Config et logs |
+|------|----------------|------------|-------------|-----------------------------------|----------------|
+| 1 | `azerothcore-wotlk-coa` | `ac-*` | `master` | 3724 / 8085 / 3306 / 7878 | `/srv/coa/etc`, `/srv/coa/logs` |
+| 2 | `coa-s2` | `coa-s2-*` | `s2` | 3824 / 8185 / 3406 / 7978 | `~/CoaServer/slots/s2/{etc,logs}` |
+| 3 | `coa-s3` | `coa-s3-*` | `s3` | 3924 / 8285 / 3506 / 8078 | `~/CoaServer/slots/s3/{etc,logs}` |
+
+Le slot 1 est le serveur d'origine ; le client de jeu s'y connecte. Chaque slot a aussi son volume de base, son clone
+de build `~/Projects/azerothcore-wotlk-coa-build-sN` (`origin` = GitHub, remote `local` = le dépôt principal) et son
+fichier d'environnement Ghost `~/CoaServer/slots/sN/ghost.env`. Les données serveur (`/srv/coa/server-data`, en
+lecture seule dans les conteneurs) sont partagées, sauf pour un slot créé avec `--own-data`.
+
+```bash
+coa-slot list                                 # détenteur, commit déployé et état du worldserver de chaque slot
+coa-slot claim 2 "pets batch"                 # prendre un slot libre (échoue s'il est tenu par un autre agent)
+coa-slot claim-issues 2 209 285 1425          # réserver des issues (tout ou rien, entre slots)
+coa-slot create 2                             # première fois : copie de config, clone, base depuis le dump du repack
+coa-slot deploy 2 fix/coa-summons-pets        # checkout dans le clone, build :s2, db-import, redémarrage, attente
+coa-slot preflight 2                          # coa-preflight.py sur le slot 2
+set -a; . ~/CoaServer/slots/s2/ghost.env; set +a
+go test -tags=e2e -p 1 ./e2e/coa/summonspets -count=1 -v
+coa-slot compose 2 logs --tail 50 ac-worldserver
+coa-slot stop 2 && coa-slot release 2         # lot terminé
+```
+
+- `create` copie `/srv/coa/etc` une fois (les tests Ghost modifient `worldserver.conf`), remplit la base des slots 2
+  et 3 depuis le dump du repack comme `setup-coa-server.sh` (port du realm = port world du slot, empreintes CRLF
+  converties) et écrit `compose.env`, `compose.override.yml` (noms de conteneurs) et `ghost.env` (ports, chemin DBC,
+  chemin de config).
+- `deploy` accepte une branche du dépôt principal (branches de worktree comprises, sans push), une branche d'origin ou
+  un commit. Un nom de branche présent dans le dépôt principal passe avant origin : déployer `origin/main`, pas
+  `main`. Il refuse un clone avec des modifications non commitées et écrit `branche sha date` dans
+  `~/CoaServer/slots/sN/state`.
+- Le SQL appliqué par une branche reste dans la base du slot. Avant de déployer une branche qui ne l'a pas :
+  `coa-slot reset-db N` (slots 2 et 3 seulement).
+- `destroy N --yes` (slots 2 et 3, libérés avant) supprime conteneurs, volume de base, images du slot et
+  `~/CoaServer/slots/sN`, et garde le clone de build.
+- Les réservations sont de simples fichiers : `~/CoaServer/slots/sN/owner` (créé avec `noclobber`) et
+  `~/CoaServer/slots/issues.tsv` (mis à jour sous `flock`). Elles coordonnent les agents ; elles ne bloquent pas une
+  commande tapée à la main.
+- Ressources : un slot démarré utilisait ici environ 5 Gio de RAM (worldserver 3,8 Gio, MySQL 1,3 Gio). Les builds
+  de slots différents s'attendent à l'étape de compilation, car le montage ccache du Dockerfile est
+  `sharing=locked`.
+
 ## Déployer sur un VPS (pas testé)
 
 Même dépôt, même organisation `/srv/coa`. Différences :

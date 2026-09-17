@@ -412,6 +412,51 @@ sudo mkdir -p /srv/coa && sudo chown "$(id -u):$(id -g)" /srv/coa
   non-zero exit, warns on `Reapplying update`, waits for `(worldserver-daemon) ready`.
 - Does not patch the client, change the GM password or launch the client.
 
+## Parallel agents: server slots
+
+One stack serves one agent at a time: a rebuild or restart by one agent silently invalidates the tests of another.
+[`scripts/coa-slot`](scripts/coa-slot) (linked as `~/.local/bin/coa-slot`) runs up to three isolated stacks side by
+side, so up to three agents can fix and test batches at once without a shared server lock.
+
+| Slot | Compose project | Containers | Image tag | Ports auth / world / MySQL / SOAP | Config and logs |
+|------|-----------------|------------|-----------|-----------------------------------|-----------------|
+| 1 | `azerothcore-wotlk-coa` | `ac-*` | `master` | 3724 / 8085 / 3306 / 7878 | `/srv/coa/etc`, `/srv/coa/logs` |
+| 2 | `coa-s2` | `coa-s2-*` | `s2` | 3824 / 8185 / 3406 / 7978 | `~/CoaServer/slots/s2/{etc,logs}` |
+| 3 | `coa-s3` | `coa-s3-*` | `s3` | 3924 / 8285 / 3506 / 8078 | `~/CoaServer/slots/s3/{etc,logs}` |
+
+Slot 1 is the original server; the game client connects to it. Each slot also has its own database volume, build
+clone `~/Projects/azerothcore-wotlk-coa-build-sN` (`origin` = GitHub, remote `local` = the main checkout) and Ghost
+environment file `~/CoaServer/slots/sN/ghost.env`. Server data (`/srv/coa/server-data`, read-only in the
+containers) is shared unless the slot was created with `--own-data`.
+
+```bash
+coa-slot list                                 # holder, deployed commit and worldserver state of every slot
+coa-slot claim 2 "pets batch"                 # take a free slot (fails if another agent holds it)
+coa-slot claim-issues 2 209 285 1425          # reserve issues (all or nothing, across slots)
+coa-slot create 2                             # first use: config copy, build clone, database from the repack dump
+coa-slot deploy 2 fix/coa-summons-pets        # checkout in the clone, build :s2, db-import, restart, wait ready
+coa-slot preflight 2                          # coa-preflight.py against slot 2
+set -a; . ~/CoaServer/slots/s2/ghost.env; set +a
+go test -tags=e2e -p 1 ./e2e/coa/summonspets -count=1 -v
+coa-slot compose 2 logs --tail 50 ac-worldserver
+coa-slot stop 2 && coa-slot release 2         # batch done
+```
+
+- `create` copies `/srv/coa/etc` once (Ghost tests edit `worldserver.conf`), seeds slots 2 and 3 from the repack
+  dump like `setup-coa-server.sh` (realm port set to the slot's world port, CRLF hashes converted), and writes
+  `compose.env`, `compose.override.yml` (container names) and `ghost.env` (ports, DBC path, config path).
+- `deploy` takes a branch of the main checkout (worktree branches included, no push needed), a branch of origin or
+  a commit. A branch name that exists in the main checkout wins over origin, so deploy `origin/main`, not `main`.
+  It refuses a clone with uncommitted changes and writes `branch sha date` to `~/CoaServer/slots/sN/state`.
+- SQL applied by one branch stays in the slot's database. Before deploying a branch without it:
+  `coa-slot reset-db N` (slots 2 and 3 only).
+- `destroy N --yes` (slots 2 and 3, released first) removes containers, database volume, the slot's images and
+  `~/CoaServer/slots/sN`, and keeps the build clone.
+- Claims are plain files: `~/CoaServer/slots/sN/owner` (created with `noclobber`) and `~/CoaServer/slots/issues.tsv`
+  (updated under `flock`). They coordinate agents; they do not block a command typed by hand.
+- Resources: a running slot used about 5 GiB of RAM here (worldserver 3.8 GiB, MySQL 1.3 GiB). Builds of different
+  slots wait for each other at the compile step because the Dockerfile's ccache mount is `sharing=locked`.
+
 ## Deploying to a VPS (not tested)
 
 Same repository, same `/srv/coa` layout. Differences:

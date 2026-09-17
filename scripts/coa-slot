@@ -1,0 +1,450 @@
+#!/usr/bin/env bash
+# Run up to three isolated CoA servers side by side, one per agent ("slot"), so parallel work
+# never shares a worldserver, database, image tag, port, config file or build clone.
+#
+# Slot 1 is the original stack (containers ac-*, image tag master, ports 3306/3724/8085/7878,
+# /srv/coa/etc and /srv/coa/logs); the game client uses it. Slots 2 and 3 add 100 and 200 to every port
+# and keep their own files under ~/CoaServer/slots/sN.
+set -euo pipefail
+
+MAIN_REPO="${COA_MAIN_REPO:-$HOME/Projects/azerothcore-wotlk-coa}"
+GHOST_REPO="${COA_GHOST_REPO:-$HOME/Projects/ConquestOfAzerothGhost}"
+SLOTS_ROOT="${COA_SLOTS_ROOT:-$HOME/CoaServer/slots}"
+REPACK_DUMP="${COA_REPACK_DUMP:-$HOME/CoaServer/repack/CoA-Repack/Database/Clean/databases.sql.gz}"
+UPSTREAM_URL="https://github.com/jealous-sound/azerothcore-wotlk-coa.git"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PREFLIGHT="$SCRIPT_DIR/coa-preflight.py"
+ISSUES="$SLOTS_ROOT/issues.tsv"
+
+usage() {
+    cat <<'EOF'
+Usage: coa-slot <command> [arguments]
+
+Coordination (no server is touched):
+  list                          every slot: owner, deployed commit, worldserver state, ports
+  claim N "<batch> <note>"      take slot N (fails if another agent holds it)
+  release N                     give slot N back and drop its issue claims
+  claim-issues N ISSUE...       reserve issue numbers for slot N (all or nothing)
+  issues                        list reserved issues
+  env N                         print slot N's paths, ports, containers and Ghost env file
+
+Server (the slot must be claimed first):
+  create N [--own-data]         prepare slot N: files, build clone, database seeded from the repack dump
+                                (--own-data: private copy of server-data, for batches that change server DBCs)
+  deploy N REF                  check out REF in the slot's build clone (a branch of the main checkout or of
+                                origin, or a commit), build, run db-import, restart, wait until ready
+  preflight N [ARGS]            coa-preflight.py against slot N (extra ARGS passed through, e.g. --skip-dbc)
+  compose N ARGS...             docker compose for slot N (e.g. logs --tail 50 ac-worldserver)
+  start N | stop N              start or stop slot N's containers without rebuilding
+  reset-db N                    slots 2-3: drop the database and seed it again from the repack dump
+  destroy N --yes               slots 2-3: remove containers, database, images and ~/CoaServer/slots/sN
+                                (the build clone is kept)
+EOF
+}
+
+step() { printf '==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+load_slot() {
+    [[ "${1:-}" =~ ^[123]$ ]] || die "slot must be 1, 2 or 3"
+    N="$1"
+    SLOT_DIR="$SLOTS_ROOT/s$N"
+    CLONE="$HOME/Projects/azerothcore-wotlk-coa-build-s$N"
+    local offset=$(((N - 1) * 100))
+    DB_PORT=$((3306 + offset)); AUTH_PORT=$((3724 + offset))
+    WORLD_PORT=$((8085 + offset)); SOAP_PORT=$((7878 + offset))
+    if [[ "$N" == 1 ]]; then
+        PROJECT="azerothcore-wotlk-coa"; PREFIX="ac"; TAG="master"
+        ETC="/srv/coa/etc"; LOGS="/srv/coa/logs"
+    else
+        PROJECT="coa-s$N"; PREFIX="coa-s$N"; TAG="s$N"
+        ETC="$SLOT_DIR/etc"; LOGS="$SLOT_DIR/logs"
+    fi
+    DATA="/srv/coa/server-data"
+    [[ -d "$SLOT_DIR/server-data" ]] && DATA="$SLOT_DIR/server-data"
+    DB="$PREFIX-database"; WORLD="$PREFIX-worldserver"; AUTH="$PREFIX-authserver"; DBIMPORT="$PREFIX-db-import"
+    OWNER="$SLOT_DIR/owner"; STATE="$SLOT_DIR/state"; GHOST_ENV="$SLOT_DIR/ghost.env"
+}
+
+require_claimed() {
+    [[ -s "$OWNER" ]] || die "slot $N is not claimed: run coa-slot claim $N \"<batch> <note>\" first"
+}
+
+require_created() {
+    [[ -f "$SLOT_DIR/compose.env" && -d "$CLONE/.git" ]] || die "slot $N is not created: run coa-slot create $N"
+}
+
+compose() {
+    docker compose -p "$PROJECT" --env-file "$SLOT_DIR/compose.env" \
+        -f "$CLONE/docker-compose.yml" -f "$SLOT_DIR/compose.override.yml" "$@"
+}
+
+# MySQL client inside the slot's database container; the root password never leaves the container.
+db() {
+    docker exec -i "$DB" sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$@"' sh "$@" \
+        2> >(grep -v "Using a password on the command line" >&2)
+}
+
+container_field() {
+    docker inspect -f "$2" "$1" 2>/dev/null || true
+}
+
+wait_db_healthy() {
+    compose up -d --no-deps ac-database
+    for _ in $(seq 1 60); do
+        [[ "$(container_field "$DB" '{{.State.Health.Status}}')" == "healthy" ]] && return 0
+        sleep 5
+    done
+    die "$DB did not become healthy"
+}
+
+env_value() {
+    grep -E "^$1=" "$2" | tail -1 | cut -d= -f2-
+}
+
+write_slot_files() {
+    local main_env="$MAIN_REPO/.env"
+    [[ -f "$main_env" ]] || die "$main_env not found"
+    (
+        umask 077
+        cat > "$SLOT_DIR/compose.env" <<EOF
+DOCKER_DB_ROOT_PASSWORD=$(env_value DOCKER_DB_ROOT_PASSWORD "$main_env")
+DOCKER_DB_EXTERNAL_PORT=127.0.0.1:$DB_PORT
+DOCKER_AUTH_EXTERNAL_PORT=127.0.0.1:$AUTH_PORT
+DOCKER_WORLD_EXTERNAL_PORT=127.0.0.1:$WORLD_PORT
+DOCKER_SOAP_EXTERNAL_PORT=127.0.0.1:$SOAP_PORT
+DOCKER_VOL_ETC=$ETC
+DOCKER_VOL_LOGS=$LOGS
+DOCKER_VOL_DATA=$DATA
+DOCKER_AC_ENV_FILE=$(env_value DOCKER_AC_ENV_FILE "$main_env")
+DOCKER_IMAGE_TAG=$TAG
+EOF
+        local ghost_src="$GHOST_REPO/.env"
+        [[ -f "$ghost_src" ]] || die "$ghost_src not found"
+        {
+            grep -vE '^E2E_(AUTH_ADDR|DBC_PATH|WORLDSERVER_CONF)=' "$ghost_src" \
+                | sed "s/@tcp(127\.0\.0\.1:3306)/@tcp(127.0.0.1:$DB_PORT)/"
+            echo "E2E_AUTH_ADDR='127.0.0.1:$AUTH_PORT'"
+            echo "E2E_DBC_PATH='$DATA/dbc'"
+            echo "E2E_WORLDSERVER_CONF='$ETC/worldserver.conf'"
+        } > "$GHOST_ENV"
+    )
+    cat > "$SLOT_DIR/compose.override.yml" <<EOF
+# Generated by coa-slot: container names of slot $N.
+services:
+  ac-database:
+    container_name: $DB
+  ac-db-import:
+    container_name: $DBIMPORT
+  ac-worldserver:
+    container_name: $WORLD
+  ac-authserver:
+    container_name: $AUTH
+  ac-client-data-init:
+    container_name: $PREFIX-client-data-init
+  ac-tools:
+    container_name: $PREFIX-tools
+EOF
+}
+
+ensure_clone() {
+    if [[ ! -d "$CLONE/.git" ]]; then
+        step "Build clone $CLONE"
+        # Cloning the local checkout reuses its objects; origin then points at GitHub so the preflight compares
+        # against the real origin/main, and "local" gives access to unpushed branches of the main checkout.
+        git clone --quiet "$MAIN_REPO" "$CLONE"
+        git -C "$CLONE" remote set-url origin "$UPSTREAM_URL"
+        git -C "$CLONE" remote add local "$MAIN_REPO"
+        git -C "$CLONE" fetch --quiet origin
+        git -C "$CLONE" checkout --quiet -B main origin/main
+    fi
+}
+
+seed_db() {
+    wait_db_healthy
+    local tables
+    tables=$(db -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'acore_world'")
+    if [[ "$tables" != "0" ]]; then
+        echo "    acore_world already has $tables tables: seed skipped"
+        return
+    fi
+    [[ -f "$REPACK_DUMP" ]] || die "repack dump not found: $REPACK_DUMP"
+    step "Importing $(basename "$REPACK_DUMP") into $DB (several minutes)"
+    zcat "$REPACK_DUMP" | db
+    db -e "UPDATE acore_auth.realmlist SET port = $WORLD_PORT WHERE id = 1"
+
+    step "Converting Windows update hashes to Linux hashes"
+    # Same conversion as setup-coa-server.sh: the repack hashed CRLF files after converting them to LF.
+    local sql="SET @converted = 0;" file name lf raw schema
+    while IFS= read -r -d '' file; do
+        name=$(basename "$file")
+        [[ "$name" =~ ^[A-Za-z0-9_.-]+\.sql$ ]] || continue
+        lf=$(sed 's/\r$//' "$file" | sha1sum | cut -c1-40 | tr 'a-f' 'A-F')
+        raw=$(sha1sum < "$file" | cut -c1-40 | tr 'a-f' 'A-F')
+        for schema in acore_auth acore_characters acore_world; do
+            sql+="UPDATE $schema.updates SET hash = '$raw' WHERE name = '$name' AND hash = '$lf';"
+            sql+="SET @converted = @converted + ROW_COUNT();"
+        done
+    done < <(cd "$CLONE" && grep -rlZ $'\r' --include='*.sql' data/sql/updates data/sql/custom modules/*/data/sql \
+                 2>/dev/null | sed -z "s|^|$CLONE/|" || true)
+    echo "    $(printf '%s SELECT @converted;' "$sql" | db -N) update hash(es) converted"
+}
+
+cmd_list() {
+    local n owner state world
+    for n in 1 2 3; do
+        load_slot "$n"
+        owner="-"; state="-"; world="not created"
+        [[ -s "$OWNER" ]] && owner=$(cat "$OWNER")
+        [[ -s "$STATE" ]] && state=$(cat "$STATE")
+        if [[ -n "$(container_field "$WORLD" '{{.State.Status}}')" ]]; then
+            world="$(container_field "$WORLD" '{{.State.Status}} since {{.State.StartedAt}}')"
+        elif [[ -f "$SLOT_DIR/compose.env" ]]; then
+            world="no container"
+        fi
+        printf 'slot %s  auth %s  world %s  db %s\n  owner:    %s\n  deployed: %s\n  %s: %s\n' \
+            "$N" "$AUTH_PORT" "$WORLD_PORT" "$DB_PORT" "$owner" "$state" "$WORLD" "$world"
+    done
+}
+
+cmd_claim() {
+    load_slot "${1:-}"
+    local note="${2:-}"
+    [[ -n "$note" ]] || die "usage: coa-slot claim N \"<batch> <note>\""
+    mkdir -p "$SLOT_DIR"
+    if ! (set -o noclobber; echo "$note ($(date -Is))" > "$OWNER") 2>/dev/null; then
+        die "slot $N is held by: $(cat "$OWNER")"
+    fi
+    echo "slot $N claimed: $(cat "$OWNER")"
+}
+
+cmd_release() {
+    load_slot "${1:-}"
+    rm -f "$OWNER"
+    if [[ -f "$ISSUES" ]]; then
+        (
+            flock 9
+            awk -v slot="s$N" '$2 != slot' "$ISSUES" > "$ISSUES.tmp" && mv "$ISSUES.tmp" "$ISSUES"
+        ) 9>"$ISSUES.lock"
+    fi
+    echo "slot $N released"
+}
+
+cmd_claim_issues() {
+    load_slot "${1:-}"
+    shift
+    [[ $# -gt 0 ]] || die "usage: coa-slot claim-issues N ISSUE..."
+    require_claimed
+    local batch issue held
+    batch=$(cut -d' ' -f1 "$OWNER")
+    mkdir -p "$SLOTS_ROOT"
+    touch "$ISSUES"
+    (
+        flock 9
+        local conflicts=0
+        for issue in "$@"; do
+            issue="${issue#\#}"
+            [[ "$issue" =~ ^[0-9]+$ ]] || die "not an issue number: $issue"
+            held=$(awk -v i="$issue" -v slot="s$N" '$1 == i && $2 != slot' "$ISSUES")
+            if [[ -n "$held" ]]; then
+                echo "#$issue already claimed: $held" >&2
+                conflicts=1
+            fi
+        done
+        [[ "$conflicts" == 0 ]] || die "nothing claimed"
+        for issue in "$@"; do
+            issue="${issue#\#}"
+            awk -v i="$issue" '$1 == i' "$ISSUES" | grep -q . || printf '%s\ts%s\t%s\t%s\n' \
+                "$issue" "$N" "$batch" "$(date -Is)" >> "$ISSUES"
+        done
+        echo "slot $N holds: $(awk -v slot="s$N" '$2 == slot {printf "#%s ", $1}' "$ISSUES")"
+    ) 9>"$ISSUES.lock"
+}
+
+cmd_issues() {
+    [[ -s "$ISSUES" ]] && sort -n "$ISSUES" || echo "no issue claimed"
+}
+
+cmd_env() {
+    load_slot "${1:-}"
+    cat <<EOF
+SLOT=$N
+PROJECT=$PROJECT
+BUILD_CLONE=$CLONE
+GHOST_ENV=$GHOST_ENV
+AUTH_ADDR=127.0.0.1:$AUTH_PORT
+WORLD_PORT=$WORLD_PORT
+DB_PORT=$DB_PORT
+WORLDSERVER_CONTAINER=$WORLD
+AUTHSERVER_CONTAINER=$AUTH
+DATABASE_CONTAINER=$DB
+ETC=$ETC
+LOGS=$LOGS
+SERVER_DATA=$DATA
+STATE_FILE=$STATE
+EOF
+}
+
+cmd_create() {
+    load_slot "${1:-}"
+    local own_data=0
+    [[ "${2:-}" == "--own-data" ]] && own_data=1
+    require_claimed
+    mkdir -p "$SLOT_DIR"
+    if [[ "$N" != 1 ]]; then
+        [[ -d "$ETC" ]] || { step "Config copy $ETC"; cp -a /srv/coa/etc "$ETC"; }
+        mkdir -p "$LOGS"
+        if [[ "$own_data" == 1 && ! -d "$SLOT_DIR/server-data" ]]; then
+            step "Private server-data copy (reflink when the filesystem supports it)"
+            cp -a --reflink=auto /srv/coa/server-data "$SLOT_DIR/server-data"
+            load_slot "$N"
+        fi
+    elif [[ "$own_data" == 1 ]]; then
+        die "slot 1 always uses /srv/coa/server-data"
+    fi
+    write_slot_files
+    ensure_clone
+    if [[ "$N" != 1 ]]; then
+        seed_db
+    fi
+    echo "slot $N ready; next: coa-slot deploy $N <branch>"
+}
+
+cmd_deploy() {
+    load_slot "${1:-}"
+    local ref="${2:-}" sha branch ts
+    [[ -n "$ref" ]] || die "usage: coa-slot deploy N REF"
+    require_claimed
+    require_created
+    [[ -z "$(git -C "$CLONE" status --porcelain --untracked-files=no)" ]] \
+        || die "$CLONE has uncommitted changes: the build clone is not a place to edit, commit in a worktree"
+
+    step "Checking out $ref in $CLONE"
+    git -C "$CLONE" fetch --quiet origin
+    git -C "$CLONE" fetch --quiet --prune local '+refs/heads/*:refs/remotes/local/*'
+    if sha=$(git -C "$CLONE" rev-parse -q --verify "refs/remotes/local/$ref^{commit}"); then
+        branch="$ref"
+    elif sha=$(git -C "$CLONE" rev-parse -q --verify "refs/remotes/origin/$ref^{commit}"); then
+        branch="$ref"
+    elif sha=$(git -C "$CLONE" rev-parse -q --verify "$ref^{commit}"); then
+        branch=""
+    else
+        die "$ref is neither a branch of $MAIN_REPO or origin nor a commit"
+    fi
+    if [[ -n "$branch" ]]; then
+        git -C "$CLONE" checkout --quiet -f -B "$branch" "$sha"
+    else
+        git -C "$CLONE" checkout --quiet -f --detach "$sha"
+    fi
+    echo "    ${branch:-detached} at $(git -C "$CLONE" log -1 --format='%h %s')"
+
+    ts=$(date +%F-%H%M%S)
+    step "Building images :$TAG (log: $LOGS/build-$ts.log)"
+    compose build ac-worldserver ac-authserver ac-db-import > "$LOGS/build-$ts.log" 2>&1 \
+        || die "build failed, see $LOGS/build-$ts.log"
+
+    wait_db_healthy
+    step "Applying SQL updates (log: $LOGS/db-import-$ts.log)"
+    compose up --no-deps ac-db-import > "$LOGS/db-import-$ts.log" 2>&1 || true
+    [[ "$(container_field "$DBIMPORT" '{{.State.ExitCode}}')" == "0" ]] \
+        || die "db-import failed, see $LOGS/db-import-$ts.log"
+
+    step "Restarting $AUTH and $WORLD"
+    local since
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    compose up -d --no-deps --force-recreate ac-authserver ac-worldserver
+    for _ in $(seq 1 120); do
+        if docker logs --since "$since" "$WORLD" 2>&1 | grep -q "(worldserver-daemon) ready"; then
+            echo "${branch:-detached} $sha $(date -Is)" > "$STATE"
+            echo "slot $N runs ${branch:-detached} $sha; next: coa-slot preflight $N"
+            return 0
+        fi
+        if [[ "$(container_field "$WORLD" '{{.State.Running}} {{.RestartCount}}')" != "true 0" ]]; then
+            docker stop "$WORLD" >/dev/null 2>&1 || true
+            docker logs --tail 5 "$WORLD" 2>&1 | sed 's/^/    /' >&2
+            die "$WORLD exited during startup and was stopped, see: coa-slot compose $N logs ac-worldserver"
+        fi
+        sleep 5
+    done
+    die "$WORLD not ready after 10 minutes, see: coa-slot compose $N logs ac-worldserver"
+}
+
+cmd_preflight() {
+    load_slot "${1:-}"
+    shift
+    require_created
+    exec python3 "$PREFLIGHT" --repo "$CLONE" --worldserver "$WORLD" --database "$DB" \
+        --server-dbc "$DATA/dbc" "$@"
+}
+
+cmd_compose() {
+    load_slot "${1:-}"
+    shift
+    require_created
+    compose "$@"
+}
+
+cmd_start() {
+    load_slot "${1:-}"
+    require_claimed
+    require_created
+    wait_db_healthy
+    compose up -d --no-deps ac-authserver ac-worldserver
+}
+
+cmd_stop() {
+    load_slot "${1:-}"
+    require_claimed
+    require_created
+    compose stop ac-worldserver ac-authserver ac-database
+}
+
+cmd_reset_db() {
+    load_slot "${1:-}"
+    [[ "$N" != 1 ]] || die "slot 1 holds the main database: reset-db is only for slots 2 and 3"
+    require_claimed
+    require_created
+    step "Dropping the database of slot $N"
+    compose down -v
+    seed_db
+    echo "database seeded; next: coa-slot deploy $N <branch> (applies the SQL updates)"
+}
+
+cmd_destroy() {
+    load_slot "${1:-}"
+    [[ "$N" != 1 ]] || die "slot 1 is the main server: destroy is only for slots 2 and 3"
+    [[ "${2:-}" == "--yes" ]] || die "destroy removes slot $N's database and files: rerun with --yes"
+    [[ ! -s "$OWNER" ]] || die "slot $N is held by: $(cat "$OWNER") — release it first"
+    if [[ -f "$SLOT_DIR/compose.env" && -d "$CLONE/.git" ]]; then
+        compose down -v
+    fi
+    docker image rm "acore/ac-wotlk-worldserver:$TAG" "acore/ac-wotlk-authserver:$TAG" \
+        "acore/ac-wotlk-db-import:$TAG" 2>/dev/null || true
+    rm -rf "$SLOT_DIR"
+    echo "slot $N destroyed; build clone kept at $CLONE"
+}
+
+main() {
+    local command="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    case "$command" in
+        list) cmd_list ;;
+        claim) cmd_claim "$@" ;;
+        release) cmd_release "$@" ;;
+        claim-issues) cmd_claim_issues "$@" ;;
+        issues) cmd_issues ;;
+        env) cmd_env "$@" ;;
+        create) cmd_create "$@" ;;
+        deploy) cmd_deploy "$@" ;;
+        preflight) cmd_preflight "$@" ;;
+        compose) cmd_compose "$@" ;;
+        start) cmd_start "$@" ;;
+        stop) cmd_stop "$@" ;;
+        reset-db) cmd_reset_db "$@" ;;
+        destroy) cmd_destroy "$@" ;;
+        -h|--help|help|"") usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"; exit $?  # same line: an edit of this file cannot run half-read commands in a running copy
