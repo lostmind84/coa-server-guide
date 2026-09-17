@@ -65,9 +65,9 @@ if [[ "${FAKE_STUBBORN:-}" == 1 ]]; then
     # Ignores SIGTERM itself, and its "Ascension.exe" child ignores SIGTERM too: only SIGKILL on both
     # PIDs stops this pair, exercising cmd_stop's escalation (Task 4 fix round 1).
     trap '' TERM
-    DISPLAY=:77 bash -c 'exec -a "X:\lab\Ascension.exe" bash -c "trap : TERM; while :; do sleep 1; done"' &
+    DISPLAY=:77 bash -c 'exec -a "X:\ascension-lab\Ascension.exe" bash -c "trap : TERM; while :; do sleep 1; done"' &
 else
-    DISPLAY=:77 bash -c "exec -a 'X:\\lab\\Ascension.exe' sleep 600" &
+    DISPLAY=:77 bash -c "exec -a 'X:\\ascension-lab\\Ascension.exe' sleep 600" &
 fi
 wait
 EOF
@@ -176,7 +176,7 @@ assert_contains "second start names holder" "$WORK/out" "slot 3"
 
 run_lab status
 assert_contains "status shows display" "$WORK/out" "display: :77"
-assert_contains "status shows running" "$WORK/out" "running"
+assert_contains "status shows running" "$WORK/out" "gamescope: running (pid"
 
 : > "$FAKE_LOG"
 run_lab chat "/say hello lab"
@@ -226,6 +226,25 @@ kill "$gs_pid" 2>/dev/null
 sleep 1
 run_lab stop
 assert_absent "stale lock released" "$COA_LAB_ROOT/state/lock"
+
+# I1: a stale gamescope.pid can survive a crash or reboot and later be reused by an unrelated process,
+# possibly an ancestor of the user's own client. stop must leave it alone: gamescope_pid now requires the
+# recorded pid's cmdline to mention gamescope and its current start time to match the one `start` recorded,
+# not just kill -0.
+mkdir -p "$COA_LAB_ROOT/state"
+: > "$COA_LAB_ROOT/state/lock"
+touch "$COA_LAB_ROOT/state/started"
+bash -c 'exec -a "X:\ascension-live\Ascension.exe" sleep 600' &
+unrelated_pid=$!
+echo "$unrelated_pid" > "$COA_LAB_ROOT/state/gamescope.pid"
+rm -f "$COA_LAB_ROOT/state/gamescope.starttime"
+run_lab stop
+assert_eq "stale pid stop exits 0" "$?" "0"
+kill -0 "$unrelated_pid" 2>/dev/null && pass "stale pid: unrelated process left alone" \
+    || fail "stale pid: unrelated process left alone"
+assert_absent "stale pid: lock released" "$COA_LAB_ROOT/state/lock"
+kill "$unrelated_pid" 2>/dev/null
+wait "$unrelated_pid" 2>/dev/null
 
 if FAKE_NO_LAUNCH=1 COA_LAB_WINDOW_TIMEOUT=1 run_lab start 3; then
     fail "timed-out start refused"

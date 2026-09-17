@@ -113,10 +113,32 @@ descendants() {
     done
 }
 
+# Field 22 of /proc/<pid>/stat (process start time, clock ticks since boot). Parsed after the last `)`
+# so a comm field containing spaces or parens (unlikely here, but stat's format allows it) cannot shift
+# the fixed fields that follow it.
+gamescope_starttime() {
+    local pid="$1" stat rest fields
+    stat=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+    rest="${stat##*) }"
+    read -r -a fields <<< "$rest"
+    [[ -n "${fields[17]:-}" ]] || return 1
+    echo "${fields[17]}"
+}
+
+# I1: a stale gamescope.pid can survive a crash or reboot; if its PID were reused by an unrelated
+# process, trusting kill -0 alone could make `stop` signal the wrong process tree, possibly the user's
+# own client. Require the PID to still look like gamescope (its cmdline mentions it; the test's fake is a
+# bash script whose cmdline is `bash .../bin/gamescope`, so `comm` would read "bash" and must not be used)
+# and to have the same start time `start` recorded, so PID reuse after the original process exited is caught.
 gamescope_pid() {
-    local pid
-    pid=$(cat "$STATE_DIR/gamescope.pid" 2>/dev/null) || return 1
-    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+    local pid starttime recorded
+    pid=$(cat "$STATE_DIR/gamescope.pid" 2>/dev/null) && [[ -n "$pid" ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'gamescope' || return 1
+    starttime=$(gamescope_starttime "$pid") || return 1
+    recorded=$(cat "$STATE_DIR/gamescope.starttime" 2>/dev/null) || return 1
+    [[ "$starttime" == "$recorded" ]] || return 1
+    echo "$pid"
 }
 
 # gamescope's Xwayland display, read from the environment of a process gamescope started.
@@ -149,7 +171,7 @@ cmd_start() {
     if ! (set -o noclobber; echo "slot $n since $(date -Is)" > "$LOCK") 2>/dev/null; then
         die "lab client held: $(cat "$LOCK")"
     fi
-    rm -f "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window"
+    rm -f "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/gamescope.starttime"
     touch "$STATE_DIR/started"
 
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
@@ -160,10 +182,16 @@ cmd_start() {
     local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
     hyprctl eval "hl.exec_cmd([[$cmd]], { workspace = \"$WORKSPACE silent\" })" > /dev/null
 
+    # Discovery reads the PID we just wrote via `echo $$` above directly, not through gamescope_pid: that
+    # function requires a recorded start time to already match, which does not exist until the window is
+    # found and recorded below (I1).
     for ((waited = 0; waited < WINDOW_TIMEOUT; waited++)); do
-        if pid=$(gamescope_pid) && display=$(find_display "$pid") \
+        if pid=$(cat "$STATE_DIR/gamescope.pid" 2>/dev/null) && [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null \
+            && display=$(find_display "$pid") \
             && window=$(DISPLAY="$display" xdotool search --name '^Ascension$' 2>/dev/null | head -1) \
             && [[ -n "$window" ]]; then
+            gamescope_starttime "$pid" > "$STATE_DIR/gamescope.starttime" \
+                || die "cannot read the start time of gamescope pid $pid"
             echo "$display" > "$STATE_DIR/display"
             echo "$window" > "$STATE_DIR/window"
             echo "lab client window $window on display $display (gamescope pid $pid)"
@@ -258,7 +286,8 @@ cmd_stop() {
         tree=$(descendants "$pid")
         # Stop the Windows client first: gamescope exits when its child does (spike findings).
         for child in $tree; do
-            if tr '\0' '\n' < "/proc/$child/cmdline" 2>/dev/null | head -1 | grep -q '\\Ascension\.exe$'; then
+            if tr '\0' '\n' < "/proc/$child/cmdline" 2>/dev/null | head -1 \
+                | grep -q '\\ascension-lab\\Ascension\.exe$'; then
                 kill "$child" 2>/dev/null || true
             fi
         done
@@ -287,7 +316,8 @@ cmd_stop() {
             done <<< "$changed"
         fi
     fi
-    rm -f "$LOCK" "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/started"
+    rm -f "$LOCK" "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/started" \
+        "$STATE_DIR/gamescope.starttime"
     echo "lab client stopped"
 }
 
