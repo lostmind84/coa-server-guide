@@ -57,13 +57,37 @@ Result: **yes, keyboard; mouse clicks unreliable**
   (800x600 PNG of the client window, readable by the agent). This answers part of Q5.
 
 ## Q3. Does a local addon load, and which channel hands data to the host?
-Result: unverified
+Result: **yes; SavedVariables is the working channel**
+
+- The addon lives in `Interface/AddOns/CoaProbeSpike/` (`## Interface: 30300`). An addon folder added while the
+  client runs is **not** picked up by `/reload` (`/cps` was unknown); after a client restart it loads. Neither
+  load is logged in `Logs/FrameXML.log` (that log only lists the client's own `Ascension_*` load-on-demand
+  addons). The user's client has no local addons, so the lab copy starts clean.
+- `/cps a1 501281` printed `COAPROBE a1 501281 Fel Fireball | 35 Energy | 2 sec cast | Generates 1 Felfury ...
+  dealing 35 Fire damage. | Usable while moving.`: `GameTooltip:SetHyperlink("spell:<id>")` returns the client
+  tooltip text, including the CoA description line.
+- **SavedVariables**: after `/reload`, `WTF/Account/LABSPIKE/SavedVariables/CoaProbeSpike.lua` was rewritten
+  within 1 s and held the full entry (`req`, `spell`, `time`, `lines`). Lines keep colour codes (`|cff32cd32...|r`)
+  and `\r\n` inside a line: the reader must strip or keep them on purpose.
+- **Chat log**: `/chatlog` answers "Chat being logged to Logs\WoWChatLog.txt". `print` output never reaches the
+  file; a real `/say` creates `Logs/WoWChatLog.txt`, but it stayed **empty** for over a minute (buffered; when it
+  is flushed is unverified). Not usable as a live channel.
+- `Logs/LUA.txt` only logs the `FrameXML.toc Loaded` markers, not `print` output.
+- The lab login shows existing CoA UI errors (`Ascension_CharacterAdvancement`, `GetLearnedAE: Invalid argument
+  type`) in `Logs/Error.txt`; they come from the client's own addons, not from the probe.
 
 ## Q4. Can the client be commanded without keyboard input (server message to the addon)?
 Result: unverified
 
 ## Q5. In-client screenshot
-Result: unverified
+Result: **yes, two ways**
+
+- `Screenshot()` from the addon (`/cpshot`) wrote `Screenshots/WoWScrnShot_091726_121416.jpg` (JPEG, 800x600)
+  within 2 s.
+- `DISPLAY=:1 magick import -window <id>` captures the client window as PNG without the user's screen (Q2).
+- Readability: at 800x600 the client text is too small, both for the user watching workspace 9 and in
+  screenshots (the agent had to crop and enlarge the chat to read it). The user raised it during the spike. The
+  lab client must run at a higher resolution; see the resolution check below.
 
 ## User client untouched
 Result: unverified
