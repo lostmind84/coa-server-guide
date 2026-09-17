@@ -76,12 +76,99 @@ cmd_destroy() {
     echo "lab removed"
 }
 
+descendants() {
+    local child
+    for child in $(pgrep -P "$1" || true); do
+        echo "$child"
+        descendants "$child"
+    done
+}
+
+gamescope_pid() {
+    local pid
+    pid=$(cat "$STATE_DIR/gamescope.pid" 2>/dev/null) || return 1
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+
+# gamescope's Xwayland display, read from the environment of a process gamescope started.
+find_display() {
+    local pid value
+    for pid in $(descendants "$1"); do
+        value=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -1)
+        [[ -n "$value" ]] && { echo "$value"; return 0; }
+    done
+    return 1
+}
+
+require_running() {
+    [[ -e "$LOCK" ]] || die "the lab client is not running: coa-client-lab start N"
+    gamescope_pid > /dev/null || die "lock present but gamescope is gone: coa-client-lab stop"
+    DISPLAY=$(cat "$STATE_DIR/display")
+    WINDOW=$(cat "$STATE_DIR/window")
+    export DISPLAY
+}
+
+cmd_start() {
+    local n="${1:-}" auth pid display window waited
+    [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab start N (slot 1, 2 or 3)"
+    [[ -f "$LAB_CLIENT/Ascension.exe" ]] || die "no lab client: coa-client-lab create"
+    # Paths go inside a Lua long string and a single-quoted bash -c: refuse characters that would break them.
+    [[ "$LAB_CLIENT$LAB_PREFIX$PROTON$STATE_DIR" != *[[:space:]\'\]]* ]] || die "lab paths contain spaces, quotes or ]"
+    auth=$(coa-slot env "$n" | sed -n 's/^AUTH_ADDR=//p')
+    [[ -n "$auth" ]] || die "coa-slot env $n gave no AUTH_ADDR"
+    mkdir -p "$STATE_DIR"
+    if ! (set -o noclobber; echo "slot $n since $(date -Is)" > "$LOCK") 2>/dev/null; then
+        die "lab client held: $(cat "$LOCK")"
+    fi
+    rm -f "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window"
+    touch "$STATE_DIR/started"
+
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
+    printf 'set realmlist %s\r\n' "$auth" > "$LAB_CLIENT/Data/enUS/realmlist.wtf"
+    rm -rf "$LAB_CLIENT/Cache"
+
+    step "Launching the lab client on workspace $WORKSPACE for slot $n ($auth)"
+    local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
+    hyprctl eval "hl.exec_cmd([[$cmd]], { workspace = \"$WORKSPACE silent\" })" > /dev/null
+
+    for ((waited = 0; waited < WINDOW_TIMEOUT; waited++)); do
+        if pid=$(gamescope_pid) && display=$(find_display "$pid") \
+            && window=$(DISPLAY="$display" xdotool search --name '^Ascension$' 2>/dev/null | head -1) \
+            && [[ -n "$window" ]]; then
+            echo "$display" > "$STATE_DIR/display"
+            echo "$window" > "$STATE_DIR/window"
+            echo "lab client window $window on display $display (gamescope pid $pid)"
+            return 0
+        fi
+        sleep 1
+    done
+    die "no client window after ${WINDOW_TIMEOUT}s, see $STATE_DIR/client.log; then: coa-client-lab stop"
+}
+
+cmd_status() {
+    local pid
+    if [[ ! -e "$LOCK" ]]; then
+        echo "not running"
+        return 0
+    fi
+    echo "lock: $(cat "$LOCK")"
+    if pid=$(gamescope_pid); then
+        echo "gamescope: running (pid $pid)"
+    else
+        echo "gamescope: not running (stale lock: coa-client-lab stop)"
+    fi
+    echo "display: $(cat "$STATE_DIR/display" 2>/dev/null || echo unknown)"
+    echo "window: $(cat "$STATE_DIR/window" 2>/dev/null || echo unknown)"
+}
+
 main() {
     local command="${1:-}"
     [[ $# -gt 0 ]] && shift
     case "$command" in
         create) cmd_create ;;
         destroy) cmd_destroy "$@" ;;
+        start) cmd_start "$@" ;;
+        status) cmd_status ;;
         -h|--help|help|"") usage ;;
         *) usage >&2; exit 2 ;;
     esac

@@ -118,7 +118,23 @@ assert_contains "same-path guard message" "$WORK/out" "lab paths equal user path
 assert_file "user prefix protected" "$COA_USER_PREFIX/system.reg"
 run_lab create
 
-# LAUNCH TESTS (Task 2)
+run_lab start 3
+assert_eq "start exits 0" "$?" "0"
+assert_contains "lab realmList" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" 'SET realmList "127.0.0.1:3924"'
+assert_contains "lab realmlist.wtf" "$COA_LAB_ROOT/ascension-lab/Data/enUS/realmlist.wtf" "set realmlist 127.0.0.1:3924"
+assert_contains "user realmList untouched" "$COA_USER_CLIENT/WTF/Config.wtf" 'SET realmList "127.0.0.1:3824"'
+assert_contains "launched on workspace 9" "$FAKE_LOG" 'workspace = "9 silent"'
+assert_contains "gamescope size" "$FAKE_LOG" "gamescope -W 1920 -H 1080 -w 1920 -h 1080"
+assert_contains "lock holder" "$COA_LAB_ROOT/state/lock" "slot 3"
+assert_eq "display recorded" "$(cat "$COA_LAB_ROOT/state/display")" ":77"
+assert_eq "window recorded" "$(cat "$COA_LAB_ROOT/state/window")" "4242"
+
+if run_lab start 2; then fail "second start refused"; else pass "second start refused"; fi
+assert_contains "second start names holder" "$WORK/out" "slot 3"
+
+run_lab status
+assert_contains "status shows display" "$WORK/out" "display: :77"
+assert_contains "status shows running" "$WORK/out" "running"
 
 # INPUT TESTS (Task 3)
 
