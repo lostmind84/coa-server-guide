@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Check that the local CoA workstation is in a state where a test result means something.
 
-Run it before reproducing an issue, and again after every rebuild, restart or client patch.
+Run it before reproducing an issue, and again after every rebuild, restart, client patch or DBC install.
 Every check below caught a real false result on 2026-09-16:
 
   git     the checkout contains every commit on origin/main (29 were missing; two "bugs" were already fixed)
   server  the running worldserver was built from the checked-out commit and finished starting
   db      every SQL update shipped by the checkout is recorded as applied (a missing module migration
           put the worldserver in a restart loop)
-  client  the archives of the newest CoA-Client-Patch-revN folder are installed unchanged
-  dbc     each DBC the server loads matches the client (the client Spell.dbc was ahead of the server's by
-          559 texts and 10 numeric records)
+  client  archives the launcher keeps a NAME.ORIGINAL copy of are reported when a local patch replaced them
+  dbc     the server's DataDir/dbc loads with the checkout's formats and holds, byte for byte, the DBC set the
+          installed client loads (the client Spell.dbc was once ahead of the server's by 559 texts)
 
-DBC files shipped by the CoA client patch must match the server exactly. DBC files the client inherits from
-the Ascension client (patch-M, patch-S, area-52 ...) differ from the server in large numbers for every CoA
-player; that drift is recorded once with --write-baseline, after review, and any later change to it fails.
+Since jealous-sound/azerothcore-wotlk-coa#1498 the server loads the CoA client's own DBC set. The checkout's
+apps/coa-dbc/client_dbc.py defines that set (archive load order, table names) and its format check; this script
+imports it from --repo, so it always follows the rules of the code under test.
 
 Differences that belong to work in progress are declared in an expectations file, one per line:
 
@@ -23,33 +23,23 @@ Differences that belong to work in progress are declared in an expectations file
 
 An expected difference that is absent is reported too: it usually means a patch was not installed.
 
-Exit status: 0 when nothing failed, 1 otherwise. Needs git, docker and smpq (AUR package `smpq`).
-Reads only: it never changes the repository, the databases, the server data or the client.
+Exit status: 0 when nothing failed, 1 otherwise. Needs git, docker and mpqcli
+(https://github.com/TheGrayDot/mpqcli). Reads only: it never changes the repository, the databases, the server
+data or the client.
 """
 
 import argparse
 import hashlib
+import importlib.util
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
-import time
 from collections import defaultdict
 from pathlib import Path
 
 HOME = Path.home()
-
-# Archive names shipped with the stock 3.3.5a (12340) enUS client. Everything else in Data/ is treated as
-# CoA content. A DBC carried by CoA content must match the server exactly; one carried only by stock
-# archives only has to match one stock copy, because the stock load order is not verified here.
-STOCK_ARCHIVES = {
-    "common.MPQ", "common-2.MPQ", "expansion.MPQ", "lichking.MPQ", "patch.MPQ", "patch-2.MPQ", "patch-3.MPQ",
-    "enUS/locale-enUS.MPQ", "enUS/speech-enUS.MPQ", "enUS/expansion-locale-enUS.MPQ",
-    "enUS/expansion-speech-enUS.MPQ", "enUS/lichking-locale-enUS.MPQ", "enUS/lichking-speech-enUS.MPQ",
-    "enUS/patch-enUS.MPQ", "enUS/patch-enUS-2.MPQ", "enUS/patch-enUS-3.MPQ", "enUS/base-enUS.MPQ",
-    "enUS/backup-enUS.MPQ",
-}
 
 # Spell.dbc string offsets: name, rank, description and tooltip for 16 locales. The locale masks at 152, 169,
 # 186 and 203 are plain integers. Used only to tell text drift from numeric drift in the report.
@@ -155,29 +145,6 @@ def read_expectations(path):
     return expected
 
 
-def hash_members(archive, names, workdir):
-    """Extract every candidate DBC from one archive, return {lowercase name: (sha256, size)} and clean up."""
-    target = Path(tempfile.mkdtemp(dir=workdir))
-    try:
-        subprocess.run(["smpq", "-x", "-q", str(archive)] + [f"DBFilesClient\\{n}" for n in names],
-                       cwd=target, capture_output=True)
-        found = {}
-        for path in target.rglob("*"):
-            if path.is_file():
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                found[path.name.lower()] = (digest, path.stat().st_size)
-        return found
-    finally:
-        shutil.rmtree(target, ignore_errors=True)
-
-
-def extract_one(archive, name, workdir):
-    target = Path(tempfile.mkdtemp(dir=workdir))
-    subprocess.run(["smpq", "-x", "-q", str(archive), f"DBFilesClient\\{name}"], cwd=target, capture_output=True)
-    files = [p for p in target.rglob("*") if p.is_file()]
-    return files[0].read_bytes() if files else None
-
-
 def wdbc_records(raw):
     if raw is None or len(raw) < 20:
         return None
@@ -223,56 +190,6 @@ def describe_drift(name, client, server):
     return drift
 
 
-def server_formats(repo):
-    """{dbc file name: format string} for every DBC the core loads, read from the checked-out sources."""
-    import re
-    fmt_source = (repo / "src/server/shared/DataStores/DBCfmt.h").read_text()
-    stores_source = (repo / "src/server/game/DataStores/DBCStores.cpp").read_text()
-    formats = dict(re.findall(r'char constexpr (\w+)\[\] = "([^"]+)"', fmt_source))
-    store_format = dict(re.findall(r'DBCStorage\s*<\s*\w+\s*>\s*(\w+)\((\w+)\)', stores_source))
-    files = {}
-    for store, file_name in re.findall(r'LOAD_DBC\((\w+),\s*"([^"]+)"', stores_source):
-        fmt = formats.get(store_format.get(store, ""))
-        if fmt:
-            files[file_name] = fmt
-    return files
-
-
-def loadable_by_server(raw, fmt):
-    """None when the core can load the file with this format, otherwise the reason it would assert."""
-    if len(raw) < 20:
-        return f"{len(raw)} bytes, no WDBC header"
-    magic, count, fields, size, strings_size = struct.unpack_from("<4s4I", raw)
-    if magic != b"WDBC" or len(raw) != 20 + count * size + strings_size:
-        return "not a complete WDBC file"
-    # Only the string-offset check is proven (a real assert in DBCFileLoader::getString). Field-count and layout
-    # rules have exceptions in the core (GetFileFormat, packed records), so files whose field count does not match
-    # the format one to one are left to the worldserver's own startup check, which the server step verifies.
-    if fields != len(fmt) or size != 4 * fields:
-        return None
-    string_fields = [i for i, c in enumerate(fmt) if c == "s"]
-    bad, first = 0, None
-    for index in range(count):
-        row = struct.unpack_from(f"<{fields}I", raw, 20 + index * size)
-        for field in string_fields:
-            if row[field] >= strings_size:
-                bad += 1
-                first = first or (row[0], field, row[field])
-    if bad:
-        return (f"{bad} string offset(s) past the string block (first: record {first[0]}, field {first[1]}); "
-                "the worldserver asserts in DBCFileLoader::getString")
-    return None
-
-
-def latest_coa_patch(client_root):
-    """The newest CoA-Client-Patch-revN folder next to the client, or None."""
-    candidates = []
-    for folder in client_root.glob("CoA-Client-Patch-rev*"):
-        suffix = folder.name.rsplit("rev", 1)[-1]
-        if suffix.isdigit() and (folder / "Data").is_dir():
-            candidates.append((int(suffix), folder))
-    return max(candidates)[1] if candidates else None
-
 
 def sha256_file(path):
     digest = hashlib.sha256()
@@ -282,106 +199,68 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def read_baseline(path):
-    baseline = {}
+def load_client_dbc_tool(repo):
+    path = repo / "apps/coa-dbc/client_dbc.py"
     if not path.exists():
-        return None
-    for raw in path.read_text().splitlines():
-        if not raw.strip() or raw.startswith("#"):
-            continue
-        name, carriers, client, server = raw.split("\t")
-        baseline[name.lower()] = (carriers, client, server)
-    return baseline
+        raise RuntimeError(f"{path} not found: the checkout predates the client DBC set (#1498)")
+    spec = importlib.util.spec_from_file_location("client_dbc", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def write_baseline(path, rows, coa_patch):
-    lines = [
-        "# Inherited client/server DBC drift accepted as the reference state by coa-preflight.py --write-baseline.",
-        f"# Written {time.strftime('%Y-%m-%d %H:%M')} against CoA client patch {coa_patch.name if coa_patch else 'none'}.",
-        "# Any change to a row (client copy, server copy, carrier archives) makes the preflight fail.",
-        "# <dbc>\t<client archives carrying it>\t<client sha256>\t<server sha256>",
-    ]
-    lines += ["\t".join(row) for row in sorted(rows, key=lambda r: r[0].lower())]
-    path.write_text("\n".join(lines) + "\n")
-
-
-def check_dbc(report, repo, client_data, server_dbc, expectations, baseline_path, update_baseline):
-    # The core loads dbc/*.dbc; mod-ascension-compat also reads dbc/Ascension/*.dbc (AscensionCompat.DbcDirectory).
-    server_files = {p.name: p for p in sorted(server_dbc.glob("*.dbc")) + sorted(server_dbc.glob("Ascension/*.dbc"))}
-    names = sorted(server_files)
-    archives = sorted(client_data.glob("*.MPQ")) + sorted(client_data.glob("*/*.MPQ"))
-    coa_patch = latest_coa_patch(client_data.parent.parent)
-    coa_archives = {str(p.relative_to(coa_patch / "Data")) for p in (coa_patch / "Data").rglob("*.MPQ")} \
-        if coa_patch else set()
-
-    if not coa_patch:
-        report.line("WARN", "client", "no CoA-Client-Patch-revN folder found next to the client: every non-stock "
-                    "archive is treated as inherited")
-    for rel in sorted(coa_archives):
-        installed, shipped = client_data / rel, coa_patch / "Data" / rel
+def check_client(report, client_data, mpqcli):
+    """Report archives a local patch replaced: the launcher keeps the untouched copy as NAME.ORIGINAL."""
+    for original in sorted(client_data.rglob("*.ORIGINAL")):
+        installed = original.with_name(original.name[:-len(".ORIGINAL")])
+        rel = installed.relative_to(client_data)
         if not installed.exists():
-            report.line("FAIL", "client", f"{rel} from {coa_patch.name} is not installed")
-        elif sha256_file(installed) != sha256_file(shipped):
-            report.line("WARN", "client", f"{rel} differs from {coa_patch.name}: a newer patch or a local "
-                        "development build is installed")
+            report.line("FAIL", "client", f"{rel} is missing (only {original.name} is present)")
+        elif sha256_file(installed) == sha256_file(original):
+            report.line("PASS", "client", f"{rel} is the launcher's original")
         else:
-            report.line("PASS", "client", f"{rel} matches {coa_patch.name}")
+            members = subprocess.run([mpqcli, "list", str(installed)], capture_output=True, text=True).stdout
+            dbcs = [m for m in members.splitlines() if m.strip().lower().endswith(".dbc")]
+            if dbcs:
+                report.line("WARN", "client", f"{rel} is a local patch carrying {len(dbcs)} DBC file(s); the DBC "
+                            "check below compares the server with what this client loads")
+            else:
+                report.line("PASS", "client", f"{rel} is a local patch without DBC files")
 
-    baseline = read_baseline(baseline_path)
-    inherited_rows = []
+
+def check_dbc(report, repo, client_data, server_dbc, expectations, mpqcli):
+    tool = load_client_dbc_tool(repo)
+    problems, notes = tool.check(server_dbc, root=repo)
+    for problem in problems:
+        report.line("FAIL", "dbc", f"server set cannot be loaded by this checkout: {problem}")
+    if not problems:
+        report.line("PASS", "dbc", f"server set passes client_dbc.py check ({len(notes)} note(s))")
+
     with tempfile.TemporaryDirectory(prefix="coa-preflight-") as workdir:
-        carriers = defaultdict(list)  # dbc -> [(archive, relative name, sha256)]
-        for archive in archives:
-            rel = str(archive.relative_to(client_data))
-            for name, (digest, _) in hash_members(archive, names, workdir).items():
-                carriers[name].append((archive, rel, digest))
-
-        formats = server_formats(repo)
-        for name in names:
-            server_raw = server_files[name].read_bytes()
-            server_digest = hashlib.sha256(server_raw).hexdigest()
-            if name in formats:
-                problem = loadable_by_server(server_raw, formats[name])
-                if problem:
-                    report.line("FAIL", "dbc", f"{name}: the server copy cannot be loaded — {problem}")
-            copies = carriers.get(name.lower(), [])
-            coa = [c for c in copies if c[1] in coa_archives]
-            others = [c for c in copies if c[1] not in coa_archives and c[1] not in STOCK_ARCHIVES]
+        client_set = Path(workdir) / "client-dbc"
+        # Without --original: the set this installed client really loads, local patches included.
+        manifest = tool.extract(client_data, client_set, tool.MpqCli(mpqcli), log=lambda _: None, root=repo)
+        identical, archives = 0, defaultdict(int)
+        for name, entry in sorted(manifest["files"].items()):
             expected = expectations.get(name.lower(), {})
-
-            if not coa:
-                # Not shipped by CoA: stock or inherited from the Ascension client. Silent when it matches,
-                # otherwise part of the reference drift.
-                if copies and any(d == server_digest for _, _, d in (others or copies)) and \
-                        len({d for _, _, d in others}) <= 1:
-                    continue
-                carried_by = ",".join(rel for _, rel, _ in (others or copies)) or "-"
-                client_digest = ",".join(sorted({d for _, _, d in (others or copies)})) or "-"
-                inherited_rows.append((name, carried_by, client_digest, server_digest))
+            server_path = server_dbc / name
+            if not server_path.exists():
+                report.line("FAIL", "dbc", f"{name}: loaded by the client from {entry['archive']}, missing on the "
+                            "server (install the client DBC set)")
                 continue
-
-            archive, rel, digest = coa[0]
-            if others and any(d != digest for _, _, d in others):
-                report.line("WARN", "dbc", f"{name}: {rel} is the CoA copy, but "
-                            + ", ".join(r for _, r, d in others if d != digest)
-                            + " carries different content; which one the client loads is not verified")
-            if name in formats and digest != server_digest:
-                problem = loadable_by_server(extract_one(archive, name, workdir), formats[name])
-                if problem:
-                    report.line("WARN", "dbc", f"{name}: the CoA client copy in {rel} cannot be copied to the "
-                                f"server as is — {problem}")
-            if digest == server_digest:
+            client_raw, server_raw = (client_set / name).read_bytes(), server_path.read_bytes()
+            if client_raw == server_raw:
                 if expected:
-                    report.line("WARN", "dbc", f"{name}: identical in {rel}, yet differences are expected for "
+                    report.line("WARN", "dbc", f"{name}: identical to the client, yet differences are expected for "
                                 + ", ".join(f"{k} ({v})" for k, v in expected.items()) + " — patch not installed?")
-                else:
-                    report.line("PASS", "dbc", f"{name}: identical to the CoA copy in {rel}")
+                identical += 1
+                archives[entry["archive"]] += 1
                 continue
-
-            drift = describe_drift(name, extract_one(archive, name, workdir), server_raw)
+            rel = entry["archive"]
             if "*" in expected:
                 report.line("PASS", "dbc", f"{name}: differs from {rel} as expected ({expected['*']})")
                 continue
+            drift = describe_drift(name, client_raw, server_raw)
             if not drift:
                 report.line("FAIL", "dbc", f"{name}: bytes differ from {rel} although every record is equal "
                             "(string block or layout)")
@@ -390,7 +269,7 @@ def check_dbc(report, repo, client_data, server_dbc, expectations, baseline_path
             for key in (k for k in expected if k.isdigit() and int(k) not in drift):
                 report.line("WARN", "dbc", f"{name}: record {key} expected to differ ({expected[key]}) but does not")
             if not unexpected:
-                matched = sorted((k for k in expected if str(k).isdigit() and int(k) in drift), key=int)
+                matched = sorted((k for k in expected if k.isdigit() and int(k) in drift), key=int)
                 report.line("PASS", "dbc", f"{name}: differs from {rel} only on {len(matched)} expected record(s): "
                             + ", ".join(matched[:10]) + (" ..." if len(matched) > 10 else ""))
                 continue
@@ -399,40 +278,9 @@ def check_dbc(report, repo, client_data, server_dbc, expectations, baseline_path
                 kinds[kind].append(i)
             summary = "; ".join(f"{len(ids)} {kind}: " + ", ".join(map(str, sorted(ids, key=str)[:10]))
                                 + (" ..." if len(ids) > 10 else "") for kind, ids in sorted(kinds.items()))
-            report.line("FAIL", "dbc", f"{name}: server copy is out of sync with the CoA copy in {rel} — {summary}")
-
-    if update_baseline:
-        write_baseline(baseline_path, inherited_rows, coa_patch)
-        report.line("WARN", "dbc", f"baseline written to {baseline_path} with {len(inherited_rows)} inherited "
-                    "difference(s); review it, it is now the reference")
-        return
-    if baseline is None:
-        report.line("FAIL", "dbc", f"{len(inherited_rows)} inherited DBC difference(s) and no baseline at "
-                    f"{baseline_path}: review them, then run once with --write-baseline")
-        return
-
-    current = {row[0].lower(): row[1:] for row in inherited_rows}
-    changed = []
-    for key in sorted(set(current) | set(baseline)):
-        before, now = baseline.get(key), current.get(key)
-        if before == now:
-            continue
-        if before is None:
-            changed.append(f"{key}: new difference ({now[0]})")
-        elif now is None:
-            changed.append(f"{key}: difference gone (now matches)")
-        else:
-            parts = [label for label, a, b in (("carrier", before[0], now[0]), ("client copy", before[1], now[1]),
-                                                ("server copy", before[2], now[2])) if a != b]
-            changed.append(f"{key}: {', '.join(parts)} changed")
-    for line in changed:
-        report.line("FAIL", "dbc", f"inherited drift changed since the baseline — {line}")
-    if not changed:
-        by_carrier = defaultdict(int)
-        for _, carried_by, _, _ in inherited_rows:
-            by_carrier[carried_by] += 1
-        report.line("WARN", "dbc", f"{len(inherited_rows)} inherited DBC difference(s) unchanged since the baseline ("
-                    + ", ".join(f"{c}: {n}" for c, n in sorted(by_carrier.items(), key=lambda kv: -kv[1])) + ")")
+            report.line("FAIL", "dbc", f"{name}: server copy differs from the client's ({rel}) — {summary}")
+        report.line("PASS", "dbc", f"{identical} of {len(manifest['files'])} client table(s) identical on the server ("
+                    + ", ".join(f"{a}: {n}" for a, n in sorted(archives.items(), key=lambda kv: -kv[1])) + ")")
 
 
 def main():
@@ -441,12 +289,9 @@ def main():
     parser.add_argument("--client-data", type=Path, default=HOME / "CoaServer/client/ascension-live/Data")
     parser.add_argument("--server-dbc", type=Path, default=Path("/srv/coa/server-data/dbc"))
     parser.add_argument("--expected", type=Path, default=HOME / "CoaServer/preflight-expected.txt")
-    parser.add_argument("--baseline", type=Path, default=HOME / "CoaServer/preflight-baseline.tsv")
-    parser.add_argument("--write-baseline", action="store_true",
-                        help="accept the current inherited DBC drift as the reference state")
     parser.add_argument("--worldserver", default="ac-worldserver")
     parser.add_argument("--database", default="ac-database")
-    parser.add_argument("--skip-dbc", action="store_true", help="skip the DBC comparison (about a minute)")
+    parser.add_argument("--skip-dbc", action="store_true", help="skip the client and DBC checks (about a minute)")
     args = parser.parse_args()
 
     report = Report()
@@ -454,13 +299,15 @@ def main():
         head = check_git(report, args.repo)
         check_server(report, head, args.worldserver)
         check_db(report, args.repo, args.database)
+        mpqcli = shutil.which("mpqcli")
         if args.skip_dbc:
             report.line("WARN", "dbc", "skipped: client/server data equality not verified")
-        elif shutil.which("smpq") is None:
-            report.line("FAIL", "dbc", "smpq not installed (AUR package smpq): client data cannot be verified")
+        elif mpqcli is None:
+            report.line("FAIL", "dbc", "mpqcli not installed (github.com/TheGrayDot/mpqcli): client data cannot be "
+                        "verified")
         else:
-            check_dbc(report, args.repo, args.client_data, args.server_dbc, read_expectations(args.expected),
-                      args.baseline, args.write_baseline)
+            check_client(report, args.client_data, mpqcli)
+            check_dbc(report, args.repo, args.client_data, args.server_dbc, read_expectations(args.expected), mpqcli)
     except (RuntimeError, ValueError, OSError) as error:
         report.line("FAIL", "setup", str(error))
 

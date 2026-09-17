@@ -32,8 +32,8 @@ l'entrée dans le monde n'a pas été testé.
   - MySQL 8.4 avec trois bases : `acore_auth` (comptes, royaumes), `acore_world` (contenu du jeu),
     `acore_characters` (personnages).
 - **Données serveur** (`dbc`, `maps`, `vmaps`, `mmaps`, `Cameras`) : fichiers extraits du client pour que le
-  serveur connaisse sorts, terrain, lignes de vue et chemins. CoA ajoute trois DBC propres à Ascension dans
-  `dbc/Ascension/` (`Appearances.dbc`, `ItemAppearances.dbc`, `VanityCollection.dbc`).
+  serveur connaisse sorts, terrain, lignes de vue et chemins. Depuis jealous-sound/azerothcore-wotlk-coa#1498,
+  `dbc/` doit contenir le jeu de DBC du client CoA lui-même, extrait du client d'origine (étape 8).
 - **Client Patch** : fichiers à copier par-dessus le client (`Ascension.exe`, `Extensions.dll`, `patch-B.MPQ`,
   `patch-T.MPQ`, `realmlist.wtf`) pour l'adapter au serveur CoA.
 - **Repack** : serveur **déjà compilé et prêt à lancer pour Windows** (exécutables, MySQL portable, bases remplies,
@@ -151,7 +151,7 @@ dans `~/CoaServer/client/` et `~/CoaServer/repack/`.
 | `Ascension.exe` (manifeste passé en `asInvoker`) | `f4b9f6fce448194638c5b1c751483090a48c597c6272237f31b3d151b50d3114` |
 | `Extensions.dll` (correctif d'adresse monde) | `9791801053f828d1ccdab1a4c17e64852d3ebe0fa708b91fa3674d0805d15bc8` |
 | `Data/patch-B.MPQ` | `e16fd42b8a98368de9962d5c3ac07996c14f1c39798ce1fe61e90ad246c92ede` |
-| `Data/patch-T.MPQ` | `ad183192246cb453673eba7be58649cbd33c00da6556b2f4906d5b357705d626` |
+| `Data/patch-T.MPQ` | `ad183192246cb453673eba7be58649cbd33c00da6556b2f4906d5b357705d626` (plus installé depuis #1498, étape 7) |
 
 - `Database/Clean/snapshot.json` contient l'empreinte du dump (`gzipSHA256`) ; le script d'installation la vérifie.
 - `BugReport/relay.py` envoie les rapports de bugs du jeu à un service externe qui crée des issues GitHub publiques
@@ -184,12 +184,39 @@ sha256sum ascension-live/Ascension.exe ascension-live/Extensions.dll \
 Les empreintes doivent correspondre au tableau de l'étape 6. `Data/enUS/realmlist.wtf` contient déjà
 `set realmlist 127.0.0.1`.
 
+Depuis #1498, serveur et joueurs utilisent le jeu de DBC du client d'origine, et les joueurs ne doivent pas recevoir
+le `patch-T.MPQ` du patch (sa seule archive contenant des DBC). Le launcher garde la copie intacte sous
+`patch-T.MPQ.ORIGINAL` :
+
+```bash
+cd ~/CoaServer/client/ascension-live/Data
+mkdir -p ~/CoaServer/backups/client-rev4 && mv patch-T.MPQ ~/CoaServer/backups/client-rev4/
+cp patch-T.MPQ.ORIGINAL patch-T.MPQ
+```
+
 ## 8. Données serveur
 
 ```bash
 cp -a ~/CoaServer/repack/CoA-Repack/Data/. /srv/coa/server-data/
 echo "INSTALLED_VERSION=v20.0" > /srv/coa/server-data/data-version
 ```
+
+Le `dbc/` du repack n'est pas le jeu client que le worldserver exige désormais (il s'arrête sur `DataDir does not
+hold the CoA client DBC set`). Extraire ce jeu du client d'origine avec l'outil du dépôt puis le copier. Il faut
+[mpqcli](https://github.com/TheGrayDot/mpqcli) (binaire Linux de la release, par exemple dans `~/.local/bin`) :
+
+```bash
+cd ~/Projects/azerothcore-wotlk-coa
+out=~/CoaServer/client-dbc/original-$(date +%F)
+python3 apps/coa-dbc/client_dbc.py extract ~/CoaServer/client/ascension-live/Data "$out" --original \
+  --mpqcli "$(command -v mpqcli)"                       # finit par "110 core tables checked, 0 problems"
+cp -a --reflink=auto /srv/coa/server-data/dbc /srv/coa/backups/dbc-$(date +%F)
+cp "$out"/*.dbc /srv/coa/server-data/dbc/
+```
+
+`--original` lit les archives intactes `NOM.ORIGINAL` du launcher. Ici le jeu compte 368 tables (patch-M 288,
+patch-S 48, archives locales standard 31, patch-T 1). À refaire après une mise à jour du client, puis redémarrer le
+worldserver.
 
 `ac-client-data-init` (dépendance des serveurs) télécharge les données standard et les décompresse avec `unzip -o`,
 ce qui écraserait les DBC CoA. Il saute le téléchargement quand `data-version` correspond à sa version
@@ -225,7 +252,6 @@ cat >> /srv/coa/coa.env <<'EOF'
 
 # CoA settings from the repack (Settings/*.template)
 AC_ASCENSION_COMPAT_ALLOW_REMOTE_CLIENTS=1
-AC_ASCENSION_COMPAT_DBC_DIRECTORY=/azerothcore/env/dist/data/dbc/Ascension
 AC_ASCENSION_MANASTORM_ENABLE=1
 AC_PLAYER_START_CUSTOM_SPELLS=1
 EOF
@@ -239,13 +265,13 @@ docker compose config | grep -E "host_ip|source: /srv|AC_ASCENSION|AC_PLAYER_STA
   (`$MYSQL_ROOT_PASSWORD`). Éviter `;`, `$`, espaces et guillemets s'il est saisi à la main.
 - Noms des variables selon `IniKeyToEnvVarKey` (`src/common/Configuration/Config.cpp`) : préfixe `AC_`, points en
   `_`, `_` entre une minuscule et une majuscule, tout en majuscules.
-- `DbcDirectory` doit être absolu : les conteneurs tournent dans `/azerothcore`, les données sont montées dans
-  `/azerothcore/env/dist/data`.
+- `AscensionCompat.DbcDirectory` a été supprimé par #1498 (les collections lisent `dbc/`) : le retirer des anciens
+  `coa.env` et `etc/modules/mod_ascension_compat.conf`.
 - Les `.conf` des modules sont indispensables : le worldserver ne charge que `etc/modules/<nom>.conf`
   (`modules/CMakeLists.txt` retire le `.dist`), et les conteneurs ne créent que `worldserver.conf`,
   `authserver.conf` et `dbimport.conf`.
 - Résultat attendu du contrôle : `host_ip: 127.0.0.1` (×4), sources `/srv/coa/etc`, `/srv/coa/logs`,
-  `/srv/coa/server-data`, et les 4 variables CoA pour authserver et worldserver.
+  `/srv/coa/server-data`, et les 3 variables CoA pour authserver et worldserver.
 
 ## 10. Base de données
 
@@ -446,7 +472,7 @@ coa-slot claim 2 "pets batch"                 # prendre un slot libre (échoue s
 coa-slot claim-issues 2 209 285 1425          # réserver des issues (tout ou rien, entre slots)
 coa-slot create 2                             # première fois : copie de config, clone, base depuis le dump du repack
 coa-slot deploy 2 fix/coa-summons-pets        # checkout dans le clone, build :s2, db-import, redémarrage, attente
-coa-slot preflight 2                          # coa-preflight.py sur le slot 2
+coa-slot preflight 2                          # coa-preflight.py sur le slot 2 (mpqcli requis)
 set -a; . ~/CoaServer/slots/s2/ghost.env; set +a
 go test -tags=e2e -p 1 ./e2e/coa/summonspets -count=1 -v
 coa-slot compose 2 logs --tail 50 ac-worldserver

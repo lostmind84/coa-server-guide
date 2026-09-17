@@ -30,6 +30,14 @@ sha256sum ascension-live/Ascension.exe ascension-live/Extensions.dll ascension-l
 # f4b9f6fc… 97918010… e16fd42b… ad183192…
 ```
 
+Since #1498 players keep the original `patch-T.MPQ` (the patch's only archive with DBC files):
+
+```bash
+cd ~/CoaServer/client/ascension-live/Data
+mkdir -p ~/CoaServer/backups/client-rev4 && mv patch-T.MPQ ~/CoaServer/backups/client-rev4/
+cp patch-T.MPQ.ORIGINAL patch-T.MPQ
+```
+
 ## 3. Server layout and data
 
 ```bash
@@ -37,6 +45,11 @@ sudo mkdir -p /srv/coa && sudo chown "$(id -u):$(id -g)" /srv/coa
 mkdir -p /srv/coa/{etc/modules,logs,backups,server-data}
 cp -a ~/CoaServer/repack/CoA-Repack/Data/. /srv/coa/server-data/
 echo "INSTALLED_VERSION=v20.0" > /srv/coa/server-data/data-version
+# Client DBC set (#1498), needs mpqcli (github.com/TheGrayDot/mpqcli)
+cd ~/Projects/azerothcore-wotlk-coa
+out=~/CoaServer/client-dbc/original-$(date +%F)
+python3 apps/coa-dbc/client_dbc.py extract ~/CoaServer/client/ascension-live/Data "$out" --original --mpqcli "$(command -v mpqcli)"
+cp "$out"/*.dbc /srv/coa/server-data/dbc/
 ```
 
 ## 4. Configuration
@@ -61,7 +74,6 @@ cat >> /srv/coa/coa.env <<'EOF'
 
 # CoA settings from the repack (Settings/*.template)
 AC_ASCENSION_COMPAT_ALLOW_REMOTE_CLIENTS=1
-AC_ASCENSION_COMPAT_DBC_DIRECTORY=/azerothcore/env/dist/data/dbc/Ascension
 AC_ASCENSION_MANASTORM_ENABLE=1
 AC_PLAYER_START_CUSTOM_SPELLS=1
 EOF

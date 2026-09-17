@@ -115,7 +115,6 @@ else
 
 # CoA settings from the repack (Settings/*.template)
 AC_ASCENSION_COMPAT_ALLOW_REMOTE_CLIENTS=1
-AC_ASCENSION_COMPAT_DBC_DIRECTORY=/azerothcore/env/dist/data/dbc/Ascension
 AC_ASCENSION_MANASTORM_ENABLE=1
 AC_PLAYER_START_CUSTOM_SPELLS=1
 EOF
@@ -132,6 +131,11 @@ else
 fi
 # ac-client-data-init skips its stock download when this version file matches (apps/installer).
 echo "INSTALLED_VERSION=v20.0" > "$COA_ROOT/server-data/data-version"
+
+if cmp -s "$REPACK/Data/dbc/Spell.dbc" "$COA_ROOT/server-data/dbc/Spell.dbc"; then
+    info "WARNING: server-data/dbc is the repack copy; the worldserver needs the CoA client DBC set (#1498)."
+    info "         Install it before starting: README step 8 (apps/coa-dbc/client_dbc.py extract --original)."
+fi
 
 step "Module configuration ($COA_ROOT/etc/modules)"
 # worldserver loads <name>.conf only; the containers create no module .conf from .conf.dist.
