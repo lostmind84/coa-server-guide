@@ -54,6 +54,7 @@ set_wtf() {
 }
 
 cmd_create() {
+    [[ "$LAB_CLIENT" != "$USER_CLIENT" && "$LAB_PREFIX" != "$USER_PREFIX" ]] || die "lab paths equal user paths"
     [[ -e "$LAB_CLIENT" || -e "$LAB_PREFIX" ]] && die "lab already exists: $LAB_CLIENT or $LAB_PREFIX"
     [[ -f "$USER_CLIENT/Ascension.exe" ]] || die "Ascension.exe not found in $USER_CLIENT"
     [[ -d "$USER_PREFIX" ]] || die "Wine prefix not found: $USER_PREFIX"

@@ -111,6 +111,11 @@ run_lab destroy --yes
 assert_absent "lab client removed" "$COA_LAB_ROOT"
 assert_absent "lab prefix removed" "$COA_LAB_PREFIX"
 assert_file "user client kept" "$COA_USER_CLIENT/Ascension.exe"
+
+# same-path guard in create
+if COA_LAB_PREFIX="$COA_USER_PREFIX" run_lab create; then fail "create over user prefix refused"; else pass "create over user prefix refused"; fi
+assert_contains "same-path guard message" "$WORK/out" "lab paths equal user paths"
+assert_file "user prefix protected" "$COA_USER_PREFIX/system.reg"
 run_lab create
 
 # LAUNCH TESTS (Task 2)
