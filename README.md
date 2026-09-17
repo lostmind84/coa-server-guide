@@ -647,6 +647,26 @@ including a 10-second wait so the reloaded interface accepts input again). Tests
 `lua5.1 addons/CoaProbe/tests/run.lua` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`
 (`scripts/tests/coa-client-lab.test.sh` needs `python3`).
 
+### CoaProbe on its own
+
+The probe addon does not need the lab client, the slots or Linux: it answers in any 3.3.5 client, typed by hand.
+
+1. Copy [`addons/CoaProbe`](addons/CoaProbe) (without `tests/`) into `Interface/AddOns/CoaProbe` of your client
+   and start the client (an addon folder added while it runs is not loaded by `/reload`).
+2. In game, type a request with an id of your choice:
+   `/coaprobe r1 spell 706240`, `/coaprobe r2 item 6948`, `/coaprobe r3 auras target`, `/coaprobe r4 spellbook`,
+   `/coaprobe r5 known 78`. The chat answers `COAPROBE r1 ok`.
+3. Type `/reload`: the client writes the answers to
+   `WTF/Account/<ACCOUNT>/SavedVariables/CoaProbe.lua` (`WTF\Account\<ACCOUNT>\SavedVariables\CoaProbe.lua` on
+   Windows).
+4. Read one answer as JSON: `python3 scripts/coa-probe-read.py <that file> r1`.
+
+Answers are JSON: `spell` gives name, rank, icon, cost, cast time, range, whether the character knows it and the
+tooltip lines; `item` gives the tooltip lines; `auras` gives name, spell id, count, duration, expirationTime, caster
+and whether it is harmful for every aura on the unit; `spellbook` lists the known spells with their ids; `known`
+answers one spell id. The addon keeps the last 50 answers and never talks to the server, so it is safe on a live
+realm. Limits: it cannot read action bars, 3D models or UI Lua errors, and a request must not contain `|`.
+
 ## Issue workflow for agents
 
 [`agents/coa-triage.md`](agents/coa-triage.md) is the workflow this tooling was built for: list the open CoA
