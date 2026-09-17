@@ -130,3 +130,26 @@ Result: **go for Milestones 1-4**
 - State left behind: lab copies kept (`~/CoaServer/client-lab`, `~/Games/umu/coa-client-lab`) with the throwaway
   `CoaProbeSpike` addon; throwaway scripts in `~/CoaServer/client-lab-spike`; accounts `labspike` and `labsender`
   (GM 3, characters `Labspike` and `Labsender`) remain in slot 3's database; slot 3 released.
+
+## Milestone 2 API check (2026-09-17, lab client on slot 2)
+
+Checked with `/run print(...)` typed through `coa-client-lab chat`, read from screenshots. Slot 2 ran d212cbdb0,
+7 commits behind origin/main (preflight FAIL on git only); these checks only exercise client Lua functions, so no
+server behaviour is concluded from them.
+
+- `UnitAura("player", 1)` returns 11 values; the 1st is the name (`PvE Mode`, a hidden CoA aura), the 11th the
+  spell id (`9931032`), the 7th the expiration time. The GM `.aura 1243` buff showed as a second aura icon.
+- These globals are functions: `UnitAura`, `IsSpellKnown`, `GetSpellName`, `GetSpellLink`, `GetNumSpellTabs`,
+  `seterrorhandler`, `geterrorhandler`, `ReloadUI`, `debugstack`.
+- `GetSpellInfo(501281)` returns `Fel Fireball`, `Rank 2`, `Interface\Icons\spell_fire_fireballgreen`, `35`,
+  `false`, `3`, `2000`, `0`, `30` (name, rank, icon, cost, isFunnel, powerType, castTime, minRange, maxRange).
+- `IsSpellKnown(78)` returned `false` for the level 1 warrior; `GetNumSpellTabs()` returned `1`;
+  `GetSpellName(1, "spell")` returned `Auto Attack`; `GetSpellLink(1, "spell")` returned
+  `|cff71d5ff|Hspell:6603|h[Auto Attack]|h|r` (spell id readable from the link).
+- `GameTooltip:SetHyperlink("item:6948")` gave 6 lines, first `Hearthstone`.
+- Typing `|` in the chat edit box reaches Lua as `||`: typed commands must not contain `|`
+  (use `string.char(124)` in Lua).
+- Lua errors: a `seterrorhandler` wrapper installed with `/run` did not see `/run error("probe-test")`; the client
+  printed its own `UI Error: an interface error occured. Click here and send the error to a developer.` and
+  `Logs/Error.txt` did not record it. How to capture UI errors is unknown; not part of Milestone 2.
+- `Logs/Error.txt` is written by the client's C++ side (`ChallengeMgr::UpdateChallengeDataStores ...`), not by Lua.
