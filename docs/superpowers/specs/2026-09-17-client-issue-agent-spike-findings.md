@@ -77,7 +77,16 @@ Result: **yes; SavedVariables is the working channel**
   type`) in `Logs/Error.txt`; they come from the client's own addons, not from the probe.
 
 ## Q4. Can the client be commanded without keyboard input (server message to the addon)?
-Result: unverified
+Result: **yes**
+
+- A second GM account `labsender` (character `Labsender`) logged in through Ghost `LoginBot` and sent
+  `SendGMCommand(".announce COAPROBE-CMD c1 501281")`.
+- The lab client received it as `[SERVER] [SERVER] COAPROBE-CMD c1 501281` on `CHAT_MSG_SYSTEM`; the unanchored
+  Lua pattern matched and the probe ran (`COAPROBE c1 501281 Fel Fireball | ...` printed).
+- Caveat: `.announce` is a broadcast to every player of the realm. On a claimed slot with only lab characters
+  this is harmless, but a targeted message (whisper or a module command) would be cleaner. Not tested.
+- Reading the result still needs the SavedVariables channel, which needs `/reload`, which is a keyboard action.
+  Keyboard-free end to end is therefore not proven; the announce channel removes typing for requests only.
 
 ## Q5. In-client screenshot
 Result: **yes, two ways**
