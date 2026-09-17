@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Run a lab copy of the CoA client for agents: nested gamescope on its own Hyprland workspace, keyboard input
+# and screenshots through gamescope's X display, one lab client at a time. The user's client is never modified;
+# it is only read by `create`. Design: docs/superpowers/specs/2026-09-17-client-issue-agent-design.md.
+set -euo pipefail
+
+USER_CLIENT="${COA_USER_CLIENT:-$HOME/CoaServer/client/ascension-live}"
+USER_PREFIX="${COA_USER_PREFIX:-$HOME/Games/umu/coa-client}"
+LAB_ROOT="${COA_LAB_ROOT:-$HOME/CoaServer/client-lab}"
+LAB_CLIENT="$LAB_ROOT/ascension-lab"
+LAB_PREFIX="${COA_LAB_PREFIX:-$HOME/Games/umu/coa-client-lab}"
+PROTON="${COA_PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64}"
+WORKSPACE="${COA_LAB_WORKSPACE:-9}"
+WINDOW_TIMEOUT="${COA_LAB_WINDOW_TIMEOUT:-120}"
+SLEEP="${COA_LAB_SLEEP:-sleep}"
+WIDTH=1920
+HEIGHT=1080
+STATE_DIR="$LAB_ROOT/state"
+LOCK="$STATE_DIR/lock"
+
+usage() {
+    cat <<'EOF'
+Usage: coa-client-lab <command> [arguments]
+
+Lab copy:
+  create                   reflink-copy the user's client and Wine prefix, drop accounts, glue config and cache,
+                           set 1920x1080
+  destroy --yes            remove the lab client and prefix (refused while the lab client runs)
+
+Running (one lab client at a time):
+  start N                  point the lab client at slot N's authserver and launch it on the lab workspace
+  login ACCOUNT PASSWORD   keyboard login and world entry; check the result with a screenshot
+  type TEXT                type text into the client
+  key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
+  chat TEXT                Return, type TEXT, Return (slash commands, /say...)
+  screenshot [PATH]        save a PNG of the client window and print its path
+  stop                     stop the lab client by PID, release the lock, warn if the user's client changed
+  status                   lock holder, process, display and window
+  preflight N              coa-slot preflight N against the lab client's data
+EOF
+}
+
+step() { printf '==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Replace `SET key "value"` in a WTF file, or append it.
+set_wtf() {
+    local file="$1" key="$2" value="$3"
+    if grep -qi "^SET $key " "$file"; then
+        sed -i "s|^SET $key .*|SET $key \"$value\"|I" "$file"
+    else
+        printf 'SET %s "%s"\n' "$key" "$value" >> "$file"
+    fi
+}
+
+cmd_create() {
+    [[ -e "$LAB_CLIENT" || -e "$LAB_PREFIX" ]] && die "lab already exists: $LAB_CLIENT or $LAB_PREFIX"
+    [[ -f "$USER_CLIENT/Ascension.exe" ]] || die "Ascension.exe not found in $USER_CLIENT"
+    [[ -d "$USER_PREFIX" ]] || die "Wine prefix not found: $USER_PREFIX"
+    mkdir -p "$LAB_ROOT" "$(dirname "$LAB_PREFIX")"
+    step "Copying the client and its prefix (reflink: shared blocks, no full copy)"
+    cp -a --reflink=always "$USER_CLIENT" "$LAB_CLIENT" || die "reflink copy failed (needs btrfs or xfs)"
+    cp -a --reflink=always "$USER_PREFIX" "$LAB_PREFIX" || die "reflink copy failed (needs btrfs or xfs)"
+    # The user's remembered account, characters, addon settings and caches stay out of the lab.
+    rm -rf "$LAB_CLIENT/WTF/Account" "$LAB_CLIENT/WTF/Custom" "$LAB_CLIENT/Cache" "$LAB_CLIENT/Screenshots"
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" gxResolution "${WIDTH}x${HEIGHT}"
+    echo "lab created: $LAB_CLIENT"
+}
+
+cmd_destroy() {
+    [[ "${1:-}" == --yes ]] || die "usage: coa-client-lab destroy --yes"
+    [[ -e "$LOCK" ]] && die "the lab client is running or its lock is stale: coa-client-lab stop"
+    [[ "$LAB_CLIENT" != "$USER_CLIENT" && "$LAB_PREFIX" != "$USER_PREFIX" ]] || die "lab paths equal user paths"
+    rm -rf "$LAB_ROOT" "$LAB_PREFIX"
+    echo "lab removed"
+}
+
+main() {
+    local command="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    case "$command" in
+        create) cmd_create ;;
+        destroy) cmd_destroy "$@" ;;
+        -h|--help|help|"") usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"; exit $?  # same line: an edit of this file cannot run half-read commands in a running copy
