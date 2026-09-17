@@ -142,5 +142,32 @@ contains("handler error captured", answer.error, "boom")
 
 -- ADDON TESTS (Task 3)
 
+SlashCmdList = {}
+local printed = {}
+print_original = print
+print = function(text) printed[#printed + 1] = text end
+dofile(root .. "/CoaProbe.lua")
+print = print_original
+
+check("slash registered", SLASH_COAPROBE1, "/coaprobe")
+CoaProbeDB = nil
+local stub = makeApi()
+CoaProbe.handle(stub, "s1 ping")
+check("db created", type(CoaProbeDB), "table")
+contains("answer stored as json", CoaProbeDB[1], '"req":"s1"')
+contains("answer result", CoaProbeDB[1], '"pong":true')
+
+for i = 1, 60 do
+    CoaProbe.handle(stub, "bulk" .. i .. " ping")
+end
+check("db capped", #CoaProbeDB, 50)
+contains("oldest dropped", CoaProbeDB[1], '"req":"bulk11"')
+
+printed = {}
+print = function(text) printed[#printed + 1] = text end
+CoaProbe.handle(stub, "s2 dance")
+print = print_original
+check("error line", printed[1], "COAPROBE s2 error: unknown command dance")
+
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)
