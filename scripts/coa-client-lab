@@ -183,20 +183,26 @@ cmd_start() {
     local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
     hyprctl eval "hl.exec_cmd([[$cmd]], { workspace = \"$WORKSPACE silent\" })" > /dev/null
 
-    # Discovery reads the PID we just wrote via `echo $$` above directly, not through gamescope_pid: that
-    # function requires a recorded start time to already match, which does not exist until the window is
-    # found and recorded below (I1).
+    # Discovery reads the PID we just wrote via `echo $$` above directly, not through gamescope_pid.
+    # gamescope.starttime is written below as soon as that PID is confirmed alive, once, before display
+    # and window discovery: if the window is never found (die below) or start is interrupted, the file
+    # stays behind so `stop` still recognises and kills the live gamescope tree (I-A).
+    local starttime_recorded=0
     for ((waited = 0; waited < WINDOW_TIMEOUT; waited++)); do
-        if pid=$(cat "$STATE_DIR/gamescope.pid" 2>/dev/null) && [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null \
-            && display=$(find_display "$pid") \
-            && window=$(DISPLAY="$display" xdotool search --name '^Ascension$' 2>/dev/null | head -1) \
-            && [[ -n "$window" ]]; then
-            gamescope_starttime "$pid" > "$STATE_DIR/gamescope.starttime" \
-                || die "cannot read the start time of gamescope pid $pid"
-            echo "$display" > "$STATE_DIR/display"
-            echo "$window" > "$STATE_DIR/window"
-            echo "lab client window $window on display $display (gamescope pid $pid)"
-            return 0
+        if pid=$(cat "$STATE_DIR/gamescope.pid" 2>/dev/null) && [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            if [[ "$starttime_recorded" == 0 ]]; then
+                gamescope_starttime "$pid" > "$STATE_DIR/gamescope.starttime" \
+                    || die "cannot read the start time of gamescope pid $pid"
+                starttime_recorded=1
+            fi
+            if display=$(find_display "$pid") \
+                && window=$(DISPLAY="$display" xdotool search --name '^Ascension$' 2>/dev/null | head -1) \
+                && [[ -n "$window" ]]; then
+                echo "$display" > "$STATE_DIR/display"
+                echo "$window" > "$STATE_DIR/window"
+                echo "lab client window $window on display $display (gamescope pid $pid)"
+                return 0
+            fi
         fi
         sleep 1
     done

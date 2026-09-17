@@ -86,7 +86,7 @@ EOF
 #!/usr/bin/env bash
 printf 'xdotool DISPLAY=%s %s\n' "$DISPLAY" "$*" >> "$FAKE_LOG"
 case "$1" in
-    search) echo 4242 ;;
+    search) [[ "${FAKE_NO_WINDOW:-}" == 1 ]] || echo 4242 ;;
     getwindowgeometry) printf 'WINDOW=4242\nX=0\nY=0\nWIDTH=1280\nHEIGHT=720\nSCREEN=0\n' ;;
 esac
 EOF
@@ -351,6 +351,38 @@ assert_contains "timed-out start message" "$WORK/out" "no client window after 1s
 assert_file "timed-out start lock present" "$COA_LAB_ROOT/state/lock"
 run_lab stop
 assert_absent "timed-out start lock released" "$COA_LAB_ROOT/state/lock"
+
+# I-A: the start time must be recorded as soon as gamescope is confirmed alive, before the window is
+# found, so a start that times out (window never appears) still leaves `stop` able to find and kill the
+# live gamescope and its child. The test above uses FAKE_NO_LAUNCH=1 (no process launches at all) and
+# cannot exercise this; here the fake gamescope launches normally but xdotool search never finds a window.
+if FAKE_NO_WINDOW=1 COA_LAB_WINDOW_TIMEOUT=2 run_lab start 3; then
+    fail "no-window start refused"
+else
+    pass "no-window start refused"
+fi
+assert_contains "no-window start message" "$WORK/out" "no client window after"
+gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid" 2>/dev/null) || gs_pid=""
+[[ -n "$gs_pid" ]] && pass "no-window start recorded a gamescope pid" || fail "no-window start recorded a gamescope pid"
+assert_file "no-window start recorded a start time" "$COA_LAB_ROOT/state/gamescope.starttime"
+child_pid=$(pgrep -P "$gs_pid" 2>/dev/null | head -1)
+[[ -n "$child_pid" ]] && pass "no-window start recorded a child" || fail "no-window start recorded a child"
+
+run_lab stop
+assert_eq "no-window stop exits 0" "$?" "0"
+assert_absent "no-window stop releases the lock" "$COA_LAB_ROOT/state/lock"
+kill -0 "$gs_pid" 2>/dev/null && fail "no-window stop kills gamescope" || pass "no-window stop kills gamescope"
+if [[ -n "$child_pid" ]]; then
+    kill -0 "$child_pid" 2>/dev/null && fail "no-window stop kills the child" || pass "no-window stop kills the child"
+else
+    fail "no-window stop kills gamescope child (no child pid captured)"
+fi
+
+# Unconditional cleanup: under the bug, gamescope.starttime is never written, so stop above does not
+# recognise or kill the fake or its child.
+kill -0 "$gs_pid" 2>/dev/null && kill -9 "$gs_pid" 2>/dev/null
+[[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null && kill -9 "$child_pid" 2>/dev/null
+rm -f "$COA_LAB_ROOT/state/lock" "$COA_LAB_ROOT/state/gamescope.pid" "$COA_LAB_ROOT/state/gamescope.starttime"
 
 # escalation must reap the whole tree, not just gamescope (fix round 1): a gamescope and child that both
 # ignore SIGTERM force the SIGKILL branch, which must not leave the child orphaned.
