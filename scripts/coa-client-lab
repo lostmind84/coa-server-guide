@@ -161,6 +161,61 @@ cmd_status() {
     echo "window: $(cat "$STATE_DIR/window" 2>/dev/null || echo unknown)"
 }
 
+cmd_type() {
+    [[ $# -eq 1 ]] || die "usage: coa-client-lab type TEXT"
+    require_running
+    xdotool type --window "$WINDOW" --delay 40 "$1"
+}
+
+cmd_key() {
+    [[ $# -ge 1 ]] || die "usage: coa-client-lab key KEY..."
+    require_running
+    xdotool key --window "$WINDOW" "$@"
+}
+
+cmd_chat() {
+    [[ $# -eq 1 ]] || die "usage: coa-client-lab chat TEXT"
+    require_running
+    xdotool key --window "$WINDOW" Return
+    "$SLEEP" 0.5
+    xdotool type --window "$WINDOW" --delay 40 "$1"
+    xdotool key --window "$WINDOW" Return
+}
+
+# Sequence and delays from the spike findings (Q2). The account field sits at x = width / 2,
+# y = 315 / 600 of the height; `Return` on the character list works only once the list is loaded.
+cmd_login() {
+    [[ $# -eq 2 ]] || die "usage: coa-client-lab login ACCOUNT PASSWORD"
+    require_running
+    local account="$1" password="$2" backspaces
+    backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
+    eval "$(xdotool getwindowgeometry --shell "$WINDOW")"
+    "$SLEEP" 20
+    xdotool mousemove --window "$WINDOW" $((WIDTH / 2)) $((HEIGHT * 315 / 600)) click 1
+    "$SLEEP" 0.5
+    # shellcheck disable=SC2086
+    xdotool key --window "$WINDOW" --delay 30 $backspaces
+    xdotool type --window "$WINDOW" --delay 60 "$account"
+    xdotool key --window "$WINDOW" Tab
+    "$SLEEP" 0.3
+    # shellcheck disable=SC2086
+    xdotool key --window "$WINDOW" --delay 30 $backspaces
+    xdotool type --window "$WINDOW" --delay 60 "$password"
+    xdotool key --window "$WINDOW" Return
+    "$SLEEP" 25
+    xdotool key --window "$WINDOW" Return
+    "$SLEEP" 45
+    echo "login sent for $account; check the world with: coa-client-lab screenshot"
+}
+
+cmd_screenshot() {
+    require_running
+    local path="${1:-$LAB_ROOT/screenshots/lab-$(date +%Y%m%d-%H%M%S).png}"
+    mkdir -p "$(dirname "$path")"
+    magick import -window "$WINDOW" "$path"
+    echo "$path"
+}
+
 main() {
     local command="${1:-}"
     [[ $# -gt 0 ]] && shift
@@ -169,6 +224,11 @@ main() {
         destroy) cmd_destroy "$@" ;;
         start) cmd_start "$@" ;;
         status) cmd_status ;;
+        type) cmd_type "$@" ;;
+        key) cmd_key "$@" ;;
+        chat) cmd_chat "$@" ;;
+        login) cmd_login "$@" ;;
+        screenshot) cmd_screenshot "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage >&2; exit 2 ;;
     esac

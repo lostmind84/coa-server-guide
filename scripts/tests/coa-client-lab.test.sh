@@ -136,7 +136,29 @@ run_lab status
 assert_contains "status shows display" "$WORK/out" "display: :77"
 assert_contains "status shows running" "$WORK/out" "running"
 
-# INPUT TESTS (Task 3)
+: > "$FAKE_LOG"
+run_lab chat "/say hello lab"
+assert_contains "chat opens the edit box" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4242 Return"
+assert_contains "chat types text" "$FAKE_LOG" "xdotool DISPLAY=:77 type --window 4242 --delay 40 /say hello lab"
+
+: > "$FAKE_LOG"
+run_lab key Escape Tab
+assert_contains "key sends keys" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4242 Escape Tab"
+
+: > "$FAKE_LOG"
+run_lab login labspike secretpw
+assert_contains "login clicks the account field" "$FAKE_LOG" "mousemove --window 4242 960 567 click 1"
+assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 60 labspike"
+assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 60 secretpw"
+assert_eq "login enters world twice Return" "$(grep -c 'key --window 4242 Return$' "$FAKE_LOG")" "2"
+
+run_lab screenshot "$WORK/shot.png"
+assert_eq "screenshot prints path" "$(cat "$WORK/out")" "$WORK/shot.png"
+assert_file "screenshot written" "$WORK/shot.png"
+assert_contains "screenshot uses the lab display" "$FAKE_LOG" "magick DISPLAY=:77 import -window 4242"
+
+run_lab screenshot
+assert_file "default screenshot written" "$(cat "$WORK/out")"
 
 # STOP TESTS (Task 4)
 
