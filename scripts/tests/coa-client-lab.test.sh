@@ -282,8 +282,11 @@ assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 60
 assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 60 secretpw"
 # Two Returns reach the world (submit the password, then enter the world); the sound CVars typed afterwards add
 # their own Returns, so count only what happens before the first /console line.
+# Two Returns reach the world (submit the password, then enter the world). The sound CVars typed afterwards each
+# open the chat with a Return of their own, so stop counting at the first /console line and drop the Return that
+# opened it.
 assert_eq "login enters world twice Return" \
-    "$(sed -n '1,/console Sound_EnableAllSound/p' "$FAKE_LOG" | grep -c 'key --window 4242 Return$')" "2"
+    "$(awk '/--delay 40 \/console/ { print n - 1; found = 1; exit } /key --window 4242 Return$/ { n++ } END { if (!found) print n + 0 }' "$FAKE_LOG")" "2"
 assert_contains "login silences the client" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_EnableAllSound 0"
 assert_contains "login zeroes the master volume" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_MasterVolume 0"
 
