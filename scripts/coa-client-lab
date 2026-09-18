@@ -42,8 +42,8 @@ Running (one lab client at a time):
   screenshot [PATH]        save a PNG of the client window and print its path
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
-  probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID);
-                           prints JSON
+  probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
+                           log [n], state); prints JSON
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window
   preflight N              coa-slot preflight N against the lab client's data
@@ -238,7 +238,7 @@ cmd_mute() {
     command -v pactl > /dev/null || { echo "pactl not installed: cannot mute"; return 0; }
     pid=$(gamescope_pid) || die "the lab client is not running"
     tree=" $(descendants "$pid" | tr '\n' ' ') "
-    ids=$(pactl list sink-inputs | awk '/^Sink Input #/ { id = substr($3, 2) } /application.process.id = / { gsub(/"/, "", $3); print id, $3 }')
+    ids=$(pactl list sink-inputs | awk '/^Sink Input #/ { id = substr($3, 2) } /application.process.id = / { gsub(/"/, "", $3); print id, $3 }') || true
     while read -r id stream_pid; do
         [[ -n "$id" ]] || continue
         if [[ "$tree" == *" $stream_pid "* ]]; then

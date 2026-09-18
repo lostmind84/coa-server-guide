@@ -108,6 +108,35 @@ printf 'coa-slot %s\n' "$*" >> "$FAKE_LOG"
 [[ "$1" == env ]] && printf 'SLOT=%s\nAUTH_ADDR=127.0.0.1:3924\n' "$2"
 exit 0
 EOF
+    # Answers `list sink-inputs` with two sink inputs: #50 carries the pid of the fake lab client's own
+    # descendant process (read from the state dir the same way the real gamescope_pid/descendants would find
+    # it), #51 carries this fake's own pid, which is never a descendant of the lab's gamescope. Tests can then
+    # assert that only #50 gets muted.
+    cat > "$WORK/bin/pactl" <<'EOF'
+#!/usr/bin/env bash
+printf 'pactl %s\n' "$*" >> "$FAKE_LOG"
+case "$1" in
+    list)
+        if [[ "$2" == sink-inputs ]]; then
+            in_tree=$(pgrep -P "$(cat "$COA_LAB_ROOT/state/gamescope.pid" 2>/dev/null)" 2>/dev/null | head -1)
+            in_tree="${in_tree:-999999}"
+            cat <<SINKS
+Sink Input #50
+	Driver: protocol-native.c
+	Properties:
+		application.process.id = "$in_tree"
+Sink Input #51
+	Driver: protocol-native.c
+	Properties:
+		application.process.id = "$$"
+SINKS
+        fi
+        ;;
+    set-sink-input-mute)
+        echo "Mute: yes"
+        ;;
+esac
+EOF
     cat > "$WORK/bin/umu-run" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -178,6 +207,9 @@ rm -rf "$COA_LAB_ROOT"
 
 run_lab create
 
+if run_lab mute; then fail "mute without a running lab client fails"; else pass "mute without a running lab client fails"; fi
+assert_contains "mute without running message" "$WORK/out" "the lab client is not running"
+
 run_lab start 3
 assert_eq "start exits 0" "$?" "0"
 assert_contains "lab realmList" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" 'SET realmList "127.0.0.1:3924"'
@@ -188,6 +220,9 @@ assert_contains "gamescope size" "$FAKE_LOG" "gamescope -W 1920 -H 1080 -w 1920 
 assert_contains "lock holder" "$COA_LAB_ROOT/state/lock" "slot 3"
 assert_eq "display recorded" "$(cat "$COA_LAB_ROOT/state/display")" ":77"
 assert_eq "window recorded" "$(cat "$COA_LAB_ROOT/state/window")" "4242"
+# I3: start mutes on its own (cmd_mute || true), and it must do so only through the fakes on PATH, never the
+# host's real pactl.
+assert_contains "start attempts to mute via the fake pactl" "$FAKE_LOG" "pactl list sink-inputs"
 
 if run_lab start 2; then fail "second start refused"; else pass "second start refused"; fi
 assert_contains "second start names holder" "$WORK/out" "slot 3"
@@ -204,6 +239,41 @@ assert_contains "chat types text" "$FAKE_LOG" "xdotool DISPLAY=:77 type --window
 : > "$FAKE_LOG"
 run_lab key Escape Tab
 assert_contains "key sends keys" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4242 Escape Tab"
+
+: > "$FAKE_LOG"
+run_lab hold w 300
+assert_eq "hold exits 0" "$?" "0"
+assert_contains "hold sends keydown" "$FAKE_LOG" "xdotool DISPLAY=:77 keydown --window 4242 w"
+assert_contains "hold sends keyup" "$FAKE_LOG" "xdotool DISPLAY=:77 keyup --window 4242 w"
+
+if run_lab hold w abc; then fail "hold rejects a non-numeric duration"; else pass "hold rejects a non-numeric duration"; fi
+assert_contains "hold duration message" "$WORK/out" "hold duration must be milliseconds"
+
+# mute: only the sink input whose pid is in the lab client's process tree (id 50, from the fake pactl above)
+# gets muted; the unrelated one (id 51) is left alone. This is the guard that keeps the user's own client from
+# ever being muted, so it gets its own check beyond the "start calls mute" assertion above.
+: > "$FAKE_LOG"
+run_lab mute
+assert_eq "mute exits 0" "$?" "0"
+gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid")
+tree_pid=$(pgrep -P "$gs_pid" | head -1)
+assert_contains "mute mutes the pid in the lab's process tree" "$WORK/out" "muted sink input 50 (pid $tree_pid)"
+assert_not_contains "mute leaves the unrelated pid alone" "$WORK/out" "muted sink input 51"
+assert_contains "mute set-mute called for the matched id" "$FAKE_LOG" "pactl set-sink-input-mute 50 1"
+assert_not_contains "mute set-mute not called for the unmatched id" "$FAKE_LOG" "pactl set-sink-input-mute 51 1"
+
+# cmd_mute must still return 0 when pactl itself is not installed, even with a running lab client. Strip the
+# fake bin dir (which is where the fake pactl lives) from PATH, keeping only what the script needs to start
+# (bash via its #!/usr/bin/env shebang, plus dirname/readlink for its own SCRIPT_DIR resolution); cmd_mute's
+# "pactl not installed" branch runs before anything else needs external tools.
+nopactl_bin="$WORK/bin-no-pactl"
+mkdir -p "$nopactl_bin"
+for tool in bash dirname readlink; do
+    ln -sf "$(command -v "$tool")" "$nopactl_bin/$tool"
+done
+PATH="$nopactl_bin" run_lab mute
+assert_eq "mute without pactl on PATH still exits 0" "$?" "0"
+assert_contains "mute without pactl message" "$WORK/out" "pactl not installed: cannot mute"
 
 : > "$FAKE_LOG"
 run_lab login labspike secretpw
