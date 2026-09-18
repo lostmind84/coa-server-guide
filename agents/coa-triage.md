@@ -3,12 +3,24 @@ description: List the open CoA issues grouped into work batches, then work a cho
 argument-hint: "[batch name, e.g. starcaller | crashes | quests] [manual] [per-issue]"
 ---
 
+# CoA issue triage and fixing
+
+An agent workflow for the CoA issue queue, built around the tooling in this guide. Nothing here is specific to one
+contributor: the steps that need repository permissions fall back to what an outside contributor can do.
+
 Work the CoA issue queue: with no argument, print the batch table and stop; with a batch name or issue numbers,
 work that queue end to end. `manual` pauses for approval before each fix (default is auto). `per-issue` opens one
 PR per issue instead of one per batch.
 
-Environment (slots, Ghost, preflight, client lab, remotes): load the `coa-ghost-harness` skill, and follow it for
-anything that touches a server. Repository conventions: the checkout's `AGENTS.md` and `.agents/docs/`.
+Environment: server slots, preflight, the Ghost e2e bots and the client lab are documented in
+[Part 2](../README.md#part-2-contributor-tooling) of this guide. If your agent has its own workstation guidance
+(paths, slot manager, harness pitfalls), follow that for anything touching a server. Repository conventions: the
+checkout's `AGENTS.md` and `.agents/docs/`.
+
+Resolve once per run and keep it in the conversation: the repository from `origin`
+(`gh repo view --json nameWithOwner`), your login (`gh api user --jq .login`), your permissions
+(`gh api repos/<owner>/<repo> --jq .permissions`) and the remote to push to — your fork, or `origin` only when you
+have `push` and the maintainers expect branches there. Never push to `main` or `upstream`.
 
 Talk to the user in their language. Everything written to the repository or GitHub — code, commits, branch names,
 PR titles and bodies, issue comments — is English.
@@ -25,6 +37,11 @@ is too large for one reviewable PR**, as in PR #2521. Group the rest by theme: c
 costs and gains); summons and pets; missing talent trees and specs; items, bank and vanity; quests, world and
 creatures; systems and modes (RDF, Manastorm, war mode, GM, rest); client UI and visual (not testable by a
 protocol bot); duplicates and non-bugs.
+
+Before working an issue, re-read its state, assignees and the PRs referencing it. Claim it: with `triage` or
+`push` permission, `gh issue edit <n> -R <repo> --add-assignee <login>`; without, post one short comment
+(`Working on this in <branch>.`). An issue assigned to someone else, or already carrying someone else's PR, is
+skipped and reported, not taken over.
 
 Flag issues already covered by a merged or open PR (`gh pr list -R ... --state all --search "<number>"`, then read
 the body), issues assigned to someone else, probable duplicates and non-bugs.
@@ -46,7 +63,7 @@ Rules, in order of priority:
 
 0. **Preflight before any conclusion.** `coa-slot preflight N` before reproducing an issue, and again after every
    fetch, rebase, rebuild, restart, SQL import, client patch or DBC install. A FAIL means no test result is
-   trustworthy: fix it or report it to the user before going further. Details in `coa-ghost-harness`.
+   trustworthy: fix it or report it to the user before going further.
 1. **Reproduce before fixing.** Time-box each issue: the reported scenario plus one or two variants, then stop and
    write it down. No reproduction, no fix. Means, in this order:
    1. **`coa-gameplay-test` scenario — the default proof.** It runs a disposable worldserver with copied
