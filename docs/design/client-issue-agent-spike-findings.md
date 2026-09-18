@@ -172,3 +172,42 @@ server behaviour is concluded from them.
   written `Interface\\\\Icons`: WoW escapes `"` as `\"` and doubles backslashes, which `coa-probe-read.py` decodes.
   The Hearthstone line with quotes (`"Counts as an Air, Earth, Fire, and Water totem."`) and colour codes
   round-tripped.
+
+## Milestone 3: controls and the first real check (2026-09-18)
+
+Controls, on slot 2 running `origin/main`, with `coa-client-lab preflight 2` PASS:
+
+- Negative control: the expectation "the tooltip of spell 501281 says 999 Fire damage" failed against the real
+  answer (35 Fire damage), so the check reports **reproduced** — the comparison bites.
+- Positive control: "the tooltip names Fel Fireball and costs 35 Energy" held, so **not reproduced**.
+- Stability: the same probe three times returned an identical `result` (only `req` and `time` differ).
+
+Real issue #3935 (Arbalest Mastery displayed wrong), full evidence in the server repository under
+`.agents/plans/3935/client/`:
+
+- Character built the normal way: Witch Hunter (class 15), level 60, `.localspec 10` (Boltslinger), talents
+  `.localtalent 31160 1` (Witchbane) and `.localtalent 7458 1` (Arbalest Mastery); no forced `.learn` of those
+  spells. Talent entry ids come from `/srv/coa/server-data/dbc/CharacterAdvancement.dbc` (field layout in
+  `modules/mod-ascension-compat/src/AscensionCoATalentData.cpp`).
+- Fixture: Expert's Training Dummy (32666) set to the character's level, left at its default neutral faction. It
+  never fights back, and Witchbane accepts it.
+- Reproduced: during the Witchbane channel the client showed `Arbalest Mastery (706241)`, 3 stacks, **HARMFUL**,
+  on the caster; the target carried only `Witchbane (574320)`. The server's aura lists agreed.
+- Verified after a fix: with `spell_custom_attr` marking 706241 positive (0x0E000000), deployed to slot 3, the same
+  probe showed the same 3 stacks as **HELPFUL** on the caster. Same expectation, opposite outcome.
+
+What the run taught, now written into the skill:
+
+- The aura exists only during the 3 s channel: probe *inside* the effect window, not after.
+- `/reload` (how a probe writes its answer) clears the target, so player and target must be read in one
+  `probe state`.
+- Waiting for a resource does not converge (rage decays out of combat, about 5 rage per 12 s of auto shots):
+  select the character and `.modify rage 1000`. `.modify` acts on the selected player, not on a creature.
+- No GM cheat was needed once the fixture could not kill the character; `.cheat god|power|cooldown` stayed unused
+  in the final run.
+- The addon's event capture named every blocker in turn: "Target too close", "Target needs to be in front of you",
+  "Not enough rage". None of them appears in the chat frame.
+- `.go xyz X Y Z MAP O` sets the facing with its fifth number; `coa-client-lab hold w 2500` walks; `.gps` prints
+  the position into the captured system messages.
+- Sound: the client rewrites its own sound settings on exit and umu-run resets `WINEDLLOVERRIDES`, so the lab
+  client is muted at the sound server, matched by process id (`coa-client-lab mute`, also run by `start`).

@@ -162,7 +162,8 @@ Each milestone is usable on its own.
    login, chat, screenshots and stop (3 s, no process left) worked.
 2. **CoaProbe**: done 2026-09-17 (`addons/CoaProbe`, `coa-client-lab probe`; commands ping, spell, item, auras,
    spellbook, known). UI error capture is not included: a `seterrorhandler` wrapper did not see errors.
-3. `coa-client-check` in repro mode, validated by the controls above.
+3. **`coa-client-check` in repro mode**: done 2026-09-18 (`skills/coa-client-check/SKILL.md`), validated by
+   the controls and by issue #3935, which it reproduced and then verified against a fix.
 4. Verify mode and `coa-triage` integration (the workflow already routes client-only batches here).
 
 ## Open questions
