@@ -116,10 +116,35 @@ slot number, the deployed commit, the preflight result and the account and chara
 State the verdict with the fact that produced it, quoting the probe answer. If the observed value differs from the
 issue's claim, report what you saw: the issue may be right about the symptom and wrong about the cause.
 
-## 6. Reporting
+## 6. Verify mode: the same expectation after a fix
 
-Propose a 1 to 3 line comment (the `coa-fix-issues` format) with the decisive screenshot. Post it only after the
-user agrees. In verify mode, no "fixed" claim without a failing repro on the same expectation beforehand.
+A fix is verified only against a check that failed first. Reuse the repro run's `expectation.md` word for word.
+
+1. Deploy the fix branch to the slot (`coa-slot deploy N <branch>`) and run `coa-client-lab preflight N` again. A
+   data-only fix still needs the deploy: the slot database applies the migration there.
+2. Rebuild the character with the same setup run, so nothing but the fix differs.
+3. Repeat the same probes, in the same effect window, and save them next to the repro answers
+   (`answers/verify-*.json`).
+4. The fix passes only if the expectation now holds where it failed. Quote both answers side by side in the
+   report; "it looks right now" is not a result.
+
+Worked example (#3935): repro showed `Arbalest Mastery (706241)` with 3 stacks as **HARMFUL** on the caster; after
+one `spell_custom_attr` row marking the aura positive, the same probe showed the same 3 stacks as **HELPFUL**.
+
+## 7. Reporting
+
+Propose a 1 to 3 line comment (the `coa-fix-issues` format) with the decisive answer quoted, and the screenshot
+when the interface itself is the evidence — make the interface legible first (the spell on the action bar, the
+frames visible), a bare screenshot proves nothing. Post only after the user agrees.
+
+Name the ids and their names together: a human reads `706241 "Arbalest Mastery"`, not a bare number.
+
+When the check contradicts the report, say what you saw rather than what was claimed, and look for the mechanism:
+for #3935 the client classified a positive stacking effect as harmful, which is why the reporter called it a
+debuff on themselves.
+
+This check is a step of `coa-fix-issues`, not a workflow of its own: the issue claim, the branch, the commit, the
+PR and the issue comment stay that skill's job; this one only produces the verdict and its evidence.
 
 ## Errors
 

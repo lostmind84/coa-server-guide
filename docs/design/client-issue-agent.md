@@ -164,7 +164,9 @@ Each milestone is usable on its own.
    spellbook, known). UI error capture is not included: a `seterrorhandler` wrapper did not see errors.
 3. **`coa-client-check` in repro mode**: done 2026-09-18 (`skills/coa-client-check/SKILL.md`), validated by
    the controls and by issue #3935, which it reproduced and then verified against a fix.
-4. Verify mode and `coa-triage` integration (the workflow already routes client-only batches here).
+4. **Verify mode**: done 2026-09-18 (skill section 6), exercised on #3935. The check is a step of the issue
+   workflow (`agents/coa-triage.md` here, `coa-fix-issues` in the server repository), which owns claims,
+   branches, PRs and issue comments.
 
 ## Open questions
 
