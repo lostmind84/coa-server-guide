@@ -14,8 +14,11 @@ PR per issue instead of one per batch.
 
 Environment: server slots, preflight, the Ghost e2e bots and the client lab are documented in
 [Part 2](../README.md#part-2-contributor-tooling) of this guide. If your agent has its own workstation guidance
-(paths, slot manager, harness pitfalls), follow that for anything touching a server. Repository conventions: the
-checkout's `AGENTS.md` and `.agents/docs/`.
+(paths, slot manager, harness pitfalls), follow that for anything touching a server. Loading that workstation
+guidance is not a choice of proof method: it owns the slot, preflight and local invocation of *every* harness,
+including `coa-gameplay-test`, whose repository skill documents Windows paths only. The proof method comes from
+the batch's `Proof` column and the ladder in rule 1, never from which environment file was read. Repository
+conventions: the checkout's `AGENTS.md` and `.agents/docs/`.
 
 Resolve once per run and keep it in the conversation: the repository from `origin`
 (`gh repo view --json nameWithOwner`), your login (`gh api user --jq .login`), your permissions
@@ -24,6 +27,36 @@ have `push` and the maintainers expect branches there. Never push to `main` or `
 
 Talk to the user in their language. Everything written to the repository or GitHub — code, commits, branch names,
 PR titles and bodies, issue comments — is English.
+
+## Subagents — keep the controller's context small
+
+Delegate by default. The controller's context is the scarce resource of a batch: every raw file read, log, build
+output and test transcript it holds stays resident for the rest of the run. Anything that produces bulk output the
+controller does not need verbatim goes to a subagent.
+
+Delegate: locating code and tracing a spell to the value the server uses; reading an issue thread, its linked PRs
+and their diffs; running a scenario or a Ghost test and reading its output; writing or adapting a scenario;
+reviewing the batch diff before publication; checking a community snapshot for a value.
+
+Keep in the controller: the batch table and the `Proof` decision per batch, slot claim and `coa-slot claim-issues`,
+preflight verdicts, the classification of each issue (real bug / already works / not obtainable), commits, branch
+and PR bodies, issue comments, and every exchange with the user.
+
+Dispatch contract, in the dispatch prompt itself:
+
+- Name the report file: `.agents/plans/<batch>/<issue-or-topic>.md` (gitignored). The full findings, evidence,
+  traces and command output go there.
+- Cap the returned message: 15 lines for an investigator or implementer (status, file:line conclusions, one-line
+  test summary, concerns), 10 lines for a reviewer (verdict, counts by severity, one line per Critical/Important).
+- Restate your code-navigation rules verbatim: a subagent inherits the tools, never the reasoning behind them. If
+  your agent has symbol-aware navigation and editing (Serena's `find_symbol`, `find_referencing_symbols`,
+  `replace_symbol_body`, `rename_symbol`, or an equivalent), require it and say that grep on a symbol name is a
+  defect, not a shortcut.
+- Name the slot number and forbid touching any other slot, and restate rule 3 (fix only what the issue reports).
+- Give the subagent the issue text it needs; it starts cold and must not re-derive the batch.
+
+One subagent per independent issue can run in parallel, but only one at a time may use the slot's server: serialise
+anything that deploys, restarts, imports SQL or runs a scenario against it.
 
 ## Step 1 — always: print the batch table
 
@@ -50,9 +83,12 @@ the body), issues assigned to someone else, probable duplicates and non-bugs.
 single batch. Columns, in this order: `Batch | Issues | Why it matters | Proof`. One row per batch (one per class
 or spec for audit reports); issue numbers comma-separated, with a short tag when useful (`901 and 1467 Vault`);
 the last column says which harness proves the batch (`gameplay-test`, `gameplay-test + Ghost`, `client lab`) plus
-a few words. The table is conversation output: write it in the language you are speaking, keeping issue numbers
-and tool names as they are. Before the table, one line with the open issue count. After the table, only short
-grouped notes: issues a merged PR already covers, non-bugs and obsolete reports, probable duplicates (say they are
+a few words. Choose it from the capability table in rule 1, defaulting to `gameplay-test`; `Ghost` only for what
+that table lists as outside the scenario harness, `client lab` only for what is displayed. That column is the
+batch's plan of proof: Step 2 follows it, and changing it needs a reason written in the conversation. The table is
+conversation output: write it in the language you are speaking, keeping issue numbers and tool names as they are.
+Before the table, one line with the open issue count. After the table, only short grouped notes: issues a merged PR
+already covers, non-bugs and obsolete reports, probable duplicates (say they are
 title-based and not verified), then the slot status, then ask which batch to take.
 
 If `$ARGUMENTS` is empty, stop here and let the user pick a batch.
