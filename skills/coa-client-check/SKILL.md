@@ -43,9 +43,10 @@ what will be observed, with which probe, and which result means the issue is rep
 If the issue cannot be turned into an expectation (no spell id, no reproduction path, a symptom nobody can see
 twice), ask the question in the issue and stop with **inconclusive**.
 
-What the tools cannot observe today: UI Lua errors, action-bar contents, 3D models, animations, anything purely
-visual. Pure visuals are judged from screenshots and marked "visual, needs user confirmation"; the rest is
-**inconclusive** with the missing capability named.
+What the tools cannot observe today: Lua errors (a `seterrorhandler` wrapper never sees them), action-bar contents,
+3D models, animations, anything purely visual. That is different from the red on-screen UI errors, which
+`probe log` does capture (section 4 below). Pure visuals are judged from screenshots and marked "visual, needs
+user confirmation"; the rest is **inconclusive** with the missing capability named.
 
 ## 3. Setup and action: Ghost first
 
@@ -79,8 +80,8 @@ folder.
    Nothing else shows why an action did not happen: the red error text fades and `/reload` clears the chat.
    Read the log after every action that could fail, before concluding anything.
 4. **One request per moment.** `coa-client-lab probe state` snapshots the player and the current target together
-   (name, level, health, every power index, auras). A probe writes its answer through `/reload`, which clears the
-   target selection, so two probes never describe the same situation.
+   (name, level, health, every power index the client exposes, auras). A probe writes its answer through
+   `/reload`, which clears the target selection, so two probes never describe the same situation.
 5. **Snapshot inside the effect window.** Many auras last seconds: send the probe immediately after the action,
    without waiting. An empty aura list after a finished cast proves nothing.
 6. Useful facts the client hides: the displayed bar is not always the resource a spell charges (`probe state`

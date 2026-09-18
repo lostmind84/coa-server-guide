@@ -630,7 +630,11 @@ coa-client-lab start 2
 coa-client-lab login <account> <password>  # GM account on that slot; takes about 90 seconds
 coa-client-lab chat "/say hello"
 coa-client-lab screenshot                  # prints the PNG path
+coa-client-lab hold w 300                  # hold a key down for milliseconds (walk with w/s, turn with Left/Right)
+coa-client-lab mute                        # mute this lab client's audio streams by pid (start does it too)
 coa-client-lab probe spell 501281          # ask the CoaProbe addon; prints JSON (ping, spell, item, auras, spellbook, known)
+coa-client-lab probe log 20                # the addon's capture of UI errors, system messages and casts
+coa-client-lab probe state                 # snapshot of the player and current target together
 coa-client-lab stop                        # warns if your own client changed meanwhile
 ```
 
@@ -655,7 +659,7 @@ The probe addon does not need the lab client, the slots or Linux: it answers in 
    and start the client (an addon folder added while it runs is not loaded by `/reload`).
 2. In game, type a request with an id of your choice:
    `/coaprobe r1 spell 706240`, `/coaprobe r2 item 6948`, `/coaprobe r3 auras target`, `/coaprobe r4 spellbook`,
-   `/coaprobe r5 known 78`. The chat answers `COAPROBE r1 ok`.
+   `/coaprobe r5 known 78`, `/coaprobe r6 log 20`, `/coaprobe r7 state`. The chat answers `COAPROBE r1 ok`.
 3. Type `/reload`: the client writes the answers to
    `WTF/Account/<ACCOUNT>/SavedVariables/CoaProbe.lua` (`WTF\Account\<ACCOUNT>\SavedVariables\CoaProbe.lua` on
    Windows).
@@ -664,8 +668,29 @@ The probe addon does not need the lab client, the slots or Linux: it answers in 
 Answers are JSON: `spell` gives name, rank, icon, cost, cast time, range, whether the character knows it and the
 tooltip lines; `item` gives the tooltip lines; `auras` gives name, spell id, count, duration, expirationTime, caster
 and whether it is harmful for every aura on the unit; `spellbook` lists the known spells with their ids; `known`
-answers one spell id. The addon keeps the last 50 answers and never talks to the server, so it is safe on a live
-realm. Limits: it cannot read action bars, 3D models or UI Lua errors, and a request must not contain `|`.
+answers one spell id; `log` returns the addon's own continuous capture (see below); `state` snapshots the player
+and target together. The addon keeps the last 50 answers and never talks to the server, so it is safe on a live
+realm. Limits: it cannot read action bars, 3D models or Lua errors (a `seterrorhandler` wrapper never sees them),
+and a request must not contain `|`.
+
+Installing the addon adds a second SavedVariable, `CoaProbeLog`, written into the same `CoaProbe.lua` file: the
+addon continuously captures UI errors ("Not enough rage"), system messages and the player's own casts (with their
+failure reason) as they happen, capped at the last 200 entries, independently of any `/coaprobe` request. The `log`
+command reads it back the same way as any other answer.
+
+## Skills
+
+[`skills/coa-client-check`](skills/coa-client-check) is a Claude Code skill: it documents the workflow for checking
+whether a client-visible symptom (tooltip text or values, an aura shown on the wrong unit, a missing icon or model,
+a broken UI element) reproduces, by driving the lab client above and CoaProbe, and returns one of three verdicts
+(reproduced / not reproduced / inconclusive) with its evidence. Server-side symptoms belong to the Ghost e2e
+harness instead. The skill needs `coa-slot` and `coa-client-lab` on `PATH`, so it is not useful without this guide.
+
+To use it locally, symlink it into Claude Code's skill directory:
+
+```bash
+ln -s <path to this repository>/skills/coa-client-check ~/.claude/skills/coa-client-check
+```
 
 ## Issue workflow for agents
 
