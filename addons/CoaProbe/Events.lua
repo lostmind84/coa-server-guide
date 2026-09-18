@@ -16,7 +16,9 @@ function Events.record(log, entry)
 end
 
 -- Turns one game event into a flat record; returns nil for events we do not keep.
-function Events.entry(api, event, arg1, arg2, arg3, arg4)
+-- UNIT_SPELLCAST_SUCCEEDED|FAILED|INTERRUPTED carry (unit, spellName, spellRank, castID, spellID) in 3.3.5:
+-- arg4 is the client's per-cast sequence counter, not a spell id; the real id is arg5.
+function Events.entry(api, event, arg1, arg2, arg3, arg4, arg5)
     if event == "UI_ERROR_MESSAGE" then
         return { time = api.time(), kind = "error", text = arg1 }
     elseif event == "UI_INFO_MESSAGE" then
@@ -24,11 +26,11 @@ function Events.entry(api, event, arg1, arg2, arg3, arg4)
     elseif event == "CHAT_MSG_SYSTEM" then
         return { time = api.time(), kind = "system", text = arg1 }
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" and arg1 == "player" then
-        return { time = api.time(), kind = "cast", spell = arg2, spellId = arg4 }
+        return { time = api.time(), kind = "cast", spell = arg2, spellRank = arg3, castId = arg4, spellId = arg5 }
     elseif event == "UNIT_SPELLCAST_FAILED" and arg1 == "player" then
-        return { time = api.time(), kind = "cast_failed", spell = arg2, spellId = arg4 }
+        return { time = api.time(), kind = "cast_failed", spell = arg2, spellRank = arg3, castId = arg4, spellId = arg5 }
     elseif event == "UNIT_SPELLCAST_INTERRUPTED" and arg1 == "player" then
-        return { time = api.time(), kind = "cast_interrupted", spell = arg2, spellId = arg4 }
+        return { time = api.time(), kind = "cast_interrupted", spell = arg2, spellRank = arg3, castId = arg4, spellId = arg5 }
     end
 end
 
