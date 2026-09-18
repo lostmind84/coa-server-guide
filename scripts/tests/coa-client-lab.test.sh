@@ -280,7 +280,12 @@ run_lab login labspike secretpw
 assert_contains "login clicks the account field" "$FAKE_LOG" "mousemove --window 4242 640 378 click 1"
 assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 60 labspike"
 assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 60 secretpw"
-assert_eq "login enters world twice Return" "$(grep -c 'key --window 4242 Return$' "$FAKE_LOG")" "2"
+# Two Returns reach the world (submit the password, then enter the world); the sound CVars typed afterwards add
+# their own Returns, so count only what happens before the first /console line.
+assert_eq "login enters world twice Return" \
+    "$(sed -n '1,/console Sound_EnableAllSound/p' "$FAKE_LOG" | grep -c 'key --window 4242 Return$')" "2"
+assert_contains "login silences the client" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_EnableAllSound 0"
+assert_contains "login zeroes the master volume" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_MasterVolume 0"
 
 run_lab screenshot "$WORK/shot.png"
 assert_eq "screenshot prints path" "$(cat "$WORK/out")" "$WORK/shot.png"
