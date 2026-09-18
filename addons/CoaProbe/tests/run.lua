@@ -148,6 +148,10 @@ SlashCmdList = {}
 local printed = {}
 print_original = print
 print = function(text) printed[#printed + 1] = text end
+CreateFrame = function()
+    return { RegisterEvent = function() end, SetScript = function() end }
+end
+dofile(root .. "/Events.lua")
 dofile(root .. "/CoaProbe.lua")
 
 check("slash registered", SLASH_COAPROBE1, "/coaprobe")
@@ -169,6 +173,41 @@ CoaProbe.handle(stub, "s2 dance")
 check("error line", printed[1], "COAPROBE s2 error: unknown command dance")
 
 print = print_original
+
+-- Events and the log/state commands
+local eventApi = makeApi()
+local entry = CoaProbe.Events.entry(eventApi, "UI_ERROR_MESSAGE", "Not enough rage")
+check("ui error kind", entry.kind, "error")
+check("ui error text", entry.text, "Not enough rage")
+local failed = CoaProbe.Events.entry(eventApi, "UNIT_SPELLCAST_FAILED", "player", "Witchbane", nil, 574320)
+check("cast failed kind", failed.kind, "cast_failed")
+check("cast failed spell id", failed.spellId, 574320)
+check("other unit ignored", CoaProbe.Events.entry(eventApi, "UNIT_SPELLCAST_FAILED", "target", "X"), nil)
+check("unwatched event ignored", CoaProbe.Events.entry(eventApi, "BAG_UPDATE"), nil)
+
+local ring = {}
+for i = 1, CoaProbe.Events.MAX + 5 do
+    CoaProbe.Events.record(ring, { time = i, kind = "info", text = "e" .. i })
+end
+check("log capped", #ring, CoaProbe.Events.MAX)
+check("log keeps the newest", ring[#ring].text, "e" .. (CoaProbe.Events.MAX + 5))
+
+eventApi.CoaProbeLog = { { time = 1, kind = "error", text = "a" }, { time = 2, kind = "info", text = "b" } }
+local logged = run(eventApi, "l1 log 1")
+check("log total", logged.result.total, 2)
+check("log returns the newest", logged.result.entries[1].text, "b")
+check("log count", #logged.result.entries, 1)
+
+eventApi.UnitExists = function(token) return token == "player" end
+eventApi.UnitName = function() return "Labarba" end
+eventApi.UnitLevel = function() return 60 end
+eventApi.UnitHealth = function() return 1200 end
+eventApi.UnitHealthMax = function() return 2236 end
+eventApi.UnitIsDeadOrGhost = function() return false end
+local state = run(eventApi, "s1 state")
+check("state player name", state.result.player.name, "Labarba")
+check("state player auras", #state.result.player.auras, 1)
+check("state no target", state.result.target.exists, false)
 
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)

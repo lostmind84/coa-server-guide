@@ -93,6 +93,42 @@ Commands.handlers.spellbook = function(api)
     return { spells = spells }
 end
 
+-- log [n]: the last n captured events (default 25), oldest first. The agent reads this after an action to learn
+-- why it failed, because the message only ever appeared on screen.
+Commands.handlers.log = function(api, args)
+    local count = tonumber(args[1]) or 25
+    local log = api.CoaProbeLog or {}
+    local from = #log - count + 1
+    if from < 1 then
+        from = 1
+    end
+    local entries = {}
+    for i = from, #log do
+        entries[#entries + 1] = log[i]
+    end
+    return { total = #log, entries = entries }
+end
+
+-- state: one snapshot of the player and the current target. A probe writes its answer through /reload, which clears
+-- the target selection, so asking for the target in a second probe would always find nothing.
+Commands.handlers.state = function(api, args)
+    local function unit(token)
+        if not api.UnitExists(token) then
+            return { exists = false }
+        end
+        return {
+            exists = true,
+            name = api.UnitName(token),
+            level = api.UnitLevel(token),
+            health = api.UnitHealth(token),
+            maxHealth = api.UnitHealthMax(token),
+            dead = api.UnitIsDeadOrGhost(token) and true or false,
+            auras = Commands.handlers.auras(api, { token }).auras,
+        }
+    end
+    return { player = unit("player"), target = unit("target") }
+end
+
 Commands.handlers.known = function(api, args)
     local id, err = numberArg(args, "usage: known <id>")
     if not id then

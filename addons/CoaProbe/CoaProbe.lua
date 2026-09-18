@@ -18,7 +18,23 @@ function CoaProbe.handle(api, line)
     end
 end
 
+function CoaProbe.onEvent(api, event, ...)
+    CoaProbeLog = CoaProbeLog or {}
+    local entry = CoaProbe.Events.entry(api, event, ...)
+    if entry then
+        CoaProbe.Events.record(CoaProbeLog, entry)
+    end
+end
+
 SLASH_COAPROBE1 = "/coaprobe"
 SlashCmdList["COAPROBE"] = function(msg)
     CoaProbe.handle(_G, msg)
 end
+
+local frame = CreateFrame("Frame")
+for _, event in ipairs(CoaProbe.Events.WATCHED) do
+    frame:RegisterEvent(event)
+end
+frame:SetScript("OnEvent", function(_, event, ...)
+    CoaProbe.onEvent(_G, event, ...)
+end)
