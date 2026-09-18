@@ -78,7 +78,11 @@ Rules, in order of priority:
    3. Module or unit tests (`modules/mod-ascension-compat/tests/`).
    4. Source and data analysis with exact manual steps, written in the PR as not automated.
 
-   Client-only symptoms (tooltip values, icons, models, Lua errors) go through the client lab instead.
+   Client-only symptoms (tooltip text or values, an aura shown on the wrong unit, icons, models, broken UI) are
+   not provable by either harness: run the `coa-client-check` skill
+   ([`skills/coa-client-check`](../skills/coa-client-check)), which drives the lab client and returns
+   reproduced / not reproduced / inconclusive with its evidence. Write its expectation before touching the
+   client, and treat any technical failure as inconclusive, never as "not reproduced".
 2. **Check an audit report before treating it as a bug.** Those issues were filed by searching the source for the
    spell ID, so a passive working through native spell modifiers or stat auras is reported as missing. Trace the
    spell to the value the server actually uses, then classify:
