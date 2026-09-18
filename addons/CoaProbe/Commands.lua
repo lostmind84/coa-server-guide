@@ -123,9 +123,16 @@ Commands.handlers.state = function(api, args)
             health = api.UnitHealth(token),
             maxHealth = api.UnitHealthMax(token),
             dead = api.UnitIsDeadOrGhost(token) and true or false,
-            power = api.UnitMana(token),
-            powerMax = api.UnitManaMax(token),
             powerType = api.UnitPowerType(token),
+            -- The displayed bar is not always the resource the server charges: CoA classes can spend rage while
+            -- the client shows mana, so report every power index the spell costs could come from.
+            powers = {
+                mana = api.UnitPower(token, 0),
+                rage = api.UnitPower(token, 1),
+                focus = api.UnitPower(token, 2),
+                energy = api.UnitPower(token, 3),
+                runicPower = api.UnitPower(token, 6),
+            },
             auras = Commands.handlers.auras(api, { token }).auras,
         }
     end
