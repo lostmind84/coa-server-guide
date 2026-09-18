@@ -451,17 +451,22 @@ Same repository, same `/srv/coa` layout. Differences:
 
 ## Automated gameplay tests
 
-The repository ships scenario tests that run inside a disposable worldserver with copied databases. From the
-repository root, after building the server images:
+The repository ships scenario tests that run inside a disposable worldserver with copied databases: the scenario
+asserts the server's own calculations (spell damage, modifiers, cast times, costs, auras, cooldowns, talents,
+pets, loot, quests). `apps/coa-gameplay-test/README.md` documents Windows paths; the Compose service used below is
+still in [PR #278](https://github.com/jealous-sound/azerothcore-wotlk-coa/pull/278), so the checkout must contain
+`apps/coa-gameplay-test/docker/`. From the repository root, after building the server images:
 
     mkdir -p .cache/coa-gameplay-tests
     docker compose -f docker-compose.yml -f apps/coa-gameplay-test/docker/compose.yml --profile tests \
       build ac-gameplay-test
     docker compose -f docker-compose.yml -f apps/coa-gameplay-test/docker/compose.yml --profile tests \
-      run --rm ac-gameplay-test run apps/coa-gameplay-test/scenarios/frostbolt.json
+      run --rm --no-deps ac-gameplay-test run apps/coa-gameplay-test/scenarios/frostbolt.json
 
-A run copies the three databases (about 3 minutes here), runs the scenario and drops the copies. Results go to
-`.cache/coa-gameplay-tests/`. Details: `apps/coa-gameplay-test/README.md`.
+The first run copies the three databases (about 4.5 minutes here) and keeps the world copy; later runs reuse it
+(1.5 minutes for a second scenario). Results go to `.cache/coa-gameplay-tests/<timestamp>/`, the world cache to
+`.cache/coa-gameplay-tests/world-cache/`. The running server is not touched. With a server slot, prefix the
+command with `coa-slot compose N` and give the compose file an absolute path inside the slot's build clone.
 
 ## Known pitfalls
 
@@ -641,6 +646,17 @@ slot; create the character through a Ghost bot login rather than the character c
 including a 10-second wait so the reloaded interface accepts input again). Tests:
 `lua5.1 addons/CoaProbe/tests/run.lua` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`
 (`scripts/tests/coa-client-lab.test.sh` needs `python3`).
+
+## Issue workflow for agents
+
+[`agents/coa-triage.md`](agents/coa-triage.md) is the workflow this tooling was built for: list the open CoA
+issues grouped into batches, then take one batch from reproduction to PR. It expects a gameplay scenario as the
+default proof for each issue, Ghost bots for what that harness does not cover (client packets, experience,
+RDF/LFG, duels, real relogs, quest-giver interaction), and the client lab for client-only symptoms. Claiming and
+closing issues adapt to the permissions your account actually has.
+
+Drop it where your agent reads commands or skills — for Claude Code, `~/.claude/commands/coa-triage.md`, or a
+symlink to this file — and invoke it as `/coa-triage`.
 
 ## Contributing back
 
