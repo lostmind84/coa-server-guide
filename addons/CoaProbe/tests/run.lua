@@ -181,12 +181,11 @@ check("ui error kind", entry.kind, "error")
 check("ui error text", entry.text, "Not enough rage")
 -- 3.3.5 payload: (unit, spellName, spellRank, castID, spellID). arg4 (castID) and arg5 (spellID) are given
 -- different values here so a test that reads spellId from the wrong argument fails.
-local failed = CoaProbe.Events.entry(eventApi, "UNIT_SPELLCAST_FAILED", "player", "Witchbane", "Rank 2", 7, 574320)
+local failed = CoaProbe.Events.entry(eventApi, "UNIT_SPELLCAST_FAILED", "player", "Witchbane", "Rank 7", 42)
 check("cast failed kind", failed.kind, "cast_failed")
 check("cast failed spell name", failed.spell, "Witchbane")
-check("cast failed spell rank", failed.spellRank, "Rank 2")
-check("cast failed cast id", failed.castId, 7)
-check("cast failed spell id", failed.spellId, 574320)
+check("cast failed cast id", failed.castId, 42)
+check("cast failed rank", failed.spellRank, "Rank 7")
 check("other unit ignored", CoaProbe.Events.entry(eventApi, "UNIT_SPELLCAST_FAILED", "target", "X"), nil)
 check("unwatched event ignored", CoaProbe.Events.entry(eventApi, "BAG_UPDATE"), nil)
 

@@ -25,12 +25,14 @@ function Events.entry(api, event, arg1, arg2, arg3, arg4, arg5)
         return { time = api.time(), kind = "info", text = arg1 }
     elseif event == "CHAT_MSG_SYSTEM" then
         return { time = api.time(), kind = "system", text = arg1 }
+    -- This client sends (unit, spellName, spellRank, castID) for cast events: there is no spell id to capture.
+    -- Observed on the lab client: the fifth argument is always nil, the fourth is the cast line id.
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" and arg1 == "player" then
-        return { time = api.time(), kind = "cast", spell = arg2, spellRank = arg3, castId = arg4, spellId = arg5 }
+        return { time = api.time(), kind = "cast", spell = arg2, spellRank = arg3, castId = arg4 }
     elseif event == "UNIT_SPELLCAST_FAILED" and arg1 == "player" then
-        return { time = api.time(), kind = "cast_failed", spell = arg2, spellRank = arg3, castId = arg4, spellId = arg5 }
+        return { time = api.time(), kind = "cast_failed", spell = arg2, spellRank = arg3, castId = arg4 }
     elseif event == "UNIT_SPELLCAST_INTERRUPTED" and arg1 == "player" then
-        return { time = api.time(), kind = "cast_interrupted", spell = arg2, spellRank = arg3, castId = arg4, spellId = arg5 }
+        return { time = api.time(), kind = "cast_interrupted", spell = arg2, spellRank = arg3, castId = arg4 }
     end
 end
 

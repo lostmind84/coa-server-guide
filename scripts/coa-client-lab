@@ -14,6 +14,7 @@ WORKSPACE="${COA_LAB_WORKSPACE:-9}"
 WINDOW_TIMEOUT="${COA_LAB_WINDOW_TIMEOUT:-120}"
 STOP_TIMEOUT="${COA_LAB_STOP_TIMEOUT:-30}"
 SLEEP="${COA_LAB_SLEEP:-sleep}"
+SILENT_SINK="${COA_LAB_SILENT_SINK:-coa_client_lab_silence}"
 PROBE_TIMEOUT="${COA_LAB_PROBE_TIMEOUT:-30}"
 RELOAD_WAIT="${COA_LAB_RELOAD_WAIT:-10}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -199,8 +200,13 @@ cmd_start() {
     cp -r "$ADDON_SRC" "$LAB_CLIENT/Interface/AddOns/CoaProbe"
     rm -rf "$LAB_CLIENT/Interface/AddOns/CoaProbe/tests"
 
+    # A dedicated null sink: the client's own sound settings are rewritten on exit and its streams only appear once
+    # the game has loaded, so muting afterwards is a race. Sending it to a sink nobody listens to is not.
+    if command -v pactl > /dev/null && ! pactl list short sinks | grep -q "$SILENT_SINK"; then
+        pactl load-module module-null-sink sink_name="$SILENT_SINK" > /dev/null || true
+    fi
     step "Launching the lab client on workspace $WORKSPACE for slot $n ($auth)"
-    local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d,winepulse.drv=d,winealsa.drv=d,winecoreaudio.drv=d,wineoss.drv=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
+    local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env PULSE_SINK=$SILENT_SINK WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d,winepulse.drv=d,winealsa.drv=d,winecoreaudio.drv=d,wineoss.drv=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
     hyprctl eval "hl.exec_cmd([[$cmd]], { workspace = \"$WORKSPACE silent\" })" > /dev/null
 
     # Discovery reads the PID we just wrote via `echo $$` above directly, not through gamescope_pid.
@@ -309,6 +315,14 @@ cmd_login() {
     "$SLEEP" 25
     xdotool key --window "$WINDOW" Return
     "$SLEEP" 45
+    # In-game sound options, set through the client's own CVars: they take effect at once and are saved with the
+    # rest of the settings. The null sink above covers the login screen, where there is no chat to type into.
+    local setting
+    for setting in Sound_EnableAllSound Sound_EnableSFX Sound_EnableAmbience Sound_EnableMusic Sound_EnableErrorSpeech; do
+        cmd_chat "/console $setting 0"
+        "$SLEEP" 0.3
+    done
+    cmd_chat "/console Sound_MasterVolume 0"
     echo "login sent for $account; check the world with: coa-client-lab screenshot"
 }
 
@@ -393,6 +407,11 @@ cmd_stop() {
                 echo "WARN:   $file"
             done <<< "$changed"
         fi
+    fi
+    if command -v pactl > /dev/null; then
+        while read -r module; do
+            [[ -n "$module" ]] && pactl unload-module "$module" || true
+        done < <(pactl list short modules | awk -v name="sink_name=$SILENT_SINK" '$0 ~ name { print $1 }')
     fi
     rm -f "$LOCK" "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/started" \
         "$STATE_DIR/gamescope.starttime" "$STATE_DIR/account"
