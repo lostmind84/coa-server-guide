@@ -41,6 +41,7 @@ Running (one lab client at a time):
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
   screenshot [PATH]        save a PNG of the client window and print its path
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
+  mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID);
                            prints JSON
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
@@ -199,7 +200,7 @@ cmd_start() {
     rm -rf "$LAB_CLIENT/Interface/AddOns/CoaProbe/tests"
 
     step "Launching the lab client on workspace $WORKSPACE for slot $n ($auth)"
-    local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
+    local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d,winepulse.drv=d,winealsa.drv=d,winecoreaudio.drv=d,wineoss.drv=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
     hyprctl eval "hl.exec_cmd([[$cmd]], { workspace = \"$WORKSPACE silent\" })" > /dev/null
 
     # Discovery reads the PID we just wrote via `echo $$` above directly, not through gamescope_pid.
@@ -220,12 +221,30 @@ cmd_start() {
                 echo "$display" > "$STATE_DIR/display"
                 echo "$window" > "$STATE_DIR/window"
                 echo "lab client window $window on display $display (gamescope pid $pid)"
+            cmd_mute || true
                 return 0
             fi
         fi
         sleep 1
     done
     die "no client window after ${WINDOW_TIMEOUT}s, see $STATE_DIR/client.log; then: coa-client-lab stop"
+}
+
+# Mute only this lab client's audio streams. The in-game sound settings are rewritten by the client on exit and
+# umu-run resets WINEDLLOVERRIDES, so the reliable place is the sound server, matched by process id so the user's
+# own client is never touched.
+cmd_mute() {
+    local pid tree ids id stream_pid
+    command -v pactl > /dev/null || { echo "pactl not installed: cannot mute"; return 0; }
+    pid=$(gamescope_pid) || die "the lab client is not running"
+    tree=" $(descendants "$pid" | tr '\n' ' ') "
+    ids=$(pactl list sink-inputs | awk '/^Sink Input #/ { id = substr($3, 2) } /application.process.id = / { gsub(/"/, "", $3); print id, $3 }')
+    while read -r id stream_pid; do
+        [[ -n "$id" ]] || continue
+        if [[ "$tree" == *" $stream_pid "* ]]; then
+            pactl set-sink-input-mute "$id" 1 && echo "muted sink input $id (pid $stream_pid)"
+        fi
+    done <<< "$ids"
 }
 
 cmd_status() {
@@ -401,6 +420,7 @@ main() {
         login) cmd_login "$@" ;;
         screenshot) cmd_screenshot "$@" ;;
         hold) cmd_hold "$@" ;;
+        mute) cmd_mute ;;
         probe) cmd_probe "$@" ;;
         stop) cmd_stop ;;
         preflight) cmd_preflight "$@" ;;
