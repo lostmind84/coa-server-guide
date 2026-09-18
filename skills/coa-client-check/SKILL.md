@@ -72,10 +72,41 @@ folder.
 ## 4. Observe
 
 1. `coa-client-lab start N`, then `coa-client-lab login <account> <password>` (about 90 s).
-2. One `coa-client-lab probe <command>` per expectation; save each answer under `answers/`.
-3. One `coa-client-lab screenshot` per finding, saved under `screenshots/`.
-4. Keyboard only: slash commands and GM commands. No blind clicking. Typed text must not contain `|`.
-5. A probe costs about 15 s because it forces a `/reload`; group the requests you need.
+2. Drive the client with `chat` (slash and GM commands), `key`, `hold KEY MS` (walk with `w`/`s`, turn with
+   `Left`/`Right`) and `screenshot`. Typed text must not contain `|`.
+3. **Read what the screen forgets.** `coa-client-lab probe log [n]` returns the addon's capture of UI errors
+   ("Target too close", "Not enough rage"), system messages and the player's casts with their failure reason.
+   Nothing else shows why an action did not happen: the red error text fades and `/reload` clears the chat.
+   Read the log after every action that could fail, before concluding anything.
+4. **One request per moment.** `coa-client-lab probe state` snapshots the player and the current target together
+   (name, level, health, every power index, auras). A probe writes its answer through `/reload`, which clears the
+   target selection, so two probes never describe the same situation.
+5. **Snapshot inside the effect window.** Many auras last seconds: send the probe immediately after the action,
+   without waiting. An empty aura list after a finished cast proves nothing.
+6. Useful facts the client hides: the displayed bar is not always the resource a spell charges (`probe state`
+   reports mana, rage, focus, energy and runic power); `.gps` prints the position into the captured system
+   messages; `.go xyz X Y Z MAP O` takes the facing as its fifth number, which answers "Target needs to be in
+   front of you".
+
+## Getting the state you need, shortest route first
+
+Waiting for the game to produce a condition rarely converges: rage decays out of combat, cooldowns return,
+fixtures wander. Set the state instead, and record what you set.
+
+- Resources: select the character (`/target <name>`) then `.modify rage 1000` (or `mana`, `energy`,
+  `runicpower`). `.modify` acts on the selected *player*: with a creature selected it answers "No character
+  selected."
+- Fixture target: a training dummy at the character's own level (`.npc add 32666` then `.npc set level <level>`)
+  never fights back, and the level gap does not distort hit or resist. Leave it at its default faction until a
+  refusal proves a hostile one is needed.
+- GM cheats (`.cheat god|power|cooldown`) change how the game behaves, so they are a last resort: use one only
+  when a captured error proves it is the blocker, and write in the report which one and why. A dummy that cannot
+  kill you removes the need for `god`; `.modify` removes the need for `power`.
+- Prefer the normal player path for what the check is about: level, `.localspec`, `.localtalent <entry> <rank>`.
+  If a forced `.learn` was used and the issue does not reproduce, redo it through the talent path before
+  concluding: the acquisition method can be the difference. Talent entry ids come from
+  `/srv/coa/server-data/dbc/CharacterAdvancement.dbc` (field layout in
+  `modules/mod-ascension-compat/src/AscensionCoATalentData.cpp`).
 
 ## 5. Verdict and evidence
 
