@@ -15,6 +15,14 @@ before touching the client, and never soften it afterwards.
 Machine details (slots, paths, harness pitfalls) live in the `coa-ghost-harness` skill; the scripts are documented
 in the public guide (https://github.com/lostmind84/coa-server-guide, Part 2).
 
+## Not this skill
+
+- A server value (damage, cost, cast time, cooldown, aura amount, loot, quest step): a `coa-gameplay-test`
+  scenario proves it without a client and stays committed as a regression test.
+- Anything a real session receives but does not render (packets, experience, movement, relogs, duels, several
+  actors): a Ghost e2e test.
+- Use this skill when the question is what the player *sees*, or when the server and the client disagree.
+
 ## Verdicts
 
 - **reproduced**: the expectation failed exactly as the issue describes.

@@ -78,6 +78,17 @@ Rules, in order of priority:
    3. Module or unit tests (`modules/mod-ascension-compat/tests/`).
    4. Source and data analysis with exact manual steps, written in the PR as not automated.
 
+   Choosing between the three, by what each one can actually prove:
+
+   | Tool | Proves | Cannot see | Cost |
+   |---|---|---|---|
+   | `coa-gameplay-test` scenario | the server's own numbers: damage and healing done, effect values, modifiers, cast time, power cost, auras, cooldowns, talents, pets, loot, quest steps | anything that needs a real session: packets, movement, relogs, and everything the client displays | a disposable worldserver with copied databases; the scenario is committed and replayable |
+   | Ghost e2e test | what a real session receives: packets and opcodes, authentication, movement, experience, RDF/LFG, duels, area triggers, war mode, chat-visible state, relogs, quest-giver interaction, several actors at once | rendering: tooltip text, icons, models, and how the interface classifies an aura | a claimed slot; a test run is seconds, the code is committed |
+   | `coa-client-check` | only what is displayed: tooltip text and values, whether an aura shows as buff or debuff and on which unit, icons and models by screenshot, UI errors | action bars, 3D model correctness, Lua errors, anything needing many characters | a claimed slot plus the lab client: about 90 s to log in and 15 s per probe, one character at a time |
+
+   A symptom that exists on both sides is proved on both: the server harness for the value, the client check for
+   what the player sees. When the two disagree, that difference is the finding.
+
    Client-only symptoms (tooltip text or values, an aura shown on the wrong unit, icons, models, broken UI) are
    not provable by either harness: run the `coa-client-check` skill
    ([`skills/coa-client-check`](../skills/coa-client-check)), which drives the lab client and returns
