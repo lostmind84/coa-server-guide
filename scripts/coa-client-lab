@@ -40,6 +40,7 @@ Running (one lab client at a time):
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
   screenshot [PATH]        save a PNG of the client window and print its path
+  hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID);
                            prints JSON
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
@@ -94,6 +95,13 @@ cmd_create() {
     # The user's remembered account, characters, addon settings and caches stay out of the lab.
     rm -rf "$LAB_CLIENT/WTF/Account" "$LAB_CLIENT/WTF/Custom" "$LAB_CLIENT/Cache" "$LAB_CLIENT/Screenshots"
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" gxResolution "${WIDTH}x${HEIGHT}"
+    # Silence: the lab client runs next to the user, and no check reads sound.
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" Sound_EnableAllSound "0"
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" Sound_EnableSFX "0"
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" Sound_EnableAmbience "0"
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" Sound_EnableMusic "0"
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" Sound_EnableErrorSpeech "0"
+    set_wtf "$LAB_CLIENT/WTF/Config.wtf" Sound_MasterVolume "0"
     # A remembered login (SET accountName ...) is account data too; drop it if the user ever ticked "remember".
     sed -i '/^SET accountName /Id' "$LAB_CLIENT/WTF/Config.wtf"
     echo "lab created: $LAB_CLIENT"
@@ -285,6 +293,16 @@ cmd_login() {
     echo "login sent for $account; check the world with: coa-client-lab screenshot"
 }
 
+# Hold a key down: walking, turning and any other continuous input the client reads as "key still pressed".
+cmd_hold() {
+    [[ $# -eq 2 ]] || die "usage: coa-client-lab hold KEY MILLISECONDS"
+    [[ "$2" =~ ^[0-9]+$ ]] || die "hold duration must be milliseconds, got: $2"
+    require_running
+    xdotool keydown --window "$WINDOW" "$1"
+    "$SLEEP" "$(awk -v ms="$2" 'BEGIN { printf "%.3f", ms / 1000 }')"
+    xdotool keyup --window "$WINDOW" "$1"
+}
+
 cmd_screenshot() {
     require_running
     local path="${1:-$LAB_ROOT/screenshots/lab-$(date +%Y%m%d-%H%M%S).png}"
@@ -382,6 +400,7 @@ main() {
         chat) cmd_chat "$@" ;;
         login) cmd_login "$@" ;;
         screenshot) cmd_screenshot "$@" ;;
+        hold) cmd_hold "$@" ;;
         probe) cmd_probe "$@" ;;
         stop) cmd_stop ;;
         preflight) cmd_preflight "$@" ;;

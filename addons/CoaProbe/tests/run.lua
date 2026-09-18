@@ -204,10 +204,15 @@ eventApi.UnitLevel = function() return 60 end
 eventApi.UnitHealth = function() return 1200 end
 eventApi.UnitHealthMax = function() return 2236 end
 eventApi.UnitIsDeadOrGhost = function() return false end
+eventApi.UnitMana = function() return 42 end
+eventApi.UnitManaMax = function() return 100 end
+eventApi.UnitPowerType = function() return 1 end
 local state = run(eventApi, "s1 state")
 check("state player name", state.result.player.name, "Labarba")
 check("state player auras", #state.result.player.auras, 1)
 check("state no target", state.result.target.exists, false)
+check("state player power", state.result.player.power, 42)
+check("state player power type", state.result.player.powerType, 1)
 
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)

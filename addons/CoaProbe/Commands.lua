@@ -123,6 +123,9 @@ Commands.handlers.state = function(api, args)
             health = api.UnitHealth(token),
             maxHealth = api.UnitHealthMax(token),
             dead = api.UnitIsDeadOrGhost(token) and true or false,
+            power = api.UnitMana(token),
+            powerMax = api.UnitManaMax(token),
+            powerType = api.UnitPowerType(token),
             auras = Commands.handlers.auras(api, { token }).auras,
         }
     end
