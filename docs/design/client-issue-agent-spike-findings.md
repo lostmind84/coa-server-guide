@@ -211,3 +211,15 @@ What the run taught, now written into the skill:
   the position into the captured system messages.
 - Sound: the client rewrites its own sound settings on exit and umu-run resets `WINEDLLOVERRIDES`, so the lab
   client is muted at the sound server, matched by process id (`coa-client-lab mute`, also run by `start`).
+
+## Client event payload (2026-09-18)
+
+`UNIT_SPELLCAST_SUCCEEDED|FAILED|INTERRUPTED` on this client carry `(unit, spellName, spellRank, castID)`: there is
+no spell id in the payload, and the fifth argument is always nil. A review assumed the 3.3.5 wire signature with a
+trailing spell id; the lab client disproved it (`cast ('Witchbane', 'Rank 7', castId 1)`). The capture keeps the
+name, the rank and the cast line id; a check that needs the id resolves it from the name through `probe spellbook`.
+
+Sound: the lab client is silenced twice over, because neither way alone held. `start` creates a null sink
+(`coa_client_lab_silence`) and launches the client with `PULSE_SINK` pointing at it, which also covers the login
+screen where there is no chat; `login` then sets the client's own CVars (`/console Sound_EnableAllSound 0` and the
+rest). Editing `WTF/Config.wtf` does not work: the client rewrites it on exit.
