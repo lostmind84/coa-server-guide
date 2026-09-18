@@ -15,7 +15,7 @@ Scope, in order:
 2. **Verify**: run the same check after a fix is deployed to a server slot.
 
 Out of scope for now: headless rendering, several lab clients in parallel, bots that play through the client,
-writing fixes (the existing `/coa-triage` flow already does that).
+writing fixes (the [`coa-triage`](../../agents/coa-triage.md) workflow already does that).
 
 ## Constraints
 
@@ -96,10 +96,13 @@ question and answer.
 Same family as `coa-gameplay-test`. Runs one check end to end and returns one of three verdicts:
 **reproduced**, **not reproduced**, **inconclusive**, always with the reason.
 
-### 5. `/coa-triage` integration
+### 5. `coa-triage` integration
 
-Issues with a client-side symptom go through `coa-client-check`: repro mode before the fix, verify mode after
-the fix is deployed to the slot.
+[`agents/coa-triage.md`](../../agents/coa-triage.md) orders the proofs: a `coa-gameplay-test` scenario is the
+default evidence for an issue, Ghost bots cover what that harness excludes (client packets, experience, RDF/LFG,
+duels, real relogs, quest-giver interaction), and issues whose symptom is only visible in the client go through
+`coa-client-check`: repro mode before the fix, verify mode after the fix is deployed to the slot. The triage table
+names the harness per batch, so a batch marked `client lab` routes here.
 
 ## Check flow
 
@@ -160,7 +163,7 @@ Each milestone is usable on its own.
 2. **CoaProbe**: done 2026-09-17 (`addons/CoaProbe`, `coa-client-lab probe`; commands ping, spell, item, auras,
    spellbook, known). UI error capture is not included: a `seterrorhandler` wrapper did not see errors.
 3. `coa-client-check` in repro mode, validated by the controls above.
-4. Verify mode and `/coa-triage` integration.
+4. Verify mode and `coa-triage` integration (the workflow already routes client-only batches here).
 
 ## Open questions
 

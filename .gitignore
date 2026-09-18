@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Agent plans stay local: they are session artefacts, not guide content.
+docs/superpowers/
