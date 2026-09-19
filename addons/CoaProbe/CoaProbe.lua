@@ -31,10 +31,33 @@ SlashCmdList["COAPROBE"] = function(msg)
     CoaProbe.handle(_G, msg)
 end
 
+-- Packet watches asked for with `pkwatch` live in CoaProbeWatch (SavedVariables) and are registered again
+-- here once the saved variables are in, since /reload -- the way every answer reaches disk -- drops them.
+function CoaProbe.restoreWatches(api)
+    if type(CoaProbe.Commands.packetApi(api).RegisterPacket) ~= "function" then
+        return 0
+    end
+    local restored = 0
+    for key, bytes in pairs(api.CoaProbeWatch or {}) do
+        local opcode = tonumber(key)
+        if opcode and pcall(CoaProbe.Commands.watch, api, opcode, tonumber(bytes)) then
+            restored = restored + 1
+        end
+    end
+    return restored
+end
+
 local frame = CreateFrame("Frame")
 for _, event in ipairs(CoaProbe.Events.WATCHED) do
     frame:RegisterEvent(event)
 end
+frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", function(_, event, ...)
+    if event == "ADDON_LOADED" then
+        if ... == "CoaProbe" then
+            CoaProbe.restoreWatches(_G)
+        end
+        return
+    end
     CoaProbe.onEvent(_G, event, ...)
 end)

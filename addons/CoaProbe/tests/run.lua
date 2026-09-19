@@ -242,6 +242,86 @@ check("ca rank", ca.result.rank, 3)
 check("ca active spec", ca.result.activeSpec, 49)
 check("ca learned AE", ca.result.learnedAE, 26)
 check("ca is talent", ca.result.isTalent, true)
+
+-- PACKET API TESTS: CreatePacket/Put*/Send and RegisterPacket as the binary exposes them
+
+local sentPackets, registered = {}, {}
+local function makePacket(opcode)
+    local packet = { opcode = opcode, writes = {}, bytes = { 1, 2, 3 }, cursor = 0 }
+    local function put(kind)
+        return function(self, value)
+            self.writes[#self.writes + 1] = kind .. "=" .. tostring(value)
+        end
+    end
+    packet.PutUInt8, packet.PutUInt16, packet.PutUInt32 = put("u8"), put("u16"), put("u32")
+    packet.PutInt8, packet.PutInt16, packet.PutInt32 = put("i8"), put("i16"), put("i32")
+    packet.PutFloat, packet.PutBool, packet.PutString = put("f"), put("b"), put("s")
+    packet.GetUInt8 = function(self)
+        self.cursor = self.cursor + 1
+        if self.cursor > #self.bytes then
+            error("past the end")
+        end
+        return self.bytes[self.cursor]
+    end
+    return packet
+end
+local pkApi = makeApi()
+pkApi.CreatePacket = makePacket
+pkApi.Send = function(packet) sentPackets[#sentPackets + 1] = packet end
+pkApi.RegisterPacket = function(opcode, fn) registered[opcode] = fn end
+
+local noApi = makeApi()
+local pk = run(noApi, "p0 pksend 2347")
+contains("pksend without the API errors", pk.error, "not available")
+
+pk = run(pkApi, "p1 pksend 2347 u32:5 u8:1 s:abc f:1.5 b:1")
+check("pksend sent", pk.result.sent, true)
+check("pksend opcode", sentPackets[1].opcode, 2347)
+check("pksend writes in order", table.concat(sentPackets[1].writes, ","), "u32=5,u8=1,s=abc,f=1.5,b=true")
+check("pksend field count", #pk.result.fields, 5)
+
+pk = run(pkApi, "p2 pksend 2347 x:1")
+contains("pksend bad field", pk.error, "bad field")
+pk = run(pkApi, "p3 pksend 2347 u32:abc")
+contains("pksend bad number", pk.error, "bad number")
+
+pk = run(pkApi, "p4 pkwatch 2347")
+check("pkwatch answers", pk.result.watching, true)
+check("pkwatch remembered", pkApi.CoaProbeWatch["2347"], 64)
+check("pkwatch registered", type(registered[2347]), "function")
+registered[2347](2347, makePacket(2347))
+check("packet logged", pkApi.CoaProbeLog[1].kind, "packet")
+check("packet opcode", pkApi.CoaProbeLog[1].opcode, 2347)
+check("packet hex", pkApi.CoaProbeLog[1].hex, "010203")
+check("packet bytes read", pkApi.CoaProbeLog[1].read, 3)
+check("packet bytes asked", pkApi.CoaProbeLog[1].asked, 64)
+
+pk = run(pkApi, "p6 pkwatch 2347 12")
+check("pkwatch with a byte count", pk.result.bytes, 12)
+pk = run(pkApi, "p7 pkwatch 2347 99999")
+contains("pkwatch refuses a huge count", pk.error, "between 1 and")
+pk = run(pkApi, "p8 pkmeta")
+check("pkmeta packet type", pk.result.packetType, "table")
+pk = run(pkApi, "p9 pkfind")
+check("pkfind global", pk.result.where.CreatePacket, "_G")
+local nsApi = makeApi()
+nsApi.C_Packet = { CreatePacket = makePacket, Send = function(packet) sentPackets[#sentPackets + 1] = packet end }
+pk = run(nsApi, "p10 pkfind")
+check("pkfind namespaced", pk.result.where.Send, "C_Packet")
+pk = run(nsApi, "p11 pksend 5 u16:7")
+check("pksend through a namespace", pk.result.sent, true)
+pk = run(pkApi, "p5 pkunwatch 2347")
+check("pkunwatch forgets", pkApi.CoaProbeWatch["2347"], nil)
+
+-- CoaProbe.lua restores the watches once the saved variables are in.
+CreateFrame = function() return { RegisterEvent = function() end, SetScript = function() end } end
+SlashCmdList = {}
+dofile(root .. "/CoaProbe.lua")
+registered = {}
+pkApi.CoaProbeWatch = { ["2347"] = 12, ["bad"] = true }
+check("watches restored", CoaProbe.restoreWatches(pkApi), 1)
+check("restored registration", type(registered[2347]), "function")
+check("no API restores nothing", CoaProbe.restoreWatches(noApi), 0)
 check("ca shim absent", ca.result.shim, false)
 check("ca reports missing call", ca.result.unavailable.IsLockedID, "absent")
 check("ca reports missing investment", ca.result.unavailable.GetClassPointInvestment, "absent")

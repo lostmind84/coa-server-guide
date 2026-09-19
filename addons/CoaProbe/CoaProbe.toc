@@ -1,7 +1,7 @@
 ## Interface: 30300
 ## Title: CoaProbe
 ## Notes: Answers coa-client-lab probe requests
-## SavedVariables: CoaProbeDB, CoaProbeLog
+## SavedVariables: CoaProbeDB, CoaProbeLog, CoaProbeWatch
 Json.lua
 Events.lua
 Commands.lua

@@ -635,6 +635,9 @@ coa-client-lab mute                        # mute this lab client's audio stream
 coa-client-lab probe spell 501281          # ask the CoaProbe addon; prints JSON (ping, spell, item, auras, spellbook, known)
 coa-client-lab probe log 20                # the addon's capture of UI errors, system messages and casts
 coa-client-lab probe state                 # snapshot of the player and current target together
+coa-client-lab probe pkwatch 1618 48       # log the next packets with that opcode (48 bytes each) -- survives /reload
+coa-client-lab probe pksend 1617 u32:1     # build a packet with the client's own CreatePacket/Put*/Send and send it
+coa-client-lab probe pkfind                # where CreatePacket, RegisterPacket, Send and ClearPacket live; pkmeta lists the methods
 coa-client-lab stop                        # warns if your own client changed meanwhile
 ```
 
