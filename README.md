@@ -703,6 +703,19 @@ closing issues adapt to the permissions your account actually has.
 Drop it where your agent reads commands or skills — for Claude Code, `~/.claude/commands/coa-triage.md`, or a
 symlink to this file — and invoke it as `/coa-triage`.
 
+Its first step, the batch table, is deterministic and does not need an agent: `scripts/coa-triage-table.py`
+fetches every open issue (paginated, cached for an hour in `~/.cache/coa-triage`, `--refresh` to refetch) and
+prints the table in a fraction of a second. Audit reports are grouped by class from their title, the rest by
+theme; issues that carry an assignee are counted separately so a batch already taken is visible.
+
+```bash
+python3 scripts/coa-triage-table.py            # cached list, prints the table
+python3 scripts/coa-triage-table.py --refresh  # refetch from GitHub first (about 20 s)
+```
+
+The grouping of everything that is not an audit report is title-based, so read those rows as a starting point,
+not a classification.
+
 ## Contributing back
 
 - You need write access or a GitHub fork of `jealous-sound/azerothcore-wotlk-coa` (external contributors open PRs
