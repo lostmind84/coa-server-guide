@@ -350,6 +350,10 @@ end
 -- pkwatch <opcode> [bytes]: from now on, and again after every /reload, record that opcode's packets into the
 -- log, `bytes` of them each (default 64). The registration itself does not survive /reload, so the opcode and
 -- its byte count are kept in CoaProbeWatch (SavedVariables) and CoaProbe.lua registers them again on load.
+-- RegisterPacket REPLACES the client's own handler for that opcode until the client process restarts
+-- (measured and decompiled 2026-09-19, coa-protocol-atlas client/lua-packet-api.md): the feature behind a
+-- watched SMSG stops working, pkunwatch does not restore it, and the saved watch is re-armed on every start.
+-- To see that a packet reached its native handler, evwatch the event that handler fires instead.
 Commands.handlers.pkwatch = function(api, args)
     local opcode, err = numberArg(args, "usage: pkwatch <opcode> [bytes]")
     if not opcode then
@@ -368,7 +372,8 @@ Commands.handlers.pkwatch = function(api, args)
     if not ok then
         return nil, "RegisterPacket failed: " .. tostring(problem)
     end
-    return { opcode = opcode, bytes = count, watching = true }
+    return { opcode = opcode, bytes = count, watching = true,
+             note = "the client's own handler for this opcode is replaced until the client restarts" }
 end
 
 Commands.handlers.pkunwatch = function(api, args)
