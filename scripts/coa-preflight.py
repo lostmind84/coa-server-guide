@@ -34,6 +34,8 @@ import importlib.util
 import shutil
 import struct
 import subprocess
+import time
+from datetime import datetime, timezone
 import sys
 import tempfile
 from collections import defaultdict
@@ -57,6 +59,10 @@ class Report:
         if level == "FAIL":
             self.failed = True
         print(f"{level:4}  {area:6}  {message}")
+
+
+WORLDSERVER_BIN = "/azerothcore/env/dist/bin/worldserver"
+READY_TIMEOUT = 120
 
 
 def run(cmd, cwd=None, check=True):
@@ -92,11 +98,23 @@ def check_server(report, head, container):
     if running != "true" or restarting == "true":
         report.line("FAIL", "server", f"{container} is not running cleanly (running={running}, restarting={restarting})")
         return
-    logs = subprocess.run(["docker", "logs", "--since", started, container], capture_output=True).stdout
-    text = logs.decode("utf-8", "replace")
+    # coa-slot start returns before the worldserver has finished loading, so a preflight run right after it
+    # would report a red that clears itself seconds later. Wait for the ready line before deciding.
+    # Only worth waiting while the container is still young enough to be loading; an older one whose log no
+    # longer carries the line will never produce it, and waiting would just add two minutes to a red run.
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))
+    waited = age.total_seconds() < READY_TIMEOUT
+    deadline = time.monotonic() + (READY_TIMEOUT if waited else 0)
+    while True:
+        logs = subprocess.run(["docker", "logs", "--since", started, container], capture_output=True).stdout
+        text = logs.decode("utf-8", "replace")
+        if "ready..." in text or time.monotonic() >= deadline:
+            break
+        time.sleep(3)
     revisions = [l.split("rev.")[1].split()[0] for l in text.splitlines() if "AzerothCore rev." in l]
     if "ready..." not in text:
-        report.line("FAIL", "server", f"{container} started at {started} but has not reported ready")
+        report.line("FAIL", "server", f"{container} started at {started} and has not reported ready"
+                    + (f" within {READY_TIMEOUT}s" if waited else "; its log carries no ready line"))
     if not revisions:
         report.line("FAIL", "server", "no revision line in the current run's log")
         return
@@ -107,30 +125,31 @@ def check_server(report, head, container):
         report.line("PASS", "server", f"worldserver built from the checked-out commit {built}")
 
 
-def check_harness_image(report, container):
+def check_harness_image(report, head, container):
     """The coa-gameplay-test image is built FROM the worldserver image, so it bakes its own copy of the
     binary. Rebuilding the worldserver leaves it behind, and scenarios then run the older code while
-    everything else here passes."""
+    everything else here passes. Ask the baked binary what it is rather than comparing image dates: that
+    also catches a harness rebuilt from a worldserver image which was itself stale."""
     image = run(["docker", "inspect", container, "--format", "{{.Config.Image}}"], check=False).strip()
     harness = image.replace("ac-wotlk-worldserver", "ac-wotlk-gameplay-test")
     if not image or harness == image:
         report.line("WARN", "harness", f"cannot derive the gameplay-test image from {image or container}")
         return
-
-    def created(ref):
-        return run(["docker", "image", "inspect", ref, "--format", "{{.Created}}"], check=False).strip()
-
-    base, test = created(image), created(harness)
-    if not base:
-        report.line("WARN", "harness", f"{image} not found: the gameplay-test image cannot be compared")
-    elif not test:
+    if not run(["docker", "image", "inspect", harness, "--format", "{{.Id}}"], check=False).strip():
         report.line("WARN", "harness", f"{harness} does not exist: build it before running scenarios")
-    elif test < base:
-        report.line("FAIL", "harness", f"{harness} predates {image} ({test} < {base}): scenarios would run a "
-                    "stale worldserver. Rebuild it: coa-slot compose N -f "
+        return
+    out = run(["docker", "run", "--rm", "--entrypoint", WORLDSERVER_BIN, harness, "--version"], check=False)
+    revisions = [l.split("rev.")[1].split()[0] for l in out.splitlines() if "AzerothCore rev." in l]
+    if not revisions:
+        report.line("WARN", "harness", f"{harness} reported no revision: what it bakes cannot be verified")
+        return
+    built = revisions[0].rstrip("+")
+    if not head.startswith(built):
+        report.line("FAIL", "harness", f"{harness} bakes {built}, checkout is at {head[:12]}: scenarios would run "
+                    "that binary, not yours. Rebuild it: coa-slot compose N -f "
                     "\"$CLONE/apps/coa-gameplay-test/docker/compose.yml\" --profile tests build ac-gameplay-test")
     else:
-        report.line("PASS", "harness", f"gameplay-test image is no older than {image}")
+        report.line("PASS", "harness", f"gameplay-test image bakes the checked-out commit {built}")
 
 
 def applied_updates(db_container, schema):
@@ -324,7 +343,7 @@ def main():
     try:
         head = check_git(report, args.repo)
         check_server(report, head, args.worldserver)
-        check_harness_image(report, args.worldserver)
+        check_harness_image(report, head, args.worldserver)
         check_db(report, args.repo, args.database)
         mpqcli = shutil.which("mpqcli")
         if args.skip_dbc:
