@@ -44,7 +44,7 @@ Running (one lab client at a time):
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
-                           ca [ENTRY], log [n], state, pksend OPCODE [u32:N u8:N s:TEXT ...], pkwatch OPCODE [BYTES], pkmeta, pkfind,
+                           ca [ENTRY], log [n], state, pksend OPCODE [u32:N u8:N s:TEXT ...], pkwatch OPCODE [BYTES], pkmeta, pkfind, eval EXPR,
                            pkunwatch OPCODE); prints JSON
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window

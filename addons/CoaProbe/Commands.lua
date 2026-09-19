@@ -390,6 +390,45 @@ function Commands.watch(api, opcode, count)
     end)
 end
 
+-- eval <lua expression>: evaluate an expression in the client and return its values, so a replay can observe
+-- any global, API result or saved variable without a dedicated command. Tables are returned as-is (the JSON
+-- encoder walks them); functions and userdata as their type name. Runs in the addon's insecure environment.
+local function describe(value)
+    local kind = type(value)
+    if kind == "table" then
+        local out = {}
+        for key, inner in pairs(value) do
+            out[tostring(key)] = describe(inner)
+        end
+        return out
+    elseif kind == "function" or kind == "userdata" or kind == "thread" then
+        return kind
+    end
+    return value
+end
+
+Commands.handlers.eval = function(api, args)
+    local source = table.concat(args, " ")
+    if source == "" then
+        return nil, "usage: eval <lua expression>"
+    end
+    local chunk, err = api.loadstring("return " .. source)
+    if not chunk then
+        return nil, "compile: " .. tostring(err)
+    end
+    api.setfenv(chunk, api)
+    local results = { api.pcall(chunk) }
+    local ok = table.remove(results, 1)
+    if not ok then
+        return nil, "runtime: " .. tostring(results[1])
+    end
+    local values = {}
+    for i = 1, #results do
+        values[i] = describe(results[i])
+    end
+    return { values = values, count = #results }
+end
+
 function Commands.run(api, line)
     local words = {}
     for word in line:gmatch("%S+") do

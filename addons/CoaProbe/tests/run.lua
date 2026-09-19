@@ -310,6 +310,22 @@ pk = run(nsApi, "p10 pkfind")
 check("pkfind namespaced", pk.result.where.Send, "C_Packet")
 pk = run(nsApi, "p11 pksend 5 u16:7")
 check("pksend through a namespace", pk.result.sent, true)
+local evalApi = makeApi()
+evalApi.loadstring, evalApi.setfenv, evalApi.pcall = loadstring, setfenv, pcall
+evalApi.GetRealmName = function() return "Atlas" end
+evalApi.Enum = { RecoveryCategory = { DeletedItems = 5 } }
+local ev = run(evalApi, "e1 eval GetRealmName(), 1 + 1")
+check("eval count", ev.result.count, 2)
+check("eval first", ev.result.values[1], "Atlas")
+check("eval second", ev.result.values[2], 2)
+ev = run(evalApi, "e2 eval Enum.RecoveryCategory")
+check("eval table", ev.result.values[1].DeletedItems, 5)
+ev = run(evalApi, "e3 eval nosuchfunction()")
+contains("eval runtime error", ev.error, "runtime:")
+ev = run(evalApi, "e4 eval 1 +")
+contains("eval compile error", ev.error, "compile:")
+ev = run(evalApi, "e5 eval")
+contains("eval usage", ev.error, "usage")
 pk = run(pkApi, "p5 pkunwatch 2347")
 check("pkunwatch forgets", pkApi.CoaProbeWatch["2347"], nil)
 
