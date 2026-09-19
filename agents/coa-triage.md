@@ -53,6 +53,13 @@ Dispatch contract, in the dispatch prompt itself:
   `replace_symbol_body`, `rename_symbol`, or an equivalent), require it and say that grep on a symbol name is a
   defect, not a shortcut.
 - Name the slot number and forbid touching any other slot, and restate rule 3 (fix only what the issue reports).
+- Restate rule 8's batching: deploy, rebuild the harness image and preflight once per batch of changes, never
+  per file. Said imprecisely ("redeploy after any change"), a subagent takes it literally and pays a 5-10 min
+  cycle per SQL file.
+- Say that a `Fixes #N` line belongs only on a commit whose issue was proved, and that a reverted attempt
+  leaves no `Fixes` line anywhere — including on the revert. Subagents routinely get this wrong, and the cost
+  is closing someone's open issue with a PR that settled nothing.
+- List the harness walls already known, so they are not rediscovered at the cost of an hour each.
 - Give the subagent the issue text it needs; it starts cold and must not re-derive the batch.
 
 One subagent per independent issue can run in parallel, but only one at a time may use the slot's server: serialise
@@ -183,6 +190,17 @@ Rules, in order of priority:
    earlier ones, `python3 apps/codestyle/codestyle-cpp.py --files <changed>`, module tests under
    `modules/mod-ascension-compat/tests/`, `git diff --check`. An issue that cannot be reproduced or fails
    verification leaves the branch and is reported; it never holds back the rest of the batch.
+
+   **Deploy per batch of changes, never per change.** One cycle is `coa-slot deploy N <branch>`, then the
+   harness image rebuild (`coa-slot compose N -f "$CLONE/apps/coa-gameplay-test/docker/compose.yml" --profile
+   tests build ac-gameplay-test` — `deploy` does not rebuild it, and a stale image silently runs the previous
+   binary), then `coa-slot preflight N`. That cycle costs 5 to 10 minutes, so write all the SQL and C++ the
+   batch needs, run it **once**, then execute every affected scenario back to back with the 30 s gap between
+   runs. Paying it per file turns a 90 s cadence into a 10 min one and can triple a batch's wall-clock time.
+
+   The one case that needs its own cycle is fail-before / pass-after proof: deploy the batch without the
+   changes under test, run those scenarios to capture the failures, then deploy with them and re-run. That is
+   two cycles for the whole batch, not two per issue.
 9. **Publish only when the user says so**: push to your remote, open the server PR against the upstream CoA
    repository (follows
    `.github/pull_request_template.md`; per issue the commit, its scenario and the outcome — fixed, already works,
