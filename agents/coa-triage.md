@@ -136,8 +136,13 @@ Rules, in order of priority:
    - **real bug**: fix it, with a scenario failing before and passing after;
    - **already works natively**: no code change, but commit a regression scenario proving the tooltip contract, so
      the issue can be closed with evidence;
-   - **not obtainable**: no `CharacterAdvancement.dbc` row, no trainer, create-info, module or SQL grant. Change
-     nothing and say so in the PR with the evidence.
+   - **not obtainable**: no player can acquire or trigger it. Change nothing and say so in the PR with the
+     evidence. This fork is a reconstruction, so its own database cannot establish this: a missing acquisition
+     row is exactly what lost server data looks like. Settle it with `~/CoaServer/reference/coa-obtainable`,
+     which compares the checkout against captures taken while the servers ran and, before any verdict,
+     calibrates each source against the spells that class is already known to acquire. Never report a bare
+     absence from an uncalibrated source. The same tool finds the reverse case, spells the live capture offers
+     that this fork's `CharacterAdvancement.dbc` lacks, which are real gaps worth their own report.
 
    Contract: `.agents/docs/systems/ascension-spell-parity.md`. Shape of such a PR: #2521. When a tooltip promises
    more than the client data delivers, implement the tooltip part and record it in `docs/<class>-completion.md`.
