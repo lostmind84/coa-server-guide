@@ -703,6 +703,11 @@ closing issues adapt to the permissions your account actually has.
 Drop it where your agent reads commands or skills — for Claude Code, `~/.claude/commands/coa-triage.md`, or a
 symlink to this file — and invoke it as `/coa-triage`.
 
+[`agents/git-safety.md`](agents/git-safety.md) covers the workspace rules a batch misses most expensively: prove a
+scenario fails before the fix exists rather than resetting to re-observe it, give each dispatched implementer its
+own worktree, never rewrite committed work, and treat a stale harness image or a probabilistic assertion as a
+result that lies.
+
 Its first step, the batch table, is deterministic and does not need an agent: `scripts/coa-triage-table.py`
 fetches every open issue (paginated, cached for an hour in `~/.cache/coa-triage`, `--refresh` to refetch) and
 prints the table in a fraction of a second. Audit reports are grouped by class from their title, the rest by
