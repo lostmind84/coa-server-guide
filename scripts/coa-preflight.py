@@ -107,6 +107,32 @@ def check_server(report, head, container):
         report.line("PASS", "server", f"worldserver built from the checked-out commit {built}")
 
 
+def check_harness_image(report, container):
+    """The coa-gameplay-test image is built FROM the worldserver image, so it bakes its own copy of the
+    binary. Rebuilding the worldserver leaves it behind, and scenarios then run the older code while
+    everything else here passes."""
+    image = run(["docker", "inspect", container, "--format", "{{.Config.Image}}"], check=False).strip()
+    harness = image.replace("ac-wotlk-worldserver", "ac-wotlk-gameplay-test")
+    if not image or harness == image:
+        report.line("WARN", "harness", f"cannot derive the gameplay-test image from {image or container}")
+        return
+
+    def created(ref):
+        return run(["docker", "image", "inspect", ref, "--format", "{{.Created}}"], check=False).strip()
+
+    base, test = created(image), created(harness)
+    if not base:
+        report.line("WARN", "harness", f"{image} not found: the gameplay-test image cannot be compared")
+    elif not test:
+        report.line("WARN", "harness", f"{harness} does not exist: build it before running scenarios")
+    elif test < base:
+        report.line("FAIL", "harness", f"{harness} predates {image} ({test} < {base}): scenarios would run a "
+                    "stale worldserver. Rebuild it: coa-slot compose N -f "
+                    "\"$CLONE/apps/coa-gameplay-test/docker/compose.yml\" --profile tests build ac-gameplay-test")
+    else:
+        report.line("PASS", "harness", f"gameplay-test image is no older than {image}")
+
+
 def applied_updates(db_container, schema):
     query = f"SELECT name FROM {schema}.updates"
     out = run(["docker", "exec", db_container, "sh", "-c",
@@ -298,6 +324,7 @@ def main():
     try:
         head = check_git(report, args.repo)
         check_server(report, head, args.worldserver)
+        check_harness_image(report, args.worldserver)
         check_db(report, args.repo, args.database)
         mpqcli = shutil.which("mpqcli")
         if args.skip_dbc:
