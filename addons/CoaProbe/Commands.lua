@@ -147,6 +147,70 @@ Commands.handlers.known = function(api, args)
     return { id = id, known = api.IsSpellKnown(id) and true or false }
 end
 
+-- Character Advancement, the client's own talent service. `ca` answers from
+-- C_CharacterAdvancement, which is what the server's 0x0725/0x0726 packets feed.
+--
+-- The answer always carries `shim`: the CoA client patch ships
+-- Ascension_Collections/CharacterAdvancementCompat.lua, which overrides this API and sets
+-- ASCENSION_LOCAL_CHARACTER_ADVANCEMENT_COMPAT. While that is true the answers come from
+-- the patch's Lua reconstruction, not from what the realm sent, so a protocol experiment
+-- needs a client running the stock patch-B.MPQ.
+local function callService(service, name, ...)
+    local fn = service[name]
+    if type(fn) ~= "function" then
+        return nil, "absent"
+    end
+    local ok, value = pcall(fn, ...)
+    if not ok then
+        return nil, "error"
+    end
+    return value, nil
+end
+
+local function record(answer, key, service, name, ...)
+    local value, problem = callService(service, name, ...)
+    if problem then
+        answer.unavailable = answer.unavailable or {}
+        answer.unavailable[name] = problem
+    elseif type(value) == "boolean" then
+        answer[key] = value
+    elseif value ~= nil then
+        answer[key] = value
+    end
+end
+
+Commands.handlers.ca = function(api, args)
+    local service = api.C_CharacterAdvancement
+    if type(service) ~= "table" then
+        return nil, "C_CharacterAdvancement is not available on this client"
+    end
+
+    local answer = {
+        shim = api.ASCENSION_LOCAL_CHARACTER_ADVANCEMENT_COMPAT and true or false,
+    }
+    record(answer, "activeSpec", service, "GetActiveChrSpec")
+    record(answer, "learnedAE", service, "GetLearnedAE")
+    record(answer, "learnedTE", service, "GetLearnedTE")
+    record(answer, "classPointInvestment", service, "GetClassPointInvestment")
+
+    if args[1] then
+        local id = tonumber(args[1])
+        if not id then
+            return nil, "usage: ca [entryId]"
+        end
+        answer.id = id
+        -- IsKnownID and GetTalentRankByID are the two the known-entries packet drives.
+        record(answer, "known", service, "IsKnownID", id)
+        record(answer, "rank", service, "GetTalentRankByID", id)
+        record(answer, "locked", service, "IsLockedID", id)
+        record(answer, "isTalent", service, "IsTalentID", id)
+        record(answer, "knownSpell", service, "IsKnownSpellID", id)
+        record(answer, "pendingRank", service, "GetPendingRankByEntryID", id)
+    end
+
+    return answer
+end
+
 function Commands.run(api, line)
     local words = {}
     for word in line:gmatch("%S+") do

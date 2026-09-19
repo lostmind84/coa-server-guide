@@ -218,5 +218,50 @@ check("state player rage", state.result.player.powers.rage, 35)
 check("state player mana", state.result.player.powers.mana, 0)
 check("state player power type", state.result.player.powerType, 1)
 
+-- CHARACTER ADVANCEMENT
+
+local caApi = makeApi()
+local ca = run(caApi, "c0 ca 31194")
+check("ca without service errors", ca.error,
+    "C_CharacterAdvancement is not available on this client")
+
+caApi.C_CharacterAdvancement = {
+    GetActiveChrSpec = function() return 49 end,
+    GetLearnedAE = function() return 26 end,
+    GetLearnedTE = function() return 25 end,
+    IsKnownID = function(id) return id == 31194 end,
+    GetTalentRankByID = function(id) return id == 31194 and 3 or 0 end,
+    IsTalentID = function() return true end,
+    -- IsLockedID, IsKnownSpellID, GetPendingRankByEntryID and GetClassPointInvestment are
+    -- absent here on purpose: the handler must report them rather than fail.
+}
+
+ca = run(caApi, "c1 ca 31194")
+check("ca known", ca.result.known, true)
+check("ca rank", ca.result.rank, 3)
+check("ca active spec", ca.result.activeSpec, 49)
+check("ca learned AE", ca.result.learnedAE, 26)
+check("ca is talent", ca.result.isTalent, true)
+check("ca shim absent", ca.result.shim, false)
+check("ca reports missing call", ca.result.unavailable.IsLockedID, "absent")
+check("ca reports missing investment", ca.result.unavailable.GetClassPointInvestment, "absent")
+
+ca = run(caApi, "c2 ca 999")
+check("ca unknown entry", ca.result.known, false)
+check("ca unknown rank", ca.result.rank, 0)
+
+caApi.ASCENSION_LOCAL_CHARACTER_ADVANCEMENT_COMPAT = true
+ca = run(caApi, "c3 ca")
+check("ca shim reported", ca.result.shim, true)
+check("ca without id has no entry", ca.result.id, nil)
+check("ca without id still has spec", ca.result.activeSpec, 49)
+
+caApi.C_CharacterAdvancement.IsKnownID = function() error("boom") end
+ca = run(caApi, "c4 ca 31194")
+check("ca reports throwing call", ca.result.unavailable.IsKnownID, "error")
+
+ca = run(caApi, "c5 ca notanumber")
+check("ca rejects bad id", ca.error, "usage: ca [entryId]")
+
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)
