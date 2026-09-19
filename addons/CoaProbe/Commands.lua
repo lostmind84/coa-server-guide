@@ -429,6 +429,48 @@ Commands.handlers.eval = function(api, args)
     return { values = values, count = #results }
 end
 
+-- evwatch <EVENT> / evunwatch <EVENT>: from now on, and again after every /reload, record that game event's
+-- arguments into the log (kind "event"). Kept in CoaProbeWatch under "event:<NAME>" like the packet watches.
+Commands.handlers.evwatch = function(api, args)
+    local event = args[1]
+    if not event or event == "" then
+        return nil, "usage: evwatch <EVENT>"
+    end
+    api.CoaProbeWatch = api.CoaProbeWatch or {}
+    api.CoaProbeWatch["event:" .. event] = true
+    local ok, problem = pcall(Commands.watchEvent, api, event)
+    if not ok then
+        return nil, "RegisterEvent failed: " .. tostring(problem)
+    end
+    return { event = event, watching = true }
+end
+
+Commands.handlers.evunwatch = function(api, args)
+    local event = args[1]
+    if not event then
+        return nil, "usage: evunwatch <EVENT>"
+    end
+    if api.CoaProbeWatch then
+        api.CoaProbeWatch["event:" .. event] = nil
+    end
+    return { event = event, watching = false, note = "stops after the next /reload" }
+end
+
+function Commands.watchEvent(api, event)
+    local frame = api.CreateFrame("Frame")
+    frame:RegisterEvent(event)
+    frame:SetScript("OnEvent", function(_, name, ...)
+        api.CoaProbeLog = api.CoaProbeLog or {}
+        local values = {}
+        for i = 1, select("#", ...) do
+            local value = select(i, ...)
+            local kind = type(value)
+            values[i] = (kind == "number" or kind == "string" or kind == "boolean") and value or kind
+        end
+        CoaProbe.Events.record(api.CoaProbeLog, { time = api.time(), kind = "event", event = name, args = values })
+    end)
+end
+
 function Commands.run(api, line)
     local words = {}
     for word in line:gmatch("%S+") do

@@ -639,6 +639,7 @@ coa-client-lab probe pkwatch 1618 48       # log the next packets with that opco
 coa-client-lab probe pksend 1617 u32:1     # build a packet with the client's own CreatePacket/Put*/Send and send it
 coa-client-lab probe pkfind                # where CreatePacket, RegisterPacket, Send and ClearPacket live; pkmeta lists the methods
 coa-client-lab probe eval GetRealmName()   # evaluate any Lua expression in the client; values as JSON
+coa-client-lab probe evwatch ASCENSION_KNOWN_ENTRY_UPDATED   # log that game event's arguments from now on; survives /reload
 coa-client-lab stop                        # warns if your own client changed meanwhile
 ```
 

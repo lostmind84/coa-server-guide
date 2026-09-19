@@ -326,6 +326,23 @@ ev = run(evalApi, "e4 eval 1 +")
 contains("eval compile error", ev.error, "compile:")
 ev = run(evalApi, "e5 eval")
 contains("eval usage", ev.error, "usage")
+local evFrames = {}
+pkApi.CreateFrame = function()
+    local frame = { events = {}, RegisterEvent = function(self, e) self.events[#self.events + 1] = e end,
+                    SetScript = function(self, _, fn) self.handler = fn end }
+    evFrames[#evFrames + 1] = frame
+    return frame
+end
+pk = run(pkApi, "e6 evwatch MY_EVENT")
+check("evwatch answers", pk.result.watching, true)
+check("evwatch remembered", pkApi.CoaProbeWatch["event:MY_EVENT"], true)
+check("evwatch registered", evFrames[#evFrames].events[1], "MY_EVENT")
+evFrames[#evFrames].handler(nil, "MY_EVENT", 7, "seven", true, {})
+local last = pkApi.CoaProbeLog[#pkApi.CoaProbeLog]
+check("event logged", last.kind, "event")
+check("event args", table.concat({ tostring(last.args[1]), last.args[2], tostring(last.args[3]), last.args[4] }, ","), "7,seven,true,table")
+pk = run(pkApi, "e7 evunwatch MY_EVENT")
+check("evunwatch forgets", pkApi.CoaProbeWatch["event:MY_EVENT"], nil)
 pk = run(pkApi, "p5 pkunwatch 2347")
 check("pkunwatch forgets", pkApi.CoaProbeWatch["2347"], nil)
 
@@ -334,8 +351,8 @@ CreateFrame = function() return { RegisterEvent = function() end, SetScript = fu
 SlashCmdList = {}
 dofile(root .. "/CoaProbe.lua")
 registered = {}
-pkApi.CoaProbeWatch = { ["2347"] = 12, ["bad"] = true }
-check("watches restored", CoaProbe.restoreWatches(pkApi), 1)
+pkApi.CoaProbeWatch = { ["2347"] = 12, ["bad"] = true, ["event:X"] = true }
+check("watches restored", CoaProbe.restoreWatches(pkApi), 2)
 check("restored registration", type(registered[2347]), "function")
 check("no API restores nothing", CoaProbe.restoreWatches(noApi), 0)
 check("ca shim absent", ca.result.shim, false)

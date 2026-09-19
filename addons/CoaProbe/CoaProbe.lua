@@ -34,13 +34,12 @@ end
 -- Packet watches asked for with `pkwatch` live in CoaProbeWatch (SavedVariables) and are registered again
 -- here once the saved variables are in, since /reload -- the way every answer reaches disk -- drops them.
 function CoaProbe.restoreWatches(api)
-    if type(CoaProbe.Commands.packetApi(api).RegisterPacket) ~= "function" then
-        return 0
-    end
     local restored = 0
     for key, bytes in pairs(api.CoaProbeWatch or {}) do
         local opcode = tonumber(key)
         if opcode and pcall(CoaProbe.Commands.watch, api, opcode, tonumber(bytes)) then
+            restored = restored + 1
+        elseif type(key) == "string" and key:sub(1, 6) == "event:" and pcall(CoaProbe.Commands.watchEvent, api, key:sub(7)) then
             restored = restored + 1
         end
     end
