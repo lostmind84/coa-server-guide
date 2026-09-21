@@ -711,7 +711,8 @@ symlink to this file — and invoke it as `/coa-triage`. With no argument it pri
 `/coa-triage <batch>` works that batch. `manual` pauses before each fix; `autonomous` settles by policy what the
 workflow would otherwise ask (interpretation, snapshot values, publication) and journals every such decision in
 `.agents/plans/<batch>/decisions.md`, for runs nobody is watching — in Claude Code, pair it with `/goal` so the
-session keeps going until the batch is done.
+session keeps going until the batch is done, and set `"askUserQuestionTimeout": "5m"` in `~/.claude/settings.json`
+so a multiple-choice question left unanswered closes on its own instead of holding the run.
 
 [`agents/git-safety.md`](agents/git-safety.md) covers the workspace rules a batch misses most expensively: prove a
 scenario fails before the fix exists rather than resetting to re-observe it, give each dispatched implementer its
