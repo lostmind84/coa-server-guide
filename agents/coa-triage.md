@@ -201,6 +201,24 @@ Rules, in order of priority:
    The one case that needs its own cycle is fail-before / pass-after proof: deploy the batch without the
    changes under test, run those scenarios to capture the failures, then deploy with them and re-run. That is
    two cycles for the whole batch, not two per issue.
+
+   **Re-run only what the change can reach.** Before relaunching a suite, read
+   `git diff --stat <the commit the suite was measured on>..HEAD` and let the file list decide:
+
+   - nothing the server or the scenarios read (`.md`, `.agents/`, plan files, comments): re-run **nothing**.
+     The binary and the scenario JSONs are identical, so the result cannot differ. Name the measured commit
+     in the PR and say the later commits are documentation, rather than implying the suite ran on HEAD;
+   - one narrow fix or a handful of scenarios: re-run those scenarios, plus any that share the touched
+     spell, aura or stat path;
+   - a shared core file (`StatSystem.cpp`, `Unit.cpp`, `SpellMgr`, a load-time contract chain), or a merge
+     of upstream `main` touching files the batch's scenarios exercise: re-run the whole suite, because a
+     stat or spellmod path reaches scenarios that never name it;
+   - a merge of upstream `main` touching nothing the batch exercises: re-run nothing. Preflight's `git`
+     check still has to go green before publishing, but that needs the merge, not a suite run.
+
+   A full pass of a class batch is one to three hours. Relaunching it on reflex after every merge or
+   documentation commit is the single largest avoidable cost of a batch; reading the diff is free. A red
+   `coa-slot preflight N` still invalidates every result whatever the diff says (rule 0).
 9. **Publish only when the user says so**: push to your remote, open the server PR against the upstream CoA
    repository (follows
    `.github/pull_request_template.md`; per issue the commit, its scenario and the outcome — fixed, already works,
