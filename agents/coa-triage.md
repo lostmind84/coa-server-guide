@@ -1,6 +1,6 @@
 ---
 description: List the open CoA issues grouped into work batches, then work a chosen batch end to end
-argument-hint: "[batch name, e.g. starcaller | crashes | quests] [manual] [per-issue]"
+argument-hint: "[batch name, e.g. starcaller | crashes | quests] [manual | autonomous] [per-issue]"
 ---
 
 # CoA issue triage and fixing
@@ -9,8 +9,9 @@ An agent workflow for the CoA issue queue, built around the tooling in this guid
 contributor: the steps that need repository permissions fall back to what an outside contributor can do.
 
 Work the CoA issue queue: with no argument, print the batch table and stop; with a batch name or issue numbers,
-work that queue end to end. `manual` pauses for approval before each fix (default is auto). `per-issue` opens one
-PR per issue instead of one per batch.
+work that queue end to end. `manual` pauses for approval before each fix (default is auto). `autonomous` goes
+further: it also settles rules 4, 5 and 9 by policy instead of asking (see "Autonomous mode"). `manual` and
+`autonomous` together: `manual` wins. `per-issue` opens one PR per issue instead of one per batch.
 
 Environment: server slots, preflight, the Ghost e2e bots and the client lab are documented in
 [Part 2](../README.md#part-2-contributor-tooling) of this guide. If your agent has its own workstation guidance
@@ -99,6 +100,34 @@ already covers, non-bugs and obsolete reports, probable duplicates (say they are
 title-based and not verified), then the slot status, then ask which batch to take.
 
 If `$ARGUMENTS` is empty, stop here and let the user pick a batch.
+
+## Autonomous mode
+
+`autonomous` exists so a batch can run unattended once the user has picked it in Step 1. Step 1 itself never
+changes: with no argument, print the table and stop. Inside a batch, the mode replaces every question to the
+user with a recorded decision:
+
+- **Rule 4 (interpretation, maintainer decisions)**: change nothing. Classify the issue as "needs a maintainer
+  decision", record it, list it in the PR under examined but not fixed, and move on. Never resolve an
+  interpretation by guessing.
+- **Rule 5 (values from community snapshots)**: use the value when exactly one calibrated source gives it and
+  the installed DBC, DB and code lack it; name the source and snapshot date in the commit and PR as the rule
+  already requires. When sources disagree or none is calibrated, treat it as rule 4.
+- **Rule 9 (publication)**: push to your remote, open the PRs and post the issue comments without asking, as soon
+  as rule 8 is green. Still never merge, never push to `main` or `upstream`, never force-push, never close an
+  issue that is not yours.
+- **Anything else the user would have been asked** (which variant of a fix, which scenario shape, whether to keep
+  a partial result): take the option you would recommend, or the most conservative one when you have no
+  recommendation, and record it.
+
+Record every such decision as it is taken in `.agents/plans/<batch>/decisions.md` (gitignored): the question
+that would have been asked, the option chosen, the reason, and whether it is reversible. Summarise the file in
+the final report and link the relevant entries from the PR body. A decision that is not recorded is a defect of
+the run.
+
+Hard stops remain: a red preflight that cannot be fixed, a slot owned by someone else, and anything the harness
+guidance marks as "ask the user first". Report them in the final message and end the run; do not wait for an
+answer mid-run.
 
 ## Step 2 — work the chosen batch
 

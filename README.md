@@ -707,7 +707,11 @@ RDF/LFG, duels, real relogs, quest-giver interaction), and the client lab for cl
 closing issues adapt to the permissions your account actually has.
 
 Drop it where your agent reads commands or skills — for Claude Code, `~/.claude/commands/coa-triage.md`, or a
-symlink to this file — and invoke it as `/coa-triage`.
+symlink to this file — and invoke it as `/coa-triage`. With no argument it prints the batch table and stops;
+`/coa-triage <batch>` works that batch. `manual` pauses before each fix; `autonomous` settles by policy what the
+workflow would otherwise ask (interpretation, snapshot values, publication) and journals every such decision in
+`.agents/plans/<batch>/decisions.md`, for runs nobody is watching — in Claude Code, pair it with `/goal` so the
+session keeps going until the batch is done.
 
 [`agents/git-safety.md`](agents/git-safety.md) covers the workspace rules a batch misses most expensively: prove a
 scenario fails before the fix exists rather than resetting to re-observe it, give each dispatched implementer its
