@@ -720,13 +720,15 @@ own worktree, never rewrite committed work, and treat a stale harness image or a
 result that lies.
 
 Its first step, the batch table, is deterministic and does not need an agent: `scripts/coa-triage-table.py`
-fetches every open issue (paginated, cached for an hour in `~/.cache/coa-triage`, `--refresh` to refetch) and
-prints the table in a fraction of a second. Audit reports are grouped by class from their title, the rest by
-theme; issues that carry an assignee are counted separately so a batch already taken is visible.
+keeps a local copy of the open issues in `~/.cache/coa-triage/issues.json`, asks GitHub only for the issues
+updated since its last sync (the API's `since` filter: open ones are upserted, closed ones dropped) and prints the
+table. The first run fetches everything, about 20 s; later runs take under a second and say on stderr what changed.
+Audit reports are grouped by class from their title, the rest by theme; issues that carry an assignee are counted
+separately so a batch already taken is visible.
 
 ```bash
-python3 scripts/coa-triage-table.py            # cached list, prints the table
-python3 scripts/coa-triage-table.py --refresh  # refetch from GitHub first (about 20 s)
+python3 scripts/coa-triage-table.py            # sync since last run, print the table
+python3 scripts/coa-triage-table.py --refresh  # discard the local copy and refetch everything
 ```
 
 The grouping of everything that is not an audit report is title-based, so read those rows as a starting point,
