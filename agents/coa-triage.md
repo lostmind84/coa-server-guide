@@ -68,25 +68,41 @@ anything that deploys, restarts, imports SQL or runs a scenario against it.
 
 ## Step 1 — always: print the batch table
 
-Run `python3 scripts/coa-triage-table.py` from the coa-server-guide checkout (cached for an hour in
-`~/.cache/coa-triage`; `--refresh` to refetch first, about 20 s). It fetches every open issue through `gh api`,
-paginated, and prints the batch table deterministically: audit reports ("no script or aura handler") grouped
-**by class**, as in PR #2521; everything else grouped by theme (crashes; resources; summons and pets; talents and
-specs; items, bank and vanity; quests and world; systems and modes; client UI); issues carrying an assignee
-counted apart so an already-claimed batch is visible. Columns are `Batch | Issues | Why it matters | Proof`, the
-last column defaulting to `gameplay-test` per the capability table in rule 1. The non-audit grouping is
-keyword-based, so read those rows as a starting point, not a verified classification. Print the script's table
-verbatim as the conversation output — do not rebuild it by hand or re-run `gh issue list` yourself.
+```
+python3 "$(dirname "$(readlink -f ~/.claude/commands/coa-triage.md)")/../scripts/coa-triage-table.py"
+```
+
+The path resolves this guide's checkout through the command symlink, since the batch is worked from the server
+checkout; `--refresh` discards the local copy and refetches everything.
+
+Do not list or group the issues yourself: the queue is above 2,600 open issues and reading that many titles costs
+minutes and gives a different grouping each run. The script keeps a local copy of the open issues
+(`~/.cache/coa-triage/issues.json`), asks GitHub only for the issues updated since its last sync, and groups
+deterministically: spell audit reports ("no script or aura handler") by class from their title, the rest by
+keyword theme (crashes; resources; summons and pets; talents and specs; items, bank and vanity; quests, world and
+creatures; systems and modes; client UI; unsorted). Its first line on stderr says what the sync changed. Use its
+table as the batch table; the keyword themes are a starting point, so a row's issues are read when the batch is
+worked, not before. A class too large for one reviewable PR is split by spec at that point, as in PR #2521.
 
 Before working an issue, re-read its state, assignees and the PRs referencing it. Claim it: with `triage` or
 `push` permission, `gh issue edit <n> -R <repo> --add-assignee <login>`; without, post one short comment
 (`Working on this in <branch>.`). An issue assigned to someone else, or already carrying someone else's PR, is
 skipped and reported, not taken over.
 
-After the table, add short grouped notes the script does not produce: issues already covered by a merged or open
-PR (`gh pr list -R ... --state all --search "<number>"`, then read the body), probable duplicates (say they are
-title-based and not verified) and non-bugs spotted while reading titles, then the slot status, then ask which
-batch to take. Keep these notes in the language you are speaking; issue numbers and tool names stay as they are.
+Flag, for the chosen batch only, issues already covered by a merged or open PR (`gh pr list -R ... --state all
+--search "<number>"`, then read the body), issues assigned to someone else, probable duplicates and non-bugs. Doing
+this for the whole queue is what made Step 1 slow.
+
+**Output format is mandatory: always one Markdown table, never a bullet list per batch**, even for few issues or a
+single batch. Columns, in this order: `Batch | Issues | Why it matters | Proof`, as the script prints them. One row
+per batch (one per class or spec for audit reports); issue numbers comma-separated, with a short tag when useful
+(`901 and 1467 Vault`); the last column says which harness proves the batch (`gameplay-test`, `gameplay-test +
+Ghost`, `client lab`) plus a few words. The script chooses it from the capability table in rule 1, defaulting to
+`gameplay-test`; `Ghost` only for what that table lists as outside the scenario harness, `client lab` only for what
+is displayed. That column is the batch's plan of proof: Step 2 follows it, and changing it needs a reason written
+in the conversation. The table is conversation output: write it in the language you are speaking, keeping issue
+numbers and tool names as they are. Before the table, the script's open issue count line. After the table, only
+the assigned counts the script prints, then the slot status, then ask which batch to take.
 
 If `$ARGUMENTS` is empty, stop here and let the user pick a batch.
 

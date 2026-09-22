@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Print the CoA issue triage table in seconds: fetch every open issue (cached), group deterministically.
+"""Print the CoA issue triage table in seconds: sync the open issues incrementally, group deterministically.
 
 Audit reports ('<Class>: "<Spell>" (Spell ID: N) ...') are grouped by class; the rest by keyword theme.
-Usage: coa-triage-table.py [--refresh] [--repo owner/name]   (cache: ~/.cache/coa-triage/issues.json, 1 h)
+The first run fetches every open issue; later runs ask GitHub only for issues updated since the last sync
+(`since=`), upsert the open ones and drop the closed ones. Cache: ~/.cache/coa-triage/issues.json.
+Usage: coa-triage-table.py [--refresh] [--repo owner/name]   (--refresh discards the cache and refetches all)
 """
 import argparse
 import collections
@@ -37,18 +39,52 @@ THEMES = [
 ]
 
 
-def fetch(repo, refresh):
-    cache = Path.home() / ".cache" / "coa-triage" / "issues.json"
-    if cache.exists() and not refresh and time.time() - cache.stat().st_mtime < 3600:
-        return json.loads(cache.read_text())
+CACHE = Path.home() / ".cache" / "coa-triage" / "issues.json"
+FIELDS = "{number, title, state, assignees: [.assignees[].login]}"
+
+
+def api_issues(repo, query):
     out = subprocess.check_output(
-        ["gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate",
-         "--jq", ".[] | select(.pull_request == null) | {number, title, assignees: [.assignees[].login]}"],
+        ["gh", "api", f"repos/{repo}/issues?per_page=100&{query}", "--paginate",
+         "--jq", f".[] | select(.pull_request == null) | {FIELDS}"],
         text=True)
-    rows = [json.loads(line) for line in out.splitlines() if line.strip()]
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(rows))
-    return rows
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def row(r):
+    return {"number": r["number"], "title": r["title"], "assignees": r["assignees"]}
+
+
+def fetch(repo, refresh):
+    """Return the open issues as [{number, title, assignees}], syncing the cache incrementally."""
+    cache = None
+    if CACHE.exists() and not refresh:
+        try:
+            cache = json.loads(CACHE.read_text())
+        except json.JSONDecodeError:
+            cache = None
+        if not isinstance(cache, dict) or "synced_at" not in cache:
+            cache = None  # pre-incremental cache (a bare list): refetch everything
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if cache is None:
+        rows = api_issues(repo, "state=open")
+        issues = {str(r["number"]): row(r) for r in rows}
+        print(f"synced: full fetch, {len(issues)} open issues", file=sys.stderr)
+    else:
+        issues = cache["issues"]
+        changed = api_issues(repo, f"state=all&sort=updated&since={cache['synced_at']}")
+        added = removed = 0
+        for r in changed:
+            key = str(r["number"])
+            if r["state"] == "open":
+                added += 1
+                issues[key] = row(r)
+            elif issues.pop(key, None) is not None:
+                removed += 1
+        print(f"synced: +{added} new/updated, -{removed} closed since {cache['synced_at']}", file=sys.stderr)
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE.write_text(json.dumps({"synced_at": started, "issues": issues}))
+    return list(issues.values())
 
 
 def main():
