@@ -68,36 +68,25 @@ anything that deploys, restarts, imports SQL or runs a scenario against it.
 
 ## Step 1 — always: print the batch table
 
-```
-gh issue list -R jealous-sound/azerothcore-wotlk-coa --state open --limit 1000 --json number,title,assignees
-```
-
-The count is above 3,400, so check whether the result hit the limit and page if it did. Most of the queue is a
-spell audit filed report by report ("no script or aura handler"): group those **by class, and by spec when a class
-is too large for one reviewable PR**, as in PR #2521. Group the rest by theme: crashes; resources (power and aura
-costs and gains); summons and pets; missing talent trees and specs; items, bank and vanity; quests, world and
-creatures; systems and modes (RDF, Manastorm, war mode, GM, rest); client UI and visual (not testable by a
-protocol bot); duplicates and non-bugs.
+Run `python3 scripts/coa-triage-table.py` from the coa-server-guide checkout (cached for an hour in
+`~/.cache/coa-triage`; `--refresh` to refetch first, about 20 s). It fetches every open issue through `gh api`,
+paginated, and prints the batch table deterministically: audit reports ("no script or aura handler") grouped
+**by class**, as in PR #2521; everything else grouped by theme (crashes; resources; summons and pets; talents and
+specs; items, bank and vanity; quests and world; systems and modes; client UI); issues carrying an assignee
+counted apart so an already-claimed batch is visible. Columns are `Batch | Issues | Why it matters | Proof`, the
+last column defaulting to `gameplay-test` per the capability table in rule 1. The non-audit grouping is
+keyword-based, so read those rows as a starting point, not a verified classification. Print the script's table
+verbatim as the conversation output — do not rebuild it by hand or re-run `gh issue list` yourself.
 
 Before working an issue, re-read its state, assignees and the PRs referencing it. Claim it: with `triage` or
 `push` permission, `gh issue edit <n> -R <repo> --add-assignee <login>`; without, post one short comment
 (`Working on this in <branch>.`). An issue assigned to someone else, or already carrying someone else's PR, is
 skipped and reported, not taken over.
 
-Flag issues already covered by a merged or open PR (`gh pr list -R ... --state all --search "<number>"`, then read
-the body), issues assigned to someone else, probable duplicates and non-bugs.
-
-**Output format is mandatory: always one Markdown table, never a bullet list per batch**, even for few issues or a
-single batch. Columns, in this order: `Batch | Issues | Why it matters | Proof`. One row per batch (one per class
-or spec for audit reports); issue numbers comma-separated, with a short tag when useful (`901 and 1467 Vault`);
-the last column says which harness proves the batch (`gameplay-test`, `gameplay-test + Ghost`, `client lab`) plus
-a few words. Choose it from the capability table in rule 1, defaulting to `gameplay-test`; `Ghost` only for what
-that table lists as outside the scenario harness, `client lab` only for what is displayed. That column is the
-batch's plan of proof: Step 2 follows it, and changing it needs a reason written in the conversation. The table is
-conversation output: write it in the language you are speaking, keeping issue numbers and tool names as they are.
-Before the table, one line with the open issue count. After the table, only short grouped notes: issues a merged PR
-already covers, non-bugs and obsolete reports, probable duplicates (say they are
-title-based and not verified), then the slot status, then ask which batch to take.
+After the table, add short grouped notes the script does not produce: issues already covered by a merged or open
+PR (`gh pr list -R ... --state all --search "<number>"`, then read the body), probable duplicates (say they are
+title-based and not verified) and non-bugs spotted while reading titles, then the slot status, then ask which
+batch to take. Keep these notes in the language you are speaking; issue numbers and tool names stay as they are.
 
 If `$ARGUMENTS` is empty, stop here and let the user pick a batch.
 
