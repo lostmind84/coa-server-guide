@@ -97,9 +97,11 @@ def main():
     by_class = collections.defaultdict(list)
     themes = collections.defaultdict(list)
     assigned = []
+    assignees_by_number = {}
     for r in rows:
         if r["assignees"]:
             assigned.append(r)
+            assignees_by_number[r["number"]] = r["assignees"]
         m = AUDIT.match(r["title"])
         if m:
             by_class[CLASS_ALIASES.get(m.group(1).strip(), m.group(1).strip())].append(r["number"])
@@ -116,29 +118,29 @@ def main():
         else:
             themes["unsorted"].append(r["number"])
 
-    def nums(values, limit=14):
-        values = sorted(values)
-        text = ", ".join(map(str, values[:limit]))
-        return text + (f" … (+{len(values) - limit})" if len(values) > limit else "")
+    def assigned_in(values):
+        per = collections.Counter(
+            login for n in values for login in assignees_by_number.get(n, ()))
+        return ", ".join(f"{login} ({n})" for login, n in per.most_common()) or "—"
 
     print(f"Open issues: {len(rows)} (audit reports {sum(map(len, by_class.values()))}, "
           f"other {sum(map(len, themes.values()))}, assigned {len(assigned)}).\n")
-    print("| Batch | Issues | Why it matters | Proof |")
-    print("|---|---|---|---|")
+    print("| Batch | Total | Why it matters | Proof | Assigned |")
+    print("|---|---|---|---|---|")
     for cls, values in sorted(by_class.items(), key=lambda kv: -len(kv[1])):
-        print(f"| audit {cls} ({len(values)}) | {nums(values)} | spell audit reports, verify each spell's real value "
-              f"before calling it a bug | gameplay-test |")
+        print(f"| audit {cls} | {len(values)} | spell audit reports, verify each spell's real value "
+              f"before calling it a bug | gameplay-test | {assigned_in(values)} |")
     for key, _, why in THEMES:
         if themes.get(key):
             proof = {"client-ui": "client lab", "systems-modes": "gameplay-test + Ghost",
                      "crashes": "gameplay-test + Ghost", "talents-specs": "gameplay-test + Ghost"}.get(key, "gameplay-test")
-            print(f"| {key} ({len(themes[key])}) | {nums(themes[key])} | {why} | {proof} |")
+            print(f"| {key} | {len(themes[key])} | {why} | {proof} | {assigned_in(themes[key])} |")
     for key in sorted(k for k in themes if k.startswith("class ")):
-        print(f"| {key} mechanics ({len(themes[key])}) | {nums(themes[key])} | class-specific reports outside the audit "
-              f"(title-based) | gameplay-test |")
+        print(f"| {key} mechanics | {len(themes[key])} | class-specific reports outside the audit "
+              f"(title-based) | gameplay-test | {assigned_in(themes[key])} |")
     if themes.get("unsorted"):
-        print(f"| unsorted ({len(themes['unsorted'])}) | {nums(themes['unsorted'])} | title gave no theme | to read |")
-    print("\nAssigned (skip unless yours):")
+        print(f"| unsorted | {len(themes['unsorted'])} | title gave no theme | to read | {assigned_in(themes['unsorted'])} |")
+    print("\nAssigned overall (skip unless yours):")
     per = collections.Counter((a["assignees"][0]) for a in assigned)
     print("  " + ", ".join(f"{login}: {n}" for login, n in per.most_common()))
     return 0

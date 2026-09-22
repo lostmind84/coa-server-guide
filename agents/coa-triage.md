@@ -94,9 +94,11 @@ Flag, for the chosen batch only, issues already covered by a merged or open PR (
 this for the whole queue is what made Step 1 slow.
 
 **Output format is mandatory: always one Markdown table, never a bullet list per batch**, even for few issues or a
-single batch. Columns, in this order: `Batch | Issues | Why it matters | Proof`, as the script prints them. One row
-per batch (one per class or spec for audit reports); issue numbers comma-separated, with a short tag when useful
-(`901 and 1467 Vault`); the last column says which harness proves the batch (`gameplay-test`, `gameplay-test +
+single batch. Columns, in this order: `Batch | Total | Why it matters | Proof | Assigned`, as the script prints
+them. One row per batch (one per class or spec for audit reports); `Total` is the issue count only, never the
+issue numbers (the script's cache has them if a specific number is needed later); `Assigned` lists, for issues
+already assigned within that batch, each dev's login and their count in that batch (`login (n)`), or `—` when
+none; the `Proof` column says which harness proves the batch (`gameplay-test`, `gameplay-test +
 Ghost`, `client lab`) plus a few words. The script chooses it from the capability table in rule 1, defaulting to
 `gameplay-test`; `Ghost` only for what that table lists as outside the scenario harness, `client lab` only for what
 is displayed. That column is the batch's plan of proof: Step 2 follows it, and changing it needs a reason written
