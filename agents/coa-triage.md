@@ -68,12 +68,16 @@ anything that deploys, restarts, imports SQL or runs a scenario against it.
 
 ## Step 1 — always: print the batch table
 
+Resolve the guide root from the active entrypoint. The Claude command resolves to `agents/coa-triage.md`, whose
+parent directory is the guide root. The Codex skill resolves to `skills/coa-triage/SKILL.md`, whose directory is
+two levels below the guide root. Run the table script from that root:
+
 ```
-python3 "$(dirname "$(readlink -f ~/.claude/commands/coa-triage.md)")/../scripts/coa-triage-table.py"
+python3 "$COA_SERVER_GUIDE/scripts/coa-triage-table.py"
 ```
 
-The path resolves this guide's checkout through the command symlink, since the batch is worked from the server
-checkout; `--refresh` discards the local copy and refetches everything.
+Set `COA_SERVER_GUIDE` to the resolved guide root before running it; `--refresh` discards the local copy and
+refetches everything.
 
 Do not list or group the issues yourself: the queue is above 2,600 open issues and reading that many titles costs
 minutes and gives a different grouping each run. The script keeps a local copy of the open issues
@@ -106,7 +110,7 @@ in the conversation. The table is conversation output: write it in the language 
 numbers and tool names as they are. Before the table, the script's open issue count line. After the table, only
 the assigned counts the script prints, then the slot status, then ask which batch to take.
 
-If `$ARGUMENTS` is empty, stop here and let the user pick a batch.
+If the invocation has no batch name or issue numbers, stop here and let the user pick a batch.
 
 ## Autonomous mode
 

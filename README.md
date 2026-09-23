@@ -700,19 +700,37 @@ ln -s <path to this repository>/skills/coa-client-check ~/.claude/skills/coa-cli
 
 ## Issue workflow for agents
 
-[`agents/coa-triage.md`](agents/coa-triage.md) is the workflow this tooling was built for: list the open CoA
+[`agents/coa-triage.md`](agents/coa-triage.md) is the shared workflow this tooling was built for: list the open CoA
 issues grouped into batches, then take one batch from reproduction to PR. It expects a gameplay scenario as the
 default proof for each issue, Ghost bots for what that harness does not cover (client packets, experience,
 RDF/LFG, duels, real relogs, quest-giver interaction), and the client lab for client-only symptoms. Claiming and
 closing issues adapt to the permissions your account actually has.
 
-Drop it where your agent reads commands or skills — for Claude Code, `~/.claude/commands/coa-triage.md`, or a
-symlink to this file — and invoke it as `/coa-triage`. With no argument it prints the batch table and stops;
-`/coa-triage <batch>` works that batch. `manual` pauses before each fix; `autonomous` settles by policy what the
-workflow would otherwise ask (interpretation, snapshot values, publication) and journals every such decision in
-`.agents/plans/<batch>/decisions.md`, for runs nobody is watching — in Claude Code, pair it with `/goal` so the
-session keeps going until the batch is done, and set `"askUserQuestionTimeout": "5m"` in `~/.claude/settings.json`
-so a multiple-choice question left unanswered closes on its own instead of holding the run.
+Claude Code uses the command file directly or through a symlink:
+
+```bash
+ln -s ~/Projects/coa-server-guide/agents/coa-triage.md ~/.claude/commands/coa-triage.md
+```
+
+Invoke it as `/coa-triage`. With no argument it prints the batch table and stops; `/coa-triage <batch>` works that
+batch.
+
+Codex uses the skill adapter in [`skills/coa-triage`](skills/coa-triage). Install it as a user skill so it is
+available while Codex is running in the separate server repository:
+
+```bash
+mkdir -p ~/.agents/skills
+ln -s ~/Projects/coa-server-guide/skills/coa-triage ~/.agents/skills/coa-triage
+```
+
+Invoke it with `$coa-triage`; with no batch or issue numbers it prints the table and stops. `$coa-triage crashes`
+works that batch. `manual` pauses before each fix; `autonomous` settles by policy what the workflow would otherwise
+ask (interpretation, snapshot values, publication) and journals every such decision in
+`.agents/plans/<batch>/decisions.md`. The selected batch and all publication and issue-closure rules remain those
+in `agents/coa-triage.md` for both platforms.
+
+In Claude Code, pair `autonomous` mode with `/goal` for an unattended batch. Its timeout settings are specific to
+Claude Code and are not required by the Codex skill.
 
 [`agents/git-safety.md`](agents/git-safety.md) covers the workspace rules a batch misses most expensively: prove a
 scenario fails before the fix exists rather than resetting to re-observe it, give each dispatched implementer its

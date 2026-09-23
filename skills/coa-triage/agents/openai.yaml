@@ -1,0 +1,7 @@
+interface:
+  display_name: "CoA Issue Triage"
+  short_description: "Group CoA issues and work a selected batch"
+  default_prompt: "Show the current CoA issue batch table and wait for my selection."
+
+policy:
+  allow_implicit_invocation: false
