@@ -4,6 +4,8 @@
 # Layout under COA_BUILD_ROOT (default /srv/coa-build): src/ (git clone), build/ (cmake cache, kept for incremental
 # builds), stage/ (temporary), releases/<id>/ (output), DATA_VERSION (client data version the release expects).
 # RELEASE.md compares with releases/shipped, the last release sent to production (set by coa-ship-release.sh).
+# External modules cloned into src/modules/ (their own git repositories, e.g. mod-playerbots) are built at whatever
+# revision is checked out there; the release records it (MODULES in release.env) and RELEASE.md lists their changes.
 set -euo pipefail
 
 ROOT="${COA_BUILD_ROOT:-/srv/coa-build}"
@@ -25,6 +27,13 @@ git -C "$SRC" checkout --quiet --detach "$REF"
 REV="$(git -C "$SRC" rev-parse HEAD)"
 ID="$(date -u +%Y%m%d-%H%M)-${REV:0:7}"
 DATA_VERSION="$(head -n1 "$ROOT/DATA_VERSION")"
+
+MODULES=""
+for dir in "$SRC"/modules/*/; do
+    [[ -e "$dir.git" ]] || continue
+    [[ -z "$(git -C "$dir" status --porcelain)" ]] || die "$dir has uncommitted changes: commit or discard them"
+    MODULES+="${MODULES:+ }$(basename "$dir")=$(git -C "$dir" rev-parse HEAD)"
+done
 
 PREV_ID=""
 PREV_REV=""
@@ -67,18 +76,56 @@ PREVIOUS_REVISION=$PREV_REV
 BUILD_IMAGE=$IMAGE
 BUILD_OS=ubuntu-26.04
 DATA_VERSION=$DATA_VERSION
+MODULES="$MODULES"
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
+CORE_SQL=('data/sql/updates/*.sql' 'data/sql/archive/*.sql' 'data/sql/custom/*.sql' 'modules/*/data/sql/db-*/*.sql')
+
 sql_changes() {
-    git -C "$SRC" diff --name-status -M "$PREV_REV" "$REV" -- \
-        'data/sql/updates/*.sql' 'data/sql/archive/*.sql' 'data/sql/custom/*.sql' 'modules/*/data/sql/db-*/*.sql' \
-        | awk -v want="$1" -F'\t' '
+    local want="$1" repo="$2" from="$3" to="$4"
+    shift 4
+    git -C "$repo" diff --name-status -M "$from" "$to" -- "$@" \
+        | awk -v want="$want" -F'\t' '
             want == "new"      && $1 == "A"                 { print "- `" $2 "`" }
             want == "modified" && $1 == "M"                 { print "- `" $2 "`" }
             want == "modified" && $1 ~ /^R/ && $1 != "R100" { print "- `" $3 "` (moved from `" $2 "`)" }
             want == "moved"    && $1 == "R100"              { print "- `" $2 "` -> `" $3 "`" }
             want == "removed"  && $1 == "D"                 { print "- `" $2 "`" }'
+}
+
+module_changes() {
+    local name="$1" rev="$2" prev="$3" repo="$SRC/modules/$1" kind files
+    echo
+    echo "### $name \`$rev\`"
+    echo
+    if [[ -z "$prev" ]]; then
+        echo "New in this release: worldserver creates its tables at the first start."
+        return
+    fi
+    if [[ "$prev" == "$rev" ]]; then
+        echo "Unchanged."
+        return
+    fi
+    if ! git -C "$repo" cat-file -e "$prev^{commit}" 2>/dev/null; then
+        echo "Previous revision \`$prev\` is not in the local clone: compare by hand."
+        return
+    fi
+    echo "Commits:"
+    echo
+    git -C "$repo" log --no-merges --format='- %h %s' "$prev..$rev"
+    for kind in new modified removed; do
+        files="$(sql_changes "$kind" "$repo" "$prev" "$rev" 'data/sql/*.sql')"
+        [[ -n "$files" ]] || continue
+        echo
+        case "$kind" in
+            new)      echo "New SQL files:" ;;
+            modified) echo "**WARNING: modified SQL files** (re-applied if already applied, except \`*/base/\` of its own database):" ;;
+            removed)  echo "Removed SQL files:" ;;
+        esac
+        echo
+        echo "$files"
+    done
 }
 
 conf_keys() {
@@ -105,9 +152,9 @@ conf_keys() {
         echo
         echo "## New SQL updates (applied by worldserver at startup)"
         echo
-        sql_changes new
+        sql_changes new "$SRC" "$PREV_REV" "$REV" "${CORE_SQL[@]}"
         echo
-        modified="$(sql_changes modified)"
+        modified="$(sql_changes modified "$SRC" "$PREV_REV" "$REV" "${CORE_SQL[@]}")"
         if [[ -n "$modified" ]]; then
             echo "## WARNING: modified SQL updates"
             echo
@@ -117,14 +164,14 @@ conf_keys() {
             echo "$modified"
             echo
         fi
-        moved="$(sql_changes moved)"
+        moved="$(sql_changes moved "$SRC" "$PREV_REV" "$REV" "${CORE_SQL[@]}")"
         if [[ -n "$moved" ]]; then
             echo "## Moved SQL updates (unchanged content, not re-applied)"
             echo
             echo "$moved"
             echo
         fi
-        deleted="$(sql_changes removed)"
+        deleted="$(sql_changes removed "$SRC" "$PREV_REV" "$REV" "${CORE_SQL[@]}")"
         if [[ -n "$deleted" ]]; then
             echo "## Removed SQL updates"
             echo
@@ -144,6 +191,17 @@ conf_keys() {
         [[ -n "$removed" ]] && sed 's/^/- /' <<<"$removed" || echo "- none"
     else
         echo "First release: install the production host first (prod-server.md, first installation)."
+    fi
+    if [[ -n "$MODULES" ]]; then
+        echo
+        echo "## External modules"
+        prev_modules=""
+        [[ -n "$PREV_ID" ]] && prev_modules="$(sed -n 's/^MODULES=//p' "$OUT/$PREV_ID/release.env" | tr -d '"')"
+        for entry in $MODULES; do
+            name="${entry%%=*}"
+            prev_mod="$(tr ' ' '\n' <<<"$prev_modules" | sed -n "s/^$name=//p")"
+            module_changes "$name" "${entry#*=}" "$prev_mod"
+        done
     fi
 } > "$R/RELEASE.md"
 

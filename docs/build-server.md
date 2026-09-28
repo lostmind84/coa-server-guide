@@ -1,8 +1,10 @@
 # Build server: produce and ship CoA releases
 
 The build server compiles the CoA fork for the production host and sends it everything the game server needs to
-install or update itself. The production side is described in [prod-server.md](prod-server.md). For a single machine
-that builds and runs the server itself, see [../NATIVE-UBUNTU.md](../NATIVE-UBUNTU.md).
+install or update itself. The production side is described in [prod-server.md](prod-server.md). The build server also keeps a light
+copy of the player data ([backup.md](backup.md)). For a single machine
+that builds and runs the server itself, see [../NATIVE-UBUNTU.md](../NATIVE-UBUNTU.md). Releases with bots
+(mod-playerbots): [playerbots-build.md](playerbots-build.md).
 
 Status: the whole chain (build in the container, ship over SSH with rsync, first deployment, then an update from the
 repack revision `b3717c137` to `47dd22ffe`) was run end to end on 2026-09-27 with two Ubuntu 26.04 containers standing

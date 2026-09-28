@@ -3,12 +3,13 @@
 # Usage: coa-deploy-release.sh <release-id>
 #        coa-deploy-release.sh --rollback <release-id> [--restore <backup.sql.gz>]
 #        (rollback skips the checksum and RELEASE.md steps; --restore loads the backup while the servers are stopped)
-# Needs ~/.my.cnf with the database user credentials (used for the backup) and /opt/coa/etc/*.conf in place.
+# Needs coa-backup.sh next to this script, ~/.my.cnf with the database user credentials and /opt/coa/etc/*.conf.
 set -euo pipefail
 
 ROOT="${COA_PROD_ROOT:-/opt/coa}"
 KEEP="${COA_KEEP_RELEASES:-3}"
 READY_TIMEOUT="${COA_READY_TIMEOUT:-1800}"
+STOP_TIMEOUT="${COA_STOP_TIMEOUT:-1800}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -50,25 +51,34 @@ for dist in $(cd "$REL/etc" && find . -name '*.conf.dist' -printf '%P\n'); do
     [[ -z "$new_keys" ]] || echo "note: ${dist%.dist} lacks keys (their code defaults apply): $(tr '\n' ' ' <<<"$new_keys")"
 done
 
+bots_conf="$ROOT/etc/modules/playerbots.conf"
+if [[ -f "$REL/etc/modules/playerbots.conf.dist" ]] \
+    && ! grep -qE '^AiPlayerbot\.RandomBotRandomPassword *= *1 *$' "$bots_conf"; then
+    die "$bots_conf: set AiPlayerbot.RandomBotRandomPassword = 1, otherwise bot accounts get their own name as password"
+fi
+
 read -r -p "Deploy $REL_ID now? Players will be disconnected. [y/N] " answer
 [[ "$answer" == [yY] ]] || die "aborted"
 
 current=""
 [[ -L "$ROOT/current" ]] && current="$(basename "$(readlink -f "$ROOT/current")")"
 
-mkdir -p "$ROOT/backups" "$ROOT/logs"
-backup="$ROOT/backups/$(date +%Y%m%d-%H%M%S)-before-$REL_ID.sql.gz"
-echo ">> backing up databases to $backup"
-mysqldump --single-transaction --no-tablespaces --routines --events --add-drop-database \
-    --databases acore_auth acore_characters acore_world | gzip > "$backup" \
-    || { rm -f "$backup"; die "database backup failed, nothing was changed"; }
+mkdir -p "$ROOT/logs"
+echo ">> backing up databases"
+backup_set="$("$(dirname "$(readlink -f "$0")")/coa-backup.sh" predeploy)" \
+    || die "database backup failed, nothing was changed"
+backup="$backup_set/databases.sql.gz"
+echo ">> backup: $backup"
 
 echo ">> stopping servers"
 if screen -list | grep -q '\.coa-world\b'; then
     screen -S coa-world -p 0 -X stuff $'server shutdown 5\r'
-    for _ in $(seq 120); do pgrep -u "$(id -u)" -x worldserver >/dev/null || break; sleep 1; done
+else
+    pkill -u "$(id -u)" -x worldserver || true
 fi
-pkill -u "$(id -u)" -x worldserver && sleep 5 || true
+for _ in $(seq "$STOP_TIMEOUT"); do pgrep -u "$(id -u)" -x worldserver >/dev/null || break; sleep 1; done
+pgrep -u "$(id -u)" -x worldserver >/dev/null \
+    && die "worldserver still saving after ${STOP_TIMEOUT}s; nothing was switched. Run the deploy again once it has exited"
 pkill -u "$(id -u)" -x authserver || true
 screen -wipe >/dev/null || true
 

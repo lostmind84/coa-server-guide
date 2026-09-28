@@ -3,7 +3,7 @@
 The production host runs the game. It never compiles anything: it receives releases from the build server
 ([build-server.md](build-server.md)) through rsync, and an admin deploys them with `coa-deploy-release.sh`. Database
 updates are applied by worldserver itself at startup, from the SQL files shipped in each release. Nobody imports
-update files by hand.
+update files by hand. Running bots (mod-playerbots): [playerbots-prod.md](playerbots-prod.md).
 
 Status: run end to end on 2026-09-27 in an Ubuntu 26.04 container holding only the runtime packages below: first
 installation, first deployment (revision `b3717c137`), then an update to `47dd22ffe` that applied the new SQL
@@ -30,7 +30,7 @@ The binaries look for their configuration in `/opt/coa/etc` (compiled in by the 
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y --no-install-recommends mysql-server mysql-client screen rsync less openssh-server \
+sudo apt-get install -y --no-install-recommends mysql-server mysql-client screen rsync less openssh-server python3 \
   libboost-atomic1.90.0 libboost-chrono1.90.0 libboost-container1.90.0 libboost-date-time1.90.0 \
   libboost-filesystem1.90.0 libboost-iostreams1.90.0 libboost-program-options1.90.0 libboost-random1.90.0 \
   libboost-regex1.90.0 libboost-thread1.90.0 libmysqlclient24 libreadline8t64 libssl3t64 libncurses6
@@ -39,6 +39,7 @@ sudo systemctl enable --now mysql
 
 This list comes from `ldd` on the binaries; the deploy script checks again with `ldd` before each deployment and
 stops if a library is missing. `mysql-client` is required at runtime: worldserver runs `mysql` to apply updates.
+`python3` is needed by `rrsync`, the read-only access used by the backup pullers ([backup.md](backup.md)).
 
 ### Service account
 
@@ -80,7 +81,7 @@ Ask the build server to ship a release (`coa-ship-release.sh latest coa@this-hos
 sudo -iu coa
 ID=<release id>
 R=/opt/coa/releases/$ID
-cp /path/to/scripts/coa-deploy-release.sh /path/to/scripts/coa-fix-windows-hashes.sh /opt/coa/
+cp /path/to/scripts/{coa-deploy-release.sh,coa-backup.sh,coa-fix-windows-hashes.sh} /opt/coa/
 ```
 
 **Record the Linux hashes of the Windows-made dump** (once, before the first worldserver start):
@@ -118,14 +119,14 @@ Every module needs its `.conf`: without it the module silently uses code default
 | File | Setting | Value |
 | --- | --- | --- |
 | `worldserver.conf` | `DataDir` | `"/opt/coa/data/current"` |
-| `worldserver.conf` | `SourceDirectory` | `"/opt/coa/current/source"` |
+| `worldserver.conf`, `authserver.conf` | `SourceDirectory` | `"/opt/coa/current/source"` |
 | `worldserver.conf`, `authserver.conf` | `LogsDir` | `"/opt/coa/logs"` |
 | `worldserver.conf`, `authserver.conf` | `LoginDatabaseInfo` | `"127.0.0.1;3306;acore;CHANGE_ME;acore_auth"` |
 | `worldserver.conf` | `WorldDatabaseInfo`, `CharacterDatabaseInfo` | same with `acore_world`, `acore_characters` |
 | `modules/coa.conf` | `CoA.AllowRemoteClients` | `1` |
 
 `SourceDirectory` is mandatory: the value compiled into the binary is the build container's path, which does not
-exist here, and worldserver refuses to start ("The given source directory … does not exist").
+exist here, and worldserver and authserver refuse to start ("The given source directory … does not exist").
 `CoA.AllowRemoteClients = 1`: otherwise the Ascension protocol is only enabled for connections from `127.0.0.1` and
 remote CoA clients cannot play correctly. (Releases older than the `CoA.*` rename use
 `modules/mod_ascension_compat.conf` and `AscensionCompat.AllowRemoteClients`.)
@@ -160,8 +161,11 @@ The script:
 2. shows `RELEASE.md` (in `less`, `q` to continue);
 3. refuses if a `.conf` for a shipped `.conf.dist` is missing, and lists keys present in a `.conf.dist` but missing
    from the live `.conf` (the code default applies to those);
-4. asks for confirmation, then backs up the three databases to `/opt/coa/backups/<date>-before-<id>.sql.gz`;
-5. stops worldserver (`server shutdown 5` in its console) and authserver;
+4. asks for confirmation, then takes a pre-deploy backup set of the three databases with `coa-backup.sh predeploy`
+   (`/opt/coa/backups/predeploy/<timestamp>/`, see [backup.md](backup.md));
+5. stops worldserver (`server shutdown 5` in its console), waits until the process has exited (up to
+   `COA_STOP_TIMEOUT`, 1800 s; if it is still saving, it stops there without switching anything), then stops
+   authserver;
 6. switches `/opt/coa/current` and `/opt/coa/data/current`, logs the change in `/opt/coa/deploy.log`;
 7. starts worldserver in `screen` session `coa-world`, waits for `(worldserver-daemon) ready...`, and prints the
    updater lines (`Applying update`, `Reapplying update`, `Applied N queries`, errors);
@@ -180,6 +184,10 @@ Test run, update from `b3717c137` to `47dd22ffe` (424 new SQL files announced in
 >> Applied 419 queries. Containing 753 new and 2389 archived updates.
 >> 20260927-1154-47dd22f is live (previous: 20260927-1142-b3717c1)
 ```
+
+That run used an earlier version of the script that wrote a single dump file. It now takes a backup set and prints
+`>> backing up databases` then `>> backup: /opt/coa/backups/predeploy/<timestamp>/databases.sql.gz` (seen in the
+backup and restore tests).
 
 In that update the CoA module configuration was renamed (`mod_ascension_compat.conf` became `coa.conf`) and seven
 modules were added: the first attempt stopped with `error: /opt/coa/etc/modules/coa.conf missing: create it from …`
@@ -216,7 +224,7 @@ The script stops and prints the backup path. Look at the console log it names
   restore the backup taken just before (the script prints this exact command):
 
   ```bash
-  /opt/coa/coa-deploy-release.sh --rollback <previous-id> --restore /opt/coa/backups/<date>-before-<id>.sql.gz
+  /opt/coa/coa-deploy-release.sh --rollback <previous-id> --restore /opt/coa/backups/predeploy/<timestamp>/databases.sql.gz
   ```
 
 - Anything else before the updater ran (bad config, missing file): fix it and run the deploy again.
@@ -232,9 +240,9 @@ Rolling back binaries without `--restore` is only safe when the newer release ap
 | Task | Command (as `coa`) |
 | --- | --- |
 | worldserver console | `screen -r coa-world`, detach with Ctrl+A then D |
-| stop cleanly | in the console: `server shutdown 60` (seconds), then `pkill -x authserver` |
+| stop cleanly | in the console: `server shutdown 60` (seconds), then `pkill -x authserver`; worldserver keeps saving after the countdown, wait until `pgrep -x worldserver` prints nothing before starting it again |
 | start without deploying | `screen -dmS coa-world -L -Logfile /opt/coa/logs/world-console-$(date +%F).log /opt/coa/current/bin/worldserver`, then `screen -dmS coa-auth /opt/coa/current/bin/authserver` |
 | active release | `readlink /opt/coa/current`; history in `/opt/coa/deploy.log` |
-| manual backup | `mysqldump --single-transaction --no-tablespaces --databases acore_auth acore_characters acore_world \| gzip > /opt/coa/backups/manual-$(date +%F).sql.gz` |
+| manual backup | `/opt/coa/coa-backup.sh daily` (scheduled backups: [backup.md](backup.md)) |
 
 Harmless in the log: `Can't set process priority class, error: Permission denied`.
