@@ -29,15 +29,19 @@ have `push` and the maintainers expect branches there. Never push to `main` or `
 Talk to the user in their language. Everything written to the repository or GitHub — code, commits, branch names,
 PR titles and bodies, issue comments — is English.
 
-## Subagents — keep the controller's context small
+## Batch execution — keep the controller's context small
 
-Delegate by default. The controller's context is the scarce resource of a batch: every raw file read, log, build
-output and test transcript it holds stays resident for the rest of the run. Anything that produces bulk output the
-controller does not need verbatim goes to a subagent.
+Work a selected batch as a pipeline, not as one issue-sized loop. First classify the selected issues, then finish
+the short, independent work while investigations and implementation proceed in parallel. The controller's
+context is the scarce resource of a batch: every raw file read, log, build output and test transcript it holds
+stays resident for the rest of the run. Delegate bulk investigation and verification output; keep decisions and
+GitHub writes in the controller.
 
-Delegate: locating code and tracing a spell to the value the server uses; reading an issue thread, its linked PRs
-and their diffs; running a scenario or a Ghost test and reading its output; writing or adapting a scenario;
-reviewing the batch diff before publication; checking a community snapshot for a value.
+Delegate by independent root cause or proof cohort, not automatically one agent per issue. One assignment can
+cover a set of reports with the same suspected cause or one shared evidence source. Independent investigators
+may run concurrently when they do not edit the same files or use the same server slot. Delegate: tracing a
+mechanic; reading issue threads and linked PRs; running scenarios or Ghost tests; adapting scenarios; reviewing
+the batch diff; checking one community snapshot against a related set of reports.
 
 Keep in the controller: the batch table and the `Proof` decision per batch, slot claim and `coa-slot claim-issues`,
 preflight verdicts, the classification of each issue (real bug / already works / not obtainable), commits, branch
@@ -63,8 +67,10 @@ Dispatch contract, in the dispatch prompt itself:
 - List the harness walls already known, so they are not rediscovered at the cost of an hour each.
 - Give the subagent the issue text it needs; it starts cold and must not re-derive the batch.
 
-One subagent per independent issue can run in parallel, but only one at a time may use the slot's server: serialise
-anything that deploys, restarts, imports SQL or runs a scenario against it.
+Parallelize read-only triage, source tracing, and isolated source-only fixes. Serialize operations that mutate a
+shared worktree, deploy, rebuild a harness image, restart a server, import SQL, patch DBC/client data, or use the
+same slot. For gameplay work, give one worker ownership of each slot and queue scenario runs through that owner.
+Do not start a gameplay slot until a cohort has enough confirmed fixes or scenarios to justify one deployment.
 
 ## Step 1 — always: print the batch table
 
@@ -93,9 +99,10 @@ Before working an issue, re-read its state, assignees and the PRs referencing it
 (`Working on this in <branch>.`). An issue assigned to someone else, or already carrying someone else's PR, is
 skipped and reported, not taken over.
 
-Flag, for the chosen batch only, issues already covered by a merged or open PR (`gh pr list -R ... --state all
---search "<number>"`, then read the body), issues assigned to someone else, probable duplicates and non-bugs. Doing
-this for the whole queue is what made Step 1 slow.
+For each claimed issue or shared cohort, flag reports already covered by a merged or open PR (`gh pr list -R ...
+--state all --search "<number>"`, then read the body), probable duplicates and non-bugs. Skip issues assigned to
+someone else. Do this as work enters a lane; auditing every report before the user selects a batch is what made
+Step 1 slow.
 
 **Output format is mandatory: always one Markdown table, never a bullet list per batch**, even for few issues or a
 single batch. Columns, in this order: `Batch | Total | Why it matters | Proof | Assigned`, as the script prints
@@ -141,6 +148,56 @@ guidance marks as "ask the user first". Report them in the final message and end
 answer mid-run.
 
 ## Step 2 — work the chosen batch
+
+### Route issues before doing expensive work
+
+Make a compact ledger for the selected batch with one row per issue: `number | lane | shared cause | proof |
+owner | status`. Rank the batch initially from the table, titles and already-fetched metadata; treat each lane as
+provisional until that issue is claimed and its full report and linked PRs are read. Claim only the next issue or
+small shared cohort being investigated. Do not claim or deep-read the entire batch before starting work. Put
+each issue in exactly one provisional lane, in this order:
+
+1. **Fast disposition** — merged PR already contains the fix; exact duplicate; clearly invalid report; or
+   non-obtainable behavior with calibrated capture evidence and no contradictory source evidence. Record the
+   disposition and use only the closure action authorized by the invocation and applicable issue rules. Absence
+   from the fork's database alone is never proof of non-obtainability.
+2. **Source-only** — documentation, tooling, a test correction, or a fix whose contract is fully established by
+   source/data and whose relevant repository guidance does not require runtime or gameplay proof. Keep these out
+   of gameplay-slot queues. When a behavior claim needs reproduction, it does not belong in this lane.
+3. **Shared runtime proof** — confirmed related changes that can be validated by the same gameplay scenarios or
+   Ghost run. Group by root cause and test surface, not merely by class, title keyword, or subsystem.
+4. **Individual runtime/client proof** — one-off mechanics or client-only reports that need their own scenario,
+   client probe, or environment.
+5. **Unclear / blocked** — missing expectation, conflicting evidence, ownership conflict, or failed preflight.
+   Record the concrete blocker and move on to independent work.
+
+Drain lanes 1 and 2 first, then prepare lane 3 while lane 4 is investigated in parallel. Return to lane 5 only
+when new evidence removes its blocker. This is a priority order, not permission to skip reproduction, ownership,
+review, regression evidence, or closure requirements. A user-specified order or dependency takes precedence.
+In `manual` mode, pause at the existing approval checkpoint and do not investigate or fix another issue while
+approval is pending; only the metadata pass and lane ranking may cover the full selected batch.
+
+After claiming an issue, limit its full initial read to two minutes, excluding API/tool latency. Read enough to
+identify the expected result, likely cause, proof type and ownership risk. If that is insufficient, record
+`unclear` and defer the deep read until quick lanes are drained. If the report has no reproducible steps or
+expected result, ask only for the missing fact that changes the investigation; otherwise continue the batch.
+Do not spend gameplay time disproving a report that source tracing or calibrated acquisition evidence can settle.
+Do not spend source-tracing time repeatedly rediscovering a root cause: link related reports in the ledger and
+assign one owner to the shared investigation. Time-box each shared source investigation to ten minutes before
+deciding whether it has a grounded next step or belongs in the unclear lane; this is a routing limit, not a cap
+on a fix after its scope is established.
+
+At the end of each lane, update the ledger and move every ready item forward. Do not wait for the whole batch to
+finish before publishing a completed, verified PR or reporting a disposition. Keep one PR per issue by default;
+combine issues only when one root cause or implementation dependency makes a single review and rollback boundary
+more correct. A test cohort can be broader than a PR, but never claim a cohort run proves a change that was not
+present in the tested tree. Record the tested commit for every PR.
+
+Track elapsed wall time for the batch and for each expensive setup/run in the conversation: triage, source work,
+build/deploy, proof, review, and external wait. At delivery, report median or per-issue active time only when
+there are enough observations; separate external waits from active work. Compare with a prior batch only when
+the same start/end points and proof scope are known. The 90% reduction goal is a hypothesis until these measures
+show it; do not present it as achieved from fewer tool calls alone.
 
 Rules, in order of priority:
 

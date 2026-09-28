@@ -701,10 +701,12 @@ ln -s <path to this repository>/skills/coa-client-check ~/.claude/skills/coa-cli
 ## Issue workflow for agents
 
 [`agents/coa-triage.md`](agents/coa-triage.md) is the shared workflow this tooling was built for: list the open CoA
-issues grouped into batches, then take one batch from reproduction to PR. It expects a gameplay scenario as the
-default proof for each issue, Ghost bots for what that harness does not cover (client packets, experience,
-RDF/LFG, duels, real relogs, quest-giver interaction), and the client lab for client-only symptoms. Claiming and
-closing issues adapt to the permissions your account actually has.
+issues grouped into batches, then route a selected batch through quick dispositions, source-only work, shared
+proof cohorts, individual runtime/client work, and blocked reports. Independent investigation can run in
+parallel; mutations to a shared slot, client lab, database, harness image, or worktree are serialized. It expects
+a gameplay scenario as the default proof for each issue, Ghost bots for what that harness does not cover (client
+packets, experience, RDF/LFG, duels, real relogs, quest-giver interaction), and the client lab for client-only
+symptoms. Claiming and closing issues adapt to the permissions your account actually has.
 
 Claude Code uses the command file directly or through a symlink:
 
@@ -729,6 +731,16 @@ ask (interpretation, snapshot values, publication) and journals every such decis
 `.agents/plans/<batch>/decisions.md`. The selected batch and all publication and issue-closure rules remain those
 in `agents/coa-triage.md` for both platforms.
 
+For an issue-to-PR run that follows the server repository's `coa-fix-issues` rules while scheduling work by
+evidence cost, install the personal [`coa-fix-issues-batch`](skills/coa-fix-issues-batch) skill:
+
+```bash
+ln -s ~/Projects/coa-server-guide/skills/coa-fix-issues-batch ~/.agents/skills/coa-fix-issues-batch
+```
+
+Invoke `$coa-fix-issues-batch <issue numbers or filter>`. With no selection it shows the batch table; `all`
+explicitly selects the entire open queue. The maintainer-owned skill in the server repository stays unchanged.
+
 In Claude Code, pair `autonomous` mode with `/goal` for an unattended batch. Its timeout settings are specific to
 Claude Code and are not required by the Codex skill.
 
@@ -737,12 +749,17 @@ scenario fails before the fix exists rather than resetting to re-observe it, giv
 own worktree, never rewrite committed work, and treat a stale harness image or a probabilistic assertion as a
 result that lies.
 
-Its first step, the batch table, is deterministic and does not need an agent: `scripts/coa-triage-table.py`
+Its first step, the topical batch table, is deterministic and does not need an agent: `scripts/coa-triage-table.py`
 keeps a local copy of the open issues in `~/.cache/coa-triage/issues.json`, asks GitHub only for the issues
 updated since its last sync (the API's `since` filter: open ones are upserted, closed ones dropped) and prints the
 table. The first run fetches everything, about 20 s; later runs take under a second and say on stderr what changed.
 Audit reports are grouped by class from their title, the rest by theme; issues that carry an assignee are counted
-separately so a batch already taken is visible.
+separately so a batch already taken is visible. This table is a stable topic index, not an execution order or a
+cost estimate. After the user selects a batch, the workflow makes a compact issue ledger and orders work by
+evidence cost: fast dispositions, source-only fixes, shared runtime proof, individual runtime/client proof, then
+unclear or blocked reports. It batches deploy/build/preflight cycles at the shared-proof cohort boundary and
+publishes ready work without waiting for unrelated items. The 90% time reduction is a target to measure, not a
+claim made by the grouping algorithm.
 
 ```bash
 python3 scripts/coa-triage-table.py            # sync since last run, print the table

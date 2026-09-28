@@ -23,5 +23,8 @@ truth for issue handling, evidence, gameplay checks, Git safety, publication, an
    required table and stop for the user's choice. Do not select or investigate a batch on the user's behalf.
 
 Follow the shared workflow's selected mode, proof ladder, assignment checks, batch boundaries, publication rule,
-and closure rule exactly. In particular, `autonomous` is explicit authorization for the publication actions it
-defines; it never authorizes merging a PR or pushing to `main` or `upstream`.
+and closure rule exactly. Once a batch is selected, route it through the workflow's fast-disposition,
+source-only, shared-proof, individual-runtime, and unclear lanes; do not process it as a numeric issue loop.
+Parallelize independent investigation only within the ownership and environment limits in the guide. In
+particular, `autonomous` is explicit authorization for the publication actions it defines; it never authorizes
+merging a PR or pushing to `main` or `upstream`.

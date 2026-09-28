@@ -1,0 +1,3 @@
+interface:
+  display_name: "CoA Fix Issues Batch"
+  short_description: "Resolve selected CoA issues in proof cohorts"
