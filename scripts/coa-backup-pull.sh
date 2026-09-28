@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pull CoA backup sets (and the release they run on) from the production host, verify them and apply retention.
-# Runs on the backup server (full history + releases + client data) and on the build server (light copy).
+# Runs on the build server, which then uploads the sets offsite with coa-backup-push.sh (see docs/backup.md).
 # Usage: coa-backup-pull.sh <config-file>        coa-backup-pull.sh <config-file> --status
 # The production side is read through a read-only rrsync key rooted at /opt/coa, so remote paths are relative.
 set -euo pipefail

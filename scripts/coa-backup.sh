@@ -7,7 +7,7 @@
 # daily and predeploy also include acore_playerbots when it exists (mod-playerbots, see playerbots-prod.md).
 # A set is /opt/coa/backups/<kind>/<UTC timestamp>/ with databases.sql.gz, etc.tar.gz, deploy.log, manifest.env
 # and SHA256SUMS. It is written to <timestamp>.partial and renamed when complete; the path is printed on stdout.
-# Only the newest sets are kept locally (COA_LOCAL_KEEP_*): the backup server pulls them and keeps the history.
+# Only the newest sets are kept locally (COA_LOCAL_KEEP_*): the build server pulls them and sends them offsite.
 set -euo pipefail
 
 ROOT="${COA_PROD_ROOT:-/opt/coa}"
