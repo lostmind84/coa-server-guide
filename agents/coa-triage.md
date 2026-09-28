@@ -85,14 +85,17 @@ python3 "$COA_SERVER_GUIDE/scripts/coa-triage-table.py"
 Set `COA_SERVER_GUIDE` to the resolved guide root before running it; `--refresh` discards the local copy and
 refetches everything.
 
-Do not list or group the issues yourself: the queue is above 2,600 open issues and reading that many titles costs
-minutes and gives a different grouping each run. The script keeps a local copy of the open issues
-(`~/.cache/coa-triage/issues.json`), asks GitHub only for the issues updated since its last sync, and groups
-deterministically: spell audit reports ("no script or aura handler") by class from their title, the rest by
-keyword theme (crashes; resources; summons and pets; talents and specs; items, bank and vanity; quests, world and
-creatures; systems and modes; client UI; unsorted). Its first line on stderr says what the sync changed. Use its
-table as the batch table; the keyword themes are a starting point, so a row's issues are read when the batch is
-worked, not before. A class too large for one reviewable PR is split by spec at that point, as in PR #2521.
+Do not list or group the issues yourself: the queue holds well over a thousand open issues and reading that many
+titles costs minutes and gives a different grouping each run. The script keeps a local copy of the open issues
+with their labels (`~/.cache/coa-triage/issues.json`), asks GitHub only for the issues updated since its last sync
+(adding or removing a label counts as an update), and groups deterministically, first match wins: spell audit
+reports ("no script or aura handler") by class, from their class label or else their title; crashes; the issue's
+class label (`class <Class> mechanics`, or `multi-class` when it carries several); a class named at the start of
+the title; then keyword theme (resources; summons and pets; talents and specs; items, bank and vanity; quests,
+world and creatures; systems and modes; client UI; unsorted). Its first line on stderr says what the sync
+changed. Use its table as the batch table. Class labels are set by maintainers and are the most reliable signal;
+the keyword themes are a starting point, so a row's issues are read when the batch is worked, not before. A
+`multi-class` issue is often a shared mechanic or a mislabel: check which class it belongs to when it is worked. A class too large for one reviewable PR is split by spec at that point, as in PR #2521.
 
 Before working an issue, re-read its state, assignees and the PRs referencing it. Claim it: with `triage` or
 `push` permission, `gh issue edit <n> -R <repo> --add-assignee <login>`; without, post one short comment

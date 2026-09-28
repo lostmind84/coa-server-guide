@@ -753,7 +753,8 @@ Its first step, the topical batch table, is deterministic and does not need an a
 keeps a local copy of the open issues in `~/.cache/coa-triage/issues.json`, asks GitHub only for the issues
 updated since its last sync (the API's `since` filter: open ones are upserted, closed ones dropped) and prints the
 table. The first run fetches everything, about 20 s; later runs take under a second and say on stderr what changed.
-Audit reports are grouped by class from their title, the rest by theme; issues that carry an assignee are counted
+Audit reports are grouped by class; the rest go to crashes, then to their class label (`multi-class` when an issue
+carries several), then to a class named in the title, then to a keyword theme; issues that carry an assignee are counted
 separately so a batch already taken is visible. This table is a stable topic index, not an execution order or a
 cost estimate. After the user selects a batch, the workflow makes a compact issue ledger and orders work by
 evidence cost: fast dispositions, source-only fixes, shared runtime proof, individual runtime/client proof, then
@@ -766,8 +767,9 @@ python3 scripts/coa-triage-table.py            # sync since last run, print the 
 python3 scripts/coa-triage-table.py --refresh  # discard the local copy and refetch everything
 ```
 
-The grouping of everything that is not an audit report is title-based, so read those rows as a starting point,
-not a classification.
+Class labels come from the maintainers and are reliable; the keyword themes and the title-based class fallback are
+not, so read those rows as a starting point, not a classification. The cache keeps each issue's labels; a cache
+written before labels were kept is refetched in full on the next run.
 
 ## Contributing back
 

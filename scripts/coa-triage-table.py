@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Print the CoA issue triage table in seconds: sync the open issues incrementally, group deterministically.
 
-Audit reports ('<Class>: "<Spell>" (Spell ID: N) ...') are grouped by class; the rest by keyword theme.
+Audit reports ('<Class>: "<Spell>" (Spell ID: N) ...') are grouped by class. For the rest, crashes come first, then
+the issue's class label, then a class named at the start of the title, then a keyword theme on the title.
 The first run fetches every open issue; later runs ask GitHub only for issues updated since the last sync
 (`since=`), upsert the open ones and drop the closed ones. Cache: ~/.cache/coa-triage/issues.json.
 Usage: coa-triage-table.py [--refresh] [--repo owner/name]   (--refresh discards the cache and refetches all)
@@ -22,6 +23,9 @@ CLASS_PREFIX = re.compile(r'^\s*(Barbarian|Witch ?Doctor|Felsworn|Demon ?Hunter|
                           r'Starcaller|Sun ?Cleric|Tinker|Venomancer|Reaper|Primalist|Runemaster)\b', re.I)
 CLASS_ALIASES = {"WitchDoctor": "Witch Doctor", "Witchhunter": "Witch Hunter", "Suncleric": "Sun Cleric", "Knightofxoroth": "Knight of Xoroth", "Witchdoctor": "Witch Doctor", "Demonhunter": "Felsworn", "SonOfArugal": "Bloodmage", "KnightOfXoroth": "Knight of Xoroth",
                  "SunCleric": "Sun Cleric", "WitchHunter": "Witch Hunter", "DemonHunter": "Felsworn"}
+CLASSES = {"Barbarian", "Bloodmage", "Chronomancer", "Cultist", "Felsworn", "Guardian", "Knight of Xoroth",
+           "Necromancer", "Primalist", "Pyromancer", "Ranger", "Reaper", "Runemaster", "Starcaller", "Stormbringer",
+           "Sun Cleric", "Templar", "Tinker", "Venomancer", "Witch Doctor", "Witch Hunter"}
 THEMES = [
     ("crashes", r"crash|freeze|segfault|assert|disconnect(?!ed talents)|kick", "server stability first"),
     ("resources", r"\brage\b|\bmana\b|energy|runic|focus|essence|heat|static|soul|combo|cost|resource|regen",
@@ -40,7 +44,7 @@ THEMES = [
 
 
 CACHE = Path.home() / ".cache" / "coa-triage" / "issues.json"
-FIELDS = "{number, title, state, assignees: [.assignees[].login]}"
+FIELDS = "{number, title, state, assignees: [.assignees[].login], labels: [.labels[].name]}"
 
 
 def api_issues(repo, query):
@@ -52,7 +56,7 @@ def api_issues(repo, query):
 
 
 def row(r):
-    return {"number": r["number"], "title": r["title"], "assignees": r["assignees"]}
+    return {"number": r["number"], "title": r["title"], "assignees": r["assignees"], "labels": r["labels"]}
 
 
 def fetch(repo, refresh):
@@ -65,6 +69,8 @@ def fetch(repo, refresh):
             cache = None
         if not isinstance(cache, dict) or "synced_at" not in cache:
             cache = None  # pre-incremental cache (a bare list): refetch everything
+        elif any("labels" not in r for r in cache["issues"].values()):
+            cache = None  # cache written before labels were kept: refetch everything
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if cache is None:
         rows = api_issues(repo, "state=open")
@@ -102,13 +108,24 @@ def main():
         if r["assignees"]:
             assigned.append(r)
             assignees_by_number[r["number"]] = r["assignees"]
+        labeled = sorted(CLASSES.intersection(r["labels"]))
         m = AUDIT.match(r["title"])
         if m:
-            by_class[CLASS_ALIASES.get(m.group(1).strip(), m.group(1).strip())].append(r["number"])
+            by_class[labeled[0] if len(labeled) == 1
+                     else CLASS_ALIASES.get(m.group(1).strip(), m.group(1).strip())].append(r["number"])
             continue
         title = r["title"].lower()
+        if re.search(THEMES[0][1], title):
+            themes[THEMES[0][0]].append(r["number"])
+            continue
+        if len(labeled) > 1:
+            themes["multi-class"].append(r["number"])
+            continue
+        if labeled:
+            themes["class " + labeled[0]].append(r["number"])
+            continue
         cm = CLASS_PREFIX.match(r["title"])
-        if cm and not re.search(THEMES[0][1], title):
+        if cm:
             themes["class " + CLASS_ALIASES.get(cm.group(1).title().replace(" ", ""), cm.group(1).title())].append(r["number"])
             continue
         for key, pattern, _ in THEMES:
@@ -137,7 +154,10 @@ def main():
             print(f"| {key} | {len(themes[key])} | {why} | {proof} | {assigned_in(themes[key])} |")
     for key in sorted(k for k in themes if k.startswith("class ")):
         print(f"| {key} mechanics | {len(themes[key])} | class-specific reports outside the audit "
-              f"(title-based) | gameplay-test | {assigned_in(themes[key])} |")
+              f"(class label, else title) | gameplay-test | {assigned_in(themes[key])} |")
+    if themes.get("multi-class"):
+        print(f"| multi-class | {len(themes['multi-class'])} | labeled with several classes, shared mechanic or "
+              f"mislabel | gameplay-test | {assigned_in(themes['multi-class'])} |")
     if themes.get("unsorted"):
         print(f"| unsorted | {len(themes['unsorted'])} | title gave no theme | to read | {assigned_in(themes['unsorted'])} |")
     print("\nAssigned overall (skip unless yours):")
