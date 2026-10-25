@@ -37,11 +37,12 @@ PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
 RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
 PROFILE="${COA_LAB_PROFILE:-readable}"
 FPS="${COA_LAB_FPS:-10}"
-DISPLAY_MODE="${COA_LAB_DISPLAY:-nested}"
 if [[ "$PROFILE" == minimal ]]; then
+    DISPLAY_MODE="${COA_LAB_DISPLAY:-headless}"
     WIDTH="${COA_LAB_WIDTH:-800}"
     HEIGHT="${COA_LAB_HEIGHT:-600}"
 else
+    DISPLAY_MODE="${COA_LAB_DISPLAY:-nested}"
     WIDTH="${COA_LAB_WIDTH:-1920}"
     HEIGHT="${COA_LAB_HEIGHT:-1080}"
 fi
@@ -70,7 +71,8 @@ Instances (several lab clients side by side; select one with COA_LAB_INSTANCE=1.
 
 Running (one lab client per instance):
   start N                  point the lab client at slot N's authserver and launch it (env: COA_LAB_PROFILE
-                           readable|minimal, COA_LAB_DISPLAY nested|headless, COA_LAB_WIDTH/HEIGHT, COA_LAB_FPS)
+                           readable|minimal, COA_LAB_DISPLAY nested|headless (minimal defaults to headless),
+                           COA_LAB_WIDTH/HEIGHT, COA_LAB_FPS)
   login ACCOUNT PASSWORD [CHARACTER]
                            keyboard login and world entry; with CHARACTER and a relay-setup slot, also writes
                            the lab descriptor state/lab.json used by relay probes

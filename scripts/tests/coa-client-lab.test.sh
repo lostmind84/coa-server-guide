@@ -520,7 +520,7 @@ assert_absent "account cleared by stop" "$COA_LAB_ROOT/state/account"
 # Profiles: the minimal profile writes each low-cost setting once and the smaller window; readable keeps 1920x1080.
 config="$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf"
 : > "$FAKE_LOG"
-COA_LAB_PROFILE=minimal run_lab start 3
+COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=nested run_lab start 3
 assert_eq "minimal start exits 0" "$?" "0"
 assert_contains "minimal resolution" "$config" 'SET gxResolution "800x600"'
 for setting in 'maxFPS "10"' 'maxFPSBk "5"' 'farclip "177"' 'groundEffectDensity "16"' 'environmentDetail "0.5"' \
@@ -531,6 +531,7 @@ done
 assert_contains "minimal gamescope size" "$FAKE_LOG" "gamescope -W 800 -H 600 -w 800 -h 600"
 run_lab stop
 COA_LAB_PROFILE=minimal run_lab start 3
+assert_contains "minimal defaults to headless" "$FAKE_LOG" "gamescope-argv --backend headless -W 800 -H 600"
 run_lab stop
 assert_eq "minimal settings not duplicated" "$(grep -c '^SET maxFPS ' "$config")" "1"
 assert_eq "minimal resolution not duplicated" "$(grep -c '^SET gxResolution ' "$config")" "1"
