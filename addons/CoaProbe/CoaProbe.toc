@@ -4,5 +4,7 @@
 ## SavedVariables: CoaProbeDB, CoaProbeLog, CoaProbeWatch
 Json.lua
 Events.lua
+Errors.lua
 Commands.lua
+Relay.lua
 CoaProbe.lua

@@ -376,5 +376,187 @@ check("ca reports throwing call", ca.result.unavailable.IsKnownID, "error")
 ca = run(caApi, "c5 ca notanumber")
 check("ca rejects bad id", ca.error, "usage: ca [entryId]")
 
+-- RELAY TESTS
+
+dofile(root .. "/Relay.lua")
+local Relay = CoaProbe.Relay
+CoaProbe.loadId = "load-1"
+
+local function relayApi(sent, name)
+    local api = makeApi()
+    api.UnitName = function(unit) if unit == "player" then return name or "Coalabone" end end
+    api.SendAddonMessage = function(prefix, message, channel, target)
+        sent[#sent + 1] = { prefix = prefix, message = message, channel = channel, target = target }
+    end
+    return api
+end
+
+local function decodeField(json, field)
+    return json:match('"' .. field .. '":"([^"]*)"')
+end
+
+local function joined(sent)
+    local parts = {}
+    for i, call in ipairs(sent) do
+        parts[i] = call.message:match("^R:%w+:%d+:%d+:(.*)$")
+    end
+    return table.concat(parts)
+end
+
+local sent = {}
+Relay.onAddonMessage(relayApi(sent), "CoaProbe", "Q:q1:ping", "WHISPER", "Coalabone")
+check("relay answers ping in one chunk", #sent, 1)
+contains("relay ping header", sent[1].message:sub(1, 9), "R:q1:1:1:")
+check("relay ping prefix", sent[1].prefix, "CoaProbe")
+check("relay ping channel", sent[1].channel, "WHISPER")
+check("relay ping target", sent[1].target, "Coalabone")
+check("relay ping req", decodeField(joined(sent), "req"), "q1")
+contains("relay ping pong", joined(sent), '"pong":true')
+check("relay ping loadId", decodeField(joined(sent), "loadId"), "load-1")
+
+sent = {}
+local longApi = relayApi(sent)
+longApi.GameTooltip.SetHyperlink = function() end
+local longText = string.rep("Deals 35 Fire damage. ", 20)
+longApi.GameTooltip.NumLines = function() return 1 end
+setmetatable(longApi, { __index = function(_, key)
+    if key == "GameTooltipTextLeft1" then return fontString(longText) end
+    if key:match("^GameTooltipText") then return fontString(nil) end
+end })
+Relay.onAddonMessage(longApi, "CoaProbe", "Q:q2:spell 501281", "WHISPER", "Coalabone")
+check("relay splits a long answer", #sent >= 3, true)
+local within, fits = true, true
+for i, call in ipairs(sent) do
+    local index, total, data = call.message:match("^R:q2:(%d+):(%d+):(.*)$")
+    if tonumber(index) ~= i or tonumber(total) ~= #sent or #data > Relay.CHUNK then
+        within = false
+    end
+    if #Relay.PREFIX + 1 + #call.message > 255 then
+        fits = false
+    end
+end
+check("relay chunk headers and size", within, true)
+check("relay messages fit 255 bytes", fits, true)
+contains("relay joined answer is whole", joined(sent), longText)
+check("relay joined answer ends the json", joined(sent):sub(-1), "}")
+
+sent = {}
+local spied = 0
+CoaProbe.Commands.handlers.eval = function() spied = spied + 1 return {} end
+local evalApi = relayApi(sent)
+Relay.onAddonMessage(evalApi, "CoaProbe", "Q:q3:eval 1", "WHISPER", "Coalabone")
+Relay.onAddonMessage(evalApi, "CoaProbe", "Q:q4:pksend 1", "WHISPER", "Coalabone")
+check("relay refuses eval and pksend", #sent, 2)
+check("relay refusal text", decodeField(joined({ sent[1] }), "error"), "not read-only over the relay")
+check("relay refusal command", decodeField(joined({ sent[2] }), "command"), "pksend")
+check("relay refused handler not called", spied, 0)
+
+sent = {}
+local quiet = relayApi(sent)
+Relay.onAddonMessage(quiet, "Other", "Q:q5:ping", "WHISPER", "Coalabone")
+Relay.onAddonMessage(quiet, "CoaProbe", "Q:q5:ping", "GUILD", "Coalabone")
+Relay.onAddonMessage(quiet, "CoaProbe", "Q:q5:ping", "WHISPER", "Stranger")
+Relay.onAddonMessage(quiet, "CoaProbe", "Q:q5:ping", "WHISPER", "Coalabonex")
+Relay.onAddonMessage(quiet, "CoaProbe", "Q:q5:ping", "WHISPER", nil)
+check("relay ignores other prefixes, channels and senders", #sent, 0)
+
+Relay.onAddonMessage(quiet, "CoaProbe", "R:q5:1:1:{}", "WHISPER", "Coalabone")
+check("relay ignores its own reply echo", #sent, 0)
+
+Relay.onAddonMessage(quiet, "CoaProbe", "Q:q6:ping", "WHISPER", "Coalabone-Realm")
+check("relay accepts Name-Realm sender", #sent, 1)
+
+sent = {}
+local bigApi = relayApi(sent)
+CoaProbe.Commands.handlers.ping = function() return { blob = string.rep("x", 200 * 65) } end
+Relay.onAddonMessage(bigApi, "CoaProbe", "Q:q7:ping", "WHISPER", "Coalabone")
+check("relay replaces an oversized answer with an error", #sent, 1)
+check("relay oversized error text", decodeField(joined(sent), "error"), "answer too large")
+CoaProbe.Commands.handlers.ping = function() return { pong = true } end
+
+sent = {}
+local pipeApi = relayApi(sent)
+CoaProbe.Commands.handlers.ping = function() return { text = "|cffffffffName|r" } end
+Relay.onAddonMessage(pipeApi, "CoaProbe", "Q:q8:ping", "WHISPER", "Coalabone")
+check("relay escapes pipes", sent[1].message:find("|", 1, true), nil)
+contains("relay pipe as json escape", sent[1].message, "\\u007ccffffffffName\\u007cr")
+CoaProbe.Commands.handlers.ping = function() return { pong = true } end
+
+local utf = Relay.chunks("ab\195\168cd", 3)
+check("chunks keep utf8 sequences", utf[1], "ab")
+check("chunks utf8 second", utf[2], "\195\168c")
+check("chunks of empty text", Relay.chunks("", 200)[1], "")
+check("chunks of empty text count", #Relay.chunks("", 200), 1)
+
+-- ERRORS AND FRAME TESTS
+
+dofile(root .. "/Errors.lua")
+local Errors = CoaProbe.Errors
+local errApi = makeApi()
+local previousCalls = 0
+local currentHandler = function() previousCalls = previousCalls + 1 end
+errApi.geterrorhandler = function() return currentHandler end
+errApi.seterrorhandler = function(handler) currentHandler = handler end
+local handler = Errors.install(errApi)
+handler("boom one")
+check("errors records and chains", previousCalls, 1)
+local reported = run(errApi, "e1 errors")
+check("errors installed", reported.result.installed, true)
+check("errors total", reported.result.total, 1)
+check("errors message", reported.result.entries[1].message, "boom one")
+errApi.seterrorhandler(function() end)
+check("errors reports when replaced", run(errApi, "e2 errors").result.installed, false)
+for i = 1, 60 do
+    handler("bulk " .. i)
+end
+check("errors keeps 50", #Errors.entries, 50)
+check("errors oldest dropped", Errors.entries[1].message, "bulk 11")
+check("errors total counts all", Errors.total, 61)
+
+local frameApi = makeApi()
+check("frame missing", run(frameApi, "f1 frame NoSuchFrame").result.exists, false)
+rawset(frameApi, "MyFrame", {
+    GetObjectType = function() return "Frame" end,
+    IsShown = function() return 1 end,
+    IsVisible = function() return nil end,
+    GetText = function() return "hello" end,
+})
+local shown = run(frameApi, "f2 frame MyFrame").result
+check("frame shown with text", shown.text, "hello")
+check("frame type", shown.type, "Frame")
+check("frame shown flag", shown.shown, true)
+check("frame visible flag", shown.visible, false)
+check("frame rejects bad name", run(frameApi, "f3 frame Bad.Name").error, "usage: frame <GlobalFrameName>")
+check("frame rejects missing name", run(frameApi, "f4 frame").error, "usage: frame <GlobalFrameName>")
+rawset(frameApi, "Broken", { GetObjectType = function() error("nope") end, IsShown = function() return 1 end })
+local broken = run(frameApi, "f5 frame Broken").result
+check("frame survives a throwing method", broken.exists, true)
+check("frame throwing method gives nil", broken.type, nil)
+check("frame missing method gives nil", broken.text, nil)
+
+-- CoaProbe.lua installs the error capture and routes CHAT_MSG_ADDON to the relay.
+local scripts, events = {}, {}
+CreateFrame = function()
+    return { RegisterEvent = function(_, e) events[e] = true end, SetScript = function(_, _, fn) scripts[1] = fn end }
+end
+local installedHandler
+geterrorhandler = function() return installedHandler end
+seterrorhandler = function(h) installedHandler = h end
+time = function() return 4242 end
+SlashCmdList = {}
+dofile(root .. "/CoaProbe.lua")
+check("addon registers CHAT_MSG_ADDON", events.CHAT_MSG_ADDON, true)
+check("addon installs error capture", installedHandler, Errors.handler)
+contains("addon load id uses time", CoaProbe.loadId, "4242-")
+local routed
+local originalOnAddon = Relay.onAddonMessage
+Relay.onAddonMessage = function(api, ...) routed = { ... } end
+scripts[1](nil, "CHAT_MSG_ADDON", "CoaProbe", "Q:z:ping", "WHISPER", "Me")
+check("addon routes addon messages", routed and routed[2], "Q:z:ping")
+Relay.onAddonMessage = originalOnAddon
+installedHandler = function() end
+scripts[1](nil, "PLAYER_ENTERING_WORLD")
+check("addon reinstalls capture on entering world", installedHandler, Errors.handler)
+
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)

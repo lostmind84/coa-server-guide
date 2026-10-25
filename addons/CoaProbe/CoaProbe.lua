@@ -1,6 +1,10 @@
 -- /coaprobe <req> <command> [args]: run a probe command and append the JSON answer to CoaProbeDB. The client writes
 -- SavedVariables on /reload or logout; coa-client-lab probe reads the answer from disk after a /reload.
+-- Relay requests (addon whispers from the server, Relay.lua) answer without /reload.
 CoaProbe = CoaProbe or {}
+
+-- Changes on every UI load: answers carrying the same loadId prove no /reload happened between them.
+CoaProbe.loadId = tostring(type(time) == "function" and time() or 0) .. "-" .. tostring(math.random(100000, 999999))
 
 local MAX_ANSWERS = 50
 
@@ -51,7 +55,22 @@ for _, event in ipairs(CoaProbe.Events.WATCHED) do
     frame:RegisterEvent(event)
 end
 frame:RegisterEvent("ADDON_LOADED")
+frame:RegisterEvent("CHAT_MSG_ADDON")
+frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+if CoaProbe.Errors and type(geterrorhandler) == "function" then
+    CoaProbe.Errors.install(_G)
+end
 frame:SetScript("OnEvent", function(_, event, ...)
+    if event == "CHAT_MSG_ADDON" then
+        CoaProbe.Relay.onAddonMessage(_G, ...)
+        return
+    end
+    if event == "PLAYER_ENTERING_WORLD" then
+        if CoaProbe.Errors and not CoaProbe.Errors.current(_G) then
+            CoaProbe.Errors.install(_G)
+        end
+        return
+    end
     if event == "ADDON_LOADED" then
         if ... == "CoaProbe" then
             CoaProbe.restoreWatches(_G)

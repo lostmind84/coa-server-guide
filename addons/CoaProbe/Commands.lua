@@ -476,6 +476,44 @@ function Commands.watchEvent(api, event)
     end)
 end
 
+Commands.handlers.errors = function(api)
+    local errors = CoaProbe.Errors
+    if not errors then
+        return nil, "error capture not loaded"
+    end
+    return { installed = errors.current(api), total = errors.total, entries = errors.entries }
+end
+
+local function widgetCall(widget, method)
+    local fn = type(widget) == "table" and widget[method]
+    if type(fn) ~= "function" then
+        return nil
+    end
+    local ok, value = pcall(fn, widget)
+    if ok then
+        return value
+    end
+    return nil
+end
+
+Commands.handlers.frame = function(api, args)
+    local name = args[1]
+    if not name or not name:match("^[%a_][%w_]*$") then
+        return nil, "usage: frame <GlobalFrameName>"
+    end
+    local widget = api[name]
+    if type(widget) ~= "table" then
+        return { name = name, exists = false }
+    end
+    return {
+        name = name, exists = true,
+        type = widgetCall(widget, "GetObjectType"),
+        shown = widgetCall(widget, "IsShown") and true or false,
+        visible = widgetCall(widget, "IsVisible") and true or false,
+        text = widgetCall(widget, "GetText"),
+    }
+end
+
 function Commands.run(api, line)
     local words = {}
     for word in line:gmatch("%S+") do
