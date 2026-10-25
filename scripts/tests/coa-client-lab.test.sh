@@ -140,6 +140,11 @@ SINKS
         echo "Mute: yes"
         ;;
 esac
+case "$1 ${2:-} ${3:-}" in
+    "list short modules")
+        printf '77\tmodule-null-sink\tsink_name=coa_client_lab_silence\n'
+        ;;
+esac
 EOF
     cat > "$WORK/bin/umu-run" <<'EOF'
 #!/usr/bin/env bash
@@ -623,6 +628,86 @@ fi
 run_lab stop
 assert_absent "stop removes the descriptor" "$lab_json"
 unset COA_LAB_RELAY
+
+# Instances: separate client, prefix, state, lock and pid per COA_LAB_INSTANCE; the silent sink stays while any
+# other lab client still holds its lock.
+if COA_LAB_INSTANCE=1 COA_LAB_ROOT="$WORK/no-base" run_lab create-instance; then
+    fail "create-instance without a base lab dies"
+else
+    pass "create-instance without a base lab dies"
+fi
+assert_contains "create-instance without base message" "$WORK/out" "no base lab"
+if COA_LAB_INSTANCE=x run_lab status; then fail "bad instance refused"; else pass "bad instance refused"; fi
+if COA_LAB_INSTANCE=1 run_lab create; then fail "create refuses an instance"; else pass "create refuses an instance"; fi
+if COA_LAB_INSTANCE=1 run_lab start 3; then fail "start needs the instance"; else pass "start needs the instance"; fi
+assert_contains "start without instance message" "$WORK/out" "no instance 1"
+
+COA_LAB_INSTANCE=1 run_lab create-instance
+assert_eq "create-instance 1 exits 0" "$?" "0"
+COA_LAB_INSTANCE=2 run_lab create-instance
+assert_file "instance 1 client" "$COA_LAB_ROOT/instances/1/ascension-lab/Ascension.exe"
+assert_file "instance 2 prefix" "$COA_LAB_PREFIX-2/system.reg"
+assert_file "instance 1 marker" "$COA_LAB_ROOT/instances/1/.coa-client-lab"
+assert_file "instance 2 prefix marker" "$COA_LAB_PREFIX-2/.coa-client-lab"
+if COA_LAB_INSTANCE=1 run_lab create-instance; then fail "second create-instance refused"; else pass "second create-instance refused"; fi
+
+: > "$FAKE_LOG"
+COA_LAB_INSTANCE=1 COA_LAB_DISPLAY=headless run_lab start 3
+assert_eq "instance 1 start exits 0" "$?" "0"
+COA_LAB_INSTANCE=2 COA_LAB_DISPLAY=headless run_lab start 3
+assert_eq "instance 2 start exits 0" "$?" "0"
+assert_file "instance 1 lock" "$COA_LAB_ROOT/state/1/lock"
+assert_file "instance 2 lock" "$COA_LAB_ROOT/state/2/lock"
+assert_absent "base lock untouched" "$COA_LAB_ROOT/state/lock"
+pid1=$(cat "$COA_LAB_ROOT/state/1/gamescope.pid")
+pid2=$(cat "$COA_LAB_ROOT/state/2/gamescope.pid")
+[[ -n "$pid1" && -n "$pid2" && "$pid1" != "$pid2" ]] && pass "instances have distinct gamescope pids" \
+    || fail "instances have distinct gamescope pids: [$pid1] [$pid2]"
+assert_contains "instance 1 launched from its client" "$FAKE_LOG" "gamescope-argv --backend headless"
+grep -q "WINEPREFIX=$COA_LAB_PREFIX-1" "/proc/$pid1/environ" 2>/dev/null \
+    && pass "instance 1 runs in its own prefix" || fail "instance 1 runs in its own prefix"
+
+: > "$FAKE_LOG"
+COA_LAB_INSTANCE=1 run_lab stop
+assert_absent "instance 1 lock released" "$COA_LAB_ROOT/state/1/lock"
+kill -0 "$pid2" 2>/dev/null && pass "instance 2 still running" || fail "instance 2 still running"
+assert_not_contains "sink kept while instance 2 runs" "$FAKE_LOG" "pactl unload-module"
+if COA_LAB_INSTANCE=2 run_lab destroy-instance --yes; then
+    fail "destroy-instance refused while running"
+else
+    pass "destroy-instance refused while running"
+fi
+: > "$FAKE_LOG"
+COA_LAB_INSTANCE=2 run_lab stop
+assert_contains "sink unloaded with the last client" "$FAKE_LOG" "pactl unload-module 77"
+
+COA_LAB_INSTANCE=2 run_lab destroy-instance --yes
+assert_eq "destroy-instance exits 0" "$?" "0"
+assert_absent "instance 2 client removed" "$COA_LAB_ROOT/instances/2"
+assert_absent "instance 2 prefix removed" "$COA_LAB_PREFIX-2"
+assert_file "base lab kept" "$COA_LAB_ROOT/ascension-lab/Ascension.exe"
+assert_file "base prefix kept" "$COA_LAB_PREFIX/system.reg"
+
+rm -f "$COA_LAB_ROOT/instances/1/.coa-client-lab"
+if COA_LAB_INSTANCE=1 run_lab destroy-instance --yes; then
+    fail "destroy-instance without marker dies"
+else
+    pass "destroy-instance without marker dies"
+fi
+assert_file "unmarked instance kept" "$COA_LAB_ROOT/instances/1/ascension-lab/Ascension.exe"
+touch "$COA_LAB_ROOT/instances/1/.coa-client-lab"
+COA_LAB_INSTANCE=1 run_lab destroy-instance --yes
+
+mkdir -p "$COA_LAB_PREFIX-1"
+touch "$COA_LAB_PREFIX-1/user-data"
+if COA_LAB_INSTANCE=1 COA_USER_PREFIX="$COA_LAB_PREFIX-1" run_lab create-instance; then
+    fail "instance prefix aliasing the user's prefix refused"
+else
+    pass "instance prefix aliasing the user's prefix refused"
+fi
+assert_contains "instance alias message" "$WORK/out" "aliases the user's path"
+assert_file "aliased user prefix untouched" "$COA_LAB_PREFIX-1/user-data"
+rm -rf "$COA_LAB_PREFIX-1"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

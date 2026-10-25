@@ -125,13 +125,15 @@ def sample(state_dir: Path, prefix: str, seconds: float) -> dict:
 
 def main(argv=None) -> int:
     lab_root = Path(os.environ.get("COA_LAB_ROOT", Path.home() / "CoaServer/client-lab"))
+    instance = os.environ.get("COA_LAB_INSTANCE", "")
+    prefix = os.environ.get("COA_LAB_PREFIX", str(Path.home() / "Games/umu/coa-client-lab")).rstrip("/")
     parser = argparse.ArgumentParser(prog="coa-lab-footprint")
     sub = parser.add_subparsers(dest="command", required=True)
-    sampler = sub.add_parser("sample", help="measure the running lab client")
+    sampler = sub.add_parser("sample", help="measure the running lab client (COA_LAB_INSTANCE selects one)")
     sampler.add_argument("--seconds", type=float, default=10.0)
-    sampler.add_argument("--state-dir", type=Path, default=lab_root / "state")
-    sampler.add_argument("--prefix", default=os.environ.get(
-        "COA_LAB_PREFIX", str(Path.home() / "Games/umu/coa-client-lab")))
+    sampler.add_argument("--state-dir", type=Path,
+                         default=lab_root / "state" / instance if instance else lab_root / "state")
+    sampler.add_argument("--prefix", default=f"{prefix}-{instance}" if instance else prefix)
     args = parser.parse_args(argv)
     print(json.dumps(sample(args.state_dir, args.prefix, args.seconds)))
     return 0
