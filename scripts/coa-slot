@@ -354,7 +354,7 @@ cmd_deploy() {
     since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     compose up -d --no-deps --force-recreate ac-authserver ac-worldserver
     for _ in $(seq 1 120); do
-        if docker logs --since "$since" "$WORLD" 2>&1 | grep -q "(worldserver-daemon) ready"; then
+        if grep -q "(worldserver-daemon) ready" < <(docker logs --since "$since" "$WORLD" 2>&1); then
             echo "${branch:-detached} $sha $(date -Is)" > "$STATE"
             echo "slot $N runs ${branch:-detached} $sha; next: coa-slot preflight $N"
             return 0
