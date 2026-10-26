@@ -744,6 +744,8 @@ coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this l
 coa-lab-mem check                           # read-only process-memory diagnostics: object manager, unit/aura state, spell rows
 coa-lab-mem glue                            # glue screen state: current screen, in-world flag, char-select index/names;
                                             #   `login` reads this itself (see above) -- useful standalone for debugging it
+coa-lab-mem glue --until in-world --timeout 45  # one process polls internally (0.1s) until STATE holds or the
+                                            #   timeout; `login`'s own waits use this (see ADR 0006), not a shell loop
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 
@@ -761,12 +763,16 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
   `eval`, `pksend` and the watches keep the `/reload` path (`COA_LAB_TRANSPORT=reload` forces it for any command).
   Every relay answer carries `loadId` (changes on each UI load) and the answering `character`.
 - `login` waits up to 20 + 25 + 45 s by default (`COA_LAB_LOGIN_WAIT`, `COA_LAB_REALM_WAIT`,
-  `COA_LAB_WORLD_WAIT`, each an upper bound, not a fixed sleep, since `coa-lab-mem glue` is usable: each wait
-  ends as soon as memory confirms the real state, or at the bound if memory cannot confirm it). With these
-  as fixed sleeps (`COA_LAB_SLEEP`/memory unavailable) and 6, 8 and 0 the lab answered its first relay probe
-  37-39 s after `start` (slot 2, 2026-10-26); with memory-driven polling and the defaults, a full
-  restart-based login (switching between two already-created in-world characters) took 42.9-49.6s end to end
-  (slot 2, 2026-10-26, 6 live runs) -- see [ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md).
+  `COA_LAB_WORLD_WAIT`, each an upper bound, not a fixed sleep: each wait is one `coa-lab-mem glue --until`
+  call that ends as soon as memory confirms the real state, or at the bound if memory cannot confirm it).
+  Before [ADR 0006](docs/adr/0006-glue-polling-cost-was-the-scripts-own-overhead.md) each wait polled by
+  shelling out to a fresh `coa-lab-mem glue` (plus extra `python3` field-parses) every `GLUE_POLL_INTERVAL`
+  (2s) tick, and six post-login `/console` sound commands added ~12s more; a fresh client + login measured
+  36.5s, an in-world account switch 42.9-49.6s (slot 2, 2026-10-26, see ADR 0004/0005). After ADR 0006 (same
+  slot, same profile, 2026-10-26): a fresh client + login measured 17.0s, a successful in-world switch
+  8.6-14.9s. Sound is now silenced through `Config.wtf` at every `start`, not through post-login chat;
+  `click_charselect_back_xtest`'s pre-existing unreliability (ADR 0005) is unchanged -- a failed click still
+  falls back to `restart_client`, whose cost is the client's own relaunch, not glue polling.
 - Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (reflink copy of the base lab and
   prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.

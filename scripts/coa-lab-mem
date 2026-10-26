@@ -12,6 +12,12 @@ read-only `/proc/<pid>/mem` open) for every read; no write syscall, no ptrace at
     coa-lab-mem spell ID                     the client's loaded Spell.dbc row for ID, or "not loaded"
     coa-lab-mem glue                         glue screen state: current screen, in-world flag, character-select
                                               selection index and character names
+    coa-lab-mem glue --until STATE --timeout S
+                                              runs the guards once, then polls internally (0.1s) for STATE
+                                              (login|charselect|charselect-loaded|in-world), printing the final
+                                              JSON and exiting non-zero on timeout. Only `in-world` resolves
+                                              the object manager (see resolve_object_manager's comment); the
+                                              other three states read only the cheap glue globals.
 
 Global options: --pid (override discovery, still guarded), --instance (or COA_LAB_INSTANCE; state directory
 layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
@@ -66,6 +72,7 @@ import re
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 LIBC = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -472,9 +479,50 @@ def find_teb64_candidates(pid: int, regions=None) -> list:
 # Object manager resolution
 # ---------------------------------------------------------------------------
 
-def resolve_object_manager(pid: int, tls: dict) -> dict:
-    tls_index, delta = tls["tls_index"], tls["s_curmgr_delta"]
-    for teb64 in find_teb64_candidates(pid):
+# The TEB64 page-by-page scan in `find_teb64_candidates` is the expensive part of resolving the object
+# manager (measured: ~300k reads, ~1.5-2s). Once a (teb64, tls_array) pair is found whose tls_index slot
+# genuinely belongs to the game thread, that pair never moves for the life of the process: the thread and
+# its TEB are allocated once. `teb-cache.json` (one per state dir, so per lab slot/instance) remembers it,
+# keyed by (pid, process start time) so a restarted client (new pid, or the same pid reused after a crash)
+# never reuses a stale address. Caching is proven safe only by always re-deriving `mgr` itself (the actual
+# object-manager pointer) from the cached tls_array on every call -- a null `mgr` is a legitimate
+# "not in world right now" answer, not evidence the cache is stale.
+def _teb_cache_path(state_dir: Path) -> Path:
+    return state_dir / "teb-cache.json"
+
+
+def _proc_starttime(pid: int, proc_root: Path = Path("/proc")) -> int:
+    # Field 22 of /proc/<pid>/stat (clock ticks since boot); same parsing as coa-client-lab's own
+    # gamescope_starttime (split after the last ')' so a comm field cannot shift the fixed fields).
+    stat = (proc_root / str(pid) / "stat").read_text()
+    rest = stat[stat.rindex(")") + 2:].split()
+    return int(rest[19])
+
+
+def _load_teb_cache(state_dir: Path, pid: int, starttime: int) -> dict:
+    try:
+        data = json.loads(_teb_cache_path(state_dir).read_text())
+    except (OSError, ValueError):
+        return None
+    if data.get("pid") == pid and data.get("starttime") == starttime:
+        return data
+    return None
+
+
+def _save_teb_cache(state_dir: Path, pid: int, starttime: int, teb64: int, tls_array: int) -> None:
+    try:
+        _teb_cache_path(state_dir).write_text(
+            json.dumps({"pid": pid, "starttime": starttime, "teb64": teb64, "tls_array": tls_array}))
+    except OSError:
+        pass
+
+
+def _candidate_tls_arrays(pid: int, teb64_list) -> list:
+    """For every TEB64 candidate, resolve its (teb64, tls_array) pair -- a handful of reads each, cheap
+    next to the page scan that found the candidates. Kept separate from the final mgr read so a caller can
+    reuse this list across repeated polls without rescanning (see poll_glue_until)."""
+    candidates = []
+    for teb64 in teb64_list:
         teb32 = teb64 + 0x2000
         try:
             teb32_data = read_bytes(pid, teb32, 0x30)
@@ -485,28 +533,62 @@ def resolve_object_manager(pid: int, tls: dict) -> dict:
         tls_array = struct.unpack_from("<I", teb32_data, 0x2C)[0]
         if tls_array == 0:
             continue
+        candidates.append((teb64, tls_array))
+    return candidates
+
+
+def _mgr_from_tls_array(pid: int, tls_array: int, tls_index: int, delta: int) -> int:
+    """0 is a legitimate answer (this thread's s_curMgr is currently null, e.g. not in world); a bad or
+    unmapped address raises MemoryError_, the caller's signal that the candidate itself is no longer valid."""
+    tls_slot = read_u32(pid, tls_array + tls_index * 4)
+    if tls_slot == 0:
+        return 0
+    return read_u32(pid, tls_slot + delta)
+
+
+def resolve_object_manager(pid: int, tls: dict, state_dir: Path = None, scan_cache: dict = None) -> dict:
+    tls_index, delta = tls["tls_index"], tls["s_curmgr_delta"]
+    starttime = None
+    if state_dir is not None:
         try:
-            tls_slot = read_u32(pid, tls_array + tls_index * 4)
+            starttime = _proc_starttime(pid)
+        except (OSError, ValueError, IndexError):
+            starttime = None
+    if starttime is not None:
+        cached = _load_teb_cache(state_dir, pid, starttime)
+        if cached is not None:
+            try:
+                mgr = _mgr_from_tls_array(pid, cached["tls_array"], tls_index, delta)
+            except MemoryError_:
+                mgr = None  # cache entry no longer maps; fall through to a fresh scan below
+            if mgr is not None:
+                if mgr:
+                    return {"address": mgr, "via": "tls_cached", "teb64": cached["teb64"],
+                            "tls_array": cached["tls_array"], "validated": True}
+                raise MemoryError_("cached game thread's s_curMgr is null (not in world)")
+    if scan_cache is not None and scan_cache.get("candidates") is not None:
+        candidates = scan_cache["candidates"]
+    else:
+        candidates = _candidate_tls_arrays(pid, find_teb64_candidates(pid))
+        if scan_cache is not None:
+            scan_cache["candidates"] = candidates
+    for teb64, tls_array in candidates:
+        try:
+            mgr = _mgr_from_tls_array(pid, tls_array, tls_index, delta)
         except MemoryError_:
             continue
-        if tls_slot == 0:
-            continue
-        try:
-            mgr = read_u32(pid, tls_slot + delta)
-        except MemoryError_:
-            continue
-        if mgr == 0:
-            continue
-        return {"address": mgr, "via": "tls", "teb64": teb64, "teb32": teb32,
-                "tls_array": tls_array, "tls_slot": tls_slot, "validated": True}
+        if mgr:
+            if starttime is not None:
+                _save_teb_cache(state_dir, pid, starttime, teb64, tls_array)
+            return {"address": mgr, "via": "tls", "teb64": teb64, "tls_array": tls_array, "validated": True}
     try:
         saved = read_u32(pid, S_SAVED_OBJMGR)
     except MemoryError_:
         saved = 0
     if saved:
         return {"address": saved, "via": "s_savedObjMgr", "validated": False}
-    raise MemoryError_("could not resolve the object manager (no thread's TLS slot held a non-null "
-                        "s_curMgr, and the s_savedObjMgr backup is null)")
+    raise MemoryError_("could not resolve the object manager (no cached or candidate thread's s_curMgr "
+                        "was non-null, and the s_savedObjMgr backup is null)")
 
 
 def object_manager_summary(pid: int, mgr: int) -> dict:
@@ -733,31 +815,78 @@ def read_glue_character_list(pid: int) -> list:
     return names
 
 
-def cmd_glue(pid: int) -> dict:
+def cmd_glue(pid: int, state_dir: Path = None, need_world: bool = True, scan_cache: dict = None) -> dict:
     screen = read_cstring(pid, GLUE_CURRENT_SCREEN, 64)
     selection_index = read_i32(pid, GLUE_SELECTION_INDEX)
     characters = read_glue_character_list(pid)
     in_world = False
-    try:
-        tls = parse_tls_directory(pid)
-        mgr = resolve_object_manager(pid, tls)
-        object_manager_summary(pid, mgr["address"])
-        in_world = True
-    except MemoryError_:
-        in_world = False
+    # `need_world=False` skips the object-manager resolution entirely: a login/charselect/charselect-loaded
+    # wait only ever needs the three glue globals above, and resolving the object manager is the one
+    # expensive part of this command (a page scan, uncached) -- see resolve_object_manager's own comment.
+    # `current_screen == "charselect"` is on its own a reliable "not in world" signal for those waits
+    # (CGlueMgr::SetScreen runs on the charselect transition itself; only the forward transition *into*
+    # the world leaves it stale -- see GLUE_CURRENT_SCREEN's comment), so `in_world` stays an untouched
+    # False placeholder here rather than a half-answer.
+    if need_world:
+        try:
+            tls = parse_tls_directory(pid)
+            mgr = resolve_object_manager(pid, tls, state_dir=state_dir, scan_cache=scan_cache)
+            object_manager_summary(pid, mgr["address"])
+            in_world = True
+        except MemoryError_:
+            in_world = False
     return {
         "current_screen": screen,
         "in_world": in_world,
         "selection_index": selection_index,
         "characters": characters,
-        "validated": {"current_screen": True, "in_world": True, "selection_index": True, "characters": True},
+        # in_world's own "validated" is False (not measured, a fixed placeholder) whenever need_world was
+        # False: a caller must not read "in_world": false from such a result as a measured fact.
+        "validated": {"current_screen": True, "in_world": need_world, "selection_index": True,
+                      "characters": True},
     }
 
 
-def cmd_check(pid: int, guards: dict) -> dict:
+GLUE_UNTIL_STATES = ("login", "charselect", "charselect-loaded", "in-world")
+GLUE_POLL_INTERVAL = 0.1
+
+
+def glue_matches(status: dict, until_state: str) -> bool:
+    if until_state == "login":
+        return status["current_screen"] == "login"
+    if until_state == "charselect":
+        return status["current_screen"] == "charselect" and not status["in_world"]
+    if until_state == "charselect-loaded":
+        return (status["current_screen"] == "charselect" and not status["in_world"]
+                and len(status["characters"]) > 0)
+    if until_state == "in-world":
+        return status["in_world"]
+    raise ValueError(f"unknown --until state: {until_state}")
+
+
+def poll_glue_until(pid: int, state_dir: Path, until_state: str, timeout: float):
+    """Runs the guards once (by the caller) and polls glue state internally at GLUE_POLL_INTERVAL, instead
+    of the caller shelling out to a fresh `coa-lab-mem glue` (and its own guard pass) every tick. Only
+    `in-world` needs the object manager, so only that state pays for it, and a shared `scan_cache` keeps a
+    single process-local candidate list across every tick of one poll (not just across separate
+    invocations, which teb-cache.json already covers) so a cold cache does not rescan on every 0.1s tick
+    while waiting for the world to load. Returns (status, matched)."""
+    need_world = until_state == "in-world"
+    scan_cache = {} if need_world else None
+    deadline = time.monotonic() + timeout
+    while True:
+        status = cmd_glue(pid, state_dir=state_dir, need_world=need_world, scan_cache=scan_cache)
+        if glue_matches(status, until_state):
+            return status, True
+        if time.monotonic() >= deadline:
+            return status, False
+        time.sleep(GLUE_POLL_INTERVAL)
+
+
+def cmd_check(pid: int, guards: dict, state_dir: Path = None) -> dict:
     build = check_build_identity(pid)
     tls = parse_tls_directory(pid)
-    mgr = resolve_object_manager(pid, tls)
+    mgr = resolve_object_manager(pid, tls, state_dir=state_dir)
     summary = object_manager_summary(pid, mgr["address"])
     return {"guards": guards, "build": build, "tls": tls, "object_manager": {**mgr, **summary}}
 
@@ -825,23 +954,31 @@ def main(argv=None) -> int:
     sub.add_parser("spell-db")
     spell_parser = sub.add_parser("spell")
     spell_parser.add_argument("spell_id", type=int)
-    sub.add_parser("glue")
+    glue_parser = sub.add_parser("glue")
+    glue_parser.add_argument("--until", choices=GLUE_UNTIL_STATES, default=None,
+                              help="poll internally (0.1s) until this glue state holds, instead of one read")
+    glue_parser.add_argument("--timeout", type=float, default=20.0, help="seconds to poll for --until")
     args = parser.parse_args(argv)
+    state_dir = _state_dir(lab_root, args.instance)
 
+    matched = True
     try:
         guards = run_guards(args.pid, lab_root, args.instance)
         pid = guards["pid"]
         if args.command == "check":
-            result = cmd_check(pid, guards)
+            result = cmd_check(pid, guards, state_dir=state_dir)
         elif args.command == "spell-db":
             result = cmd_spell_db(pid)
         elif args.command == "spell":
             result = cmd_spell(pid, args.spell_id)
         elif args.command == "glue":
-            result = cmd_glue(pid)
+            if args.until:
+                result, matched = poll_glue_until(pid, state_dir, args.until, args.timeout)
+            else:
+                result = cmd_glue(pid, state_dir=state_dir)
         else:
             tls = parse_tls_directory(pid)
-            mgr = resolve_object_manager(pid, tls)
+            mgr = resolve_object_manager(pid, tls, state_dir=state_dir)
             if args.command == "player":
                 result = cmd_player(pid, mgr["address"])
             elif args.command == "unit":
@@ -853,7 +990,7 @@ def main(argv=None) -> int:
         return 1
 
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 0 if matched else 1
 
 
 if __name__ == "__main__":

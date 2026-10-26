@@ -71,6 +71,14 @@ MINIMAL_CVARS=(
     "particleDensity=0.1" "weatherDensity=0" "spellEffectLevel=0" "specular=0" "projectedTextures=0"
     "textureFilteringMode=0" "baseMip=1" "ffxGlow=0" "ffxDeath=0" "showfootprints=0"
 )
+# Silence for both profiles (reports/l7): the client rewrites its own Config.wtf on exit, discarding
+# whatever `create` wrote once, so these have to be reasserted on every start, not just once at creation.
+# Written before the client launches instead of through post-login /console commands, which cost a chat
+# round trip (~2s) per setting and only take effect after the world has already loaded once.
+SOUND_CVARS=(
+    "Sound_EnableAllSound=0" "Sound_EnableSFX=0" "Sound_EnableAmbience=0" "Sound_EnableMusic=0"
+    "Sound_EnableErrorSpeech=0" "Sound_MasterVolume=0"
+)
 STATE_DIR="$LAB_ROOT/state${INSTANCE:+/$INSTANCE}"
 LOCK="$STATE_DIR/lock"
 
@@ -163,6 +171,9 @@ set_conf() {
 apply_profile() {
     local config="$LAB_CLIENT/WTF/Config.wtf" setting
     set_wtf "$config" gxResolution "${WIDTH}x${HEIGHT}"
+    for setting in "${SOUND_CVARS[@]}"; do
+        set_wtf "$config" "${setting%%=*}" "${setting#*=}"
+    done
     [[ "$PROFILE" == minimal ]] || return 0
     for setting in "${MINIMAL_CVARS[@]}"; do
         set_wtf "$config" "${setting%%=*}" "${setting#*=}"
@@ -645,15 +656,30 @@ select_character() {
         "implemented yet (see comment above); using the default highlighted character" >&2
 }
 
-# Seconds between `coa-lab-mem glue` polls inside `wait_or_sleep`.
-GLUE_POLL_INTERVAL="${COA_LAB_GLUE_POLL_INTERVAL:-2}"
-
 # Runs `coa-lab-mem glue` and prints its JSON on success; prints nothing and returns non-zero on any failure
 # (guard refusal, no python3, unexpected output) -- the caller's cue to fall back to the pixel-check path,
 # never a hard error here.
 glue_state() {
     [[ -x "$LAB_MEM" ]] && command -v python3 > /dev/null 2>&1 || return 1
     python3 "$LAB_MEM" glue 2> /dev/null
+}
+
+# Waits up to $2 seconds (the same fixed sleep this replaces, kept as an upper bound) for glue state $1
+# (login|charselect|charselect-loaded|in-world) to hold, polling inside a single `coa-lab-mem glue --until`
+# process (reports/l7: that process runs the guards once and polls internally at 0.1s, instead of this file
+# spawning a fresh `coa-lab-mem glue` -- plus extra python3 field-parses -- on every tick, which is what cost
+# ~1.5-3.5s per tick before every step of a login). Falls back to sleeping the full ceiling, unchanged, when
+# `coa-lab-mem` is not usable at all (same fallback `wait_or_sleep` used for the same case). Prints the final
+# JSON on success (0) or on a timeout (still prints the last state, exits 1) so a caller that also needs a
+# field from it does not need another read; prints nothing only when coa-lab-mem itself could not run.
+glue_until() {
+    local state="$1" ceiling="$2"
+    if [[ -x "$LAB_MEM" ]] && command -v python3 > /dev/null 2>&1; then
+        python3 "$LAB_MEM" glue --until "$state" --timeout "$ceiling" 2> /dev/null
+        return $?
+    fi
+    "$SLEEP" "$ceiling"
+    return 1
 }
 
 # Reads one field (current_screen, in_world, selection_index) out of a `coa-lab-mem glue` JSON blob already
@@ -677,25 +703,6 @@ try:
 except Exception:
     pass
 ' "$field" <<< "$json" 2> /dev/null
-}
-
-# Waits up to $2 seconds (the same fixed sleep this replaces, kept as an upper bound) for $1 (a function name
-# taking no arguments, returning 0 once its condition holds) to succeed, polling every GLUE_POLL_INTERVAL
-# seconds; falls back to sleeping the full $2 seconds, unchanged, when `coa-lab-mem` is not usable at all
-# (`glue_state` itself fails). Never waits longer than $2 either way, so a condition memory cannot confirm (or
-# a client memory cannot read) costs no more than the original fixed delay did.
-wait_or_sleep() {
-    local glue_check="$1" ceiling="$2" waited=0
-    if ! glue_state > /dev/null 2>&1; then
-        "$SLEEP" "$ceiling"
-        return 0
-    fi
-    while (( waited < ceiling )); do
-        "$glue_check" && return 0
-        "$SLEEP" "$GLUE_POLL_INTERVAL"
-        waited=$((waited + GLUE_POLL_INTERVAL))
-    done
-    return 1
 }
 
 # Clicks the character-select screen's "Back" button (proportional to window size, same pattern as the
@@ -748,14 +755,14 @@ goto_login_screen_via_memory() {
     [[ "$screen" == "login" && "$world" == "false" ]] && return 0
     if [[ "$world" == "true" ]]; then
         cmd_chat "/camp"
-        wait_or_sleep glue_check_charselect_ready "$CAMP_WAIT" || return 1
+        glue_until charselect-loaded "$CAMP_WAIT" > /dev/null || return 1
     elif [[ "$world" == "false" && -n "$screen" && "$screen" != "login" ]]; then
         : # already at character-select; fall through to the click below
     else
         return 1
     fi
     click_charselect_back_xtest || return 1
-    wait_or_sleep glue_check_login_ready "$CHARSELECT_BACK_WAIT"
+    glue_until login "$CHARSELECT_BACK_WAIT" > /dev/null
 }
 
 # At character-select, presses Down until `coa-lab-mem glue`'s selection index names the wanted character,
@@ -795,32 +802,6 @@ except Exception:
     return 1
 }
 
-# `wait_or_sleep` conditions: each reads fresh memory and returns 0 once satisfied. No arguments (the
-# function-name-as-callback convention `wait_or_sleep` uses), since the waits in `cmd_login` have nothing left
-# to pass in once `wait_or_sleep` has already checked that `coa-lab-mem` itself runs at all.
-glue_check_login_ready() {
-    local json
-    json=$(glue_state) || return 1
-    [[ "$(glue_field "$json" current_screen)" == "login" ]]
-}
-
-glue_check_charselect_ready() {
-    local json
-    json=$(glue_state) || return 1
-    [[ "$(glue_field "$json" current_screen)" == "charselect" && "$(glue_field "$json" in_world)" == "false" ]] \
-        || return 1
-    python3 -c '
-import json, sys
-sys.exit(0 if json.load(sys.stdin).get("characters") else 1)
-' <<< "$json" 2> /dev/null
-}
-
-glue_check_in_world() {
-    local json
-    json=$(glue_state) || return 1
-    [[ "$(glue_field "$json" in_world)" == "true" ]]
-}
-
 # Samples one pixel (top-center, where the account-login screen's bright logo/sky sits) and returns
 # its R+G+B sum. Measured live (slot 2, 2026-10-26, 800x600): account-login srgb(176,155,148) (sum
 # 479); character-select srgb(0,56,56) (sum 112, the same point over the character-select scene's dark
@@ -838,11 +819,22 @@ screen_brightness() {
 }
 
 # True only once the sampled pixel is bright enough to be the account-login screen, not a guess from
-# any other signal.
+# any other signal. Retries briefly (reports/l7, live, slot 2, 2026-10-26: reproduced 2/2 on the first
+# attempt after switching `cmd_login`'s waits to `coa-lab-mem glue --until`): memory confirms the login
+# screen (CGlueMgr::SetScreen) noticeably before the client has finished fading the scene in, where the
+# old shell-side poll (GLUE_POLL_INTERVAL=2s plus its own python3 spawns) had already absorbed that delay
+# by accident. IS_LOGIN_SCREEN_RETRY_WAIT is a ceiling, not a new fixed sleep: it returns as soon as the
+# pixel check passes, same as every other wait this file turned into a bounded poll.
+IS_LOGIN_SCREEN_RETRY_WAIT="${COA_LAB_LOGIN_SCREEN_RETRY_WAIT:-2}"
+IS_LOGIN_SCREEN_RETRY_INTERVAL="${COA_LAB_LOGIN_SCREEN_RETRY_INTERVAL:-0.2}"
 is_login_screen() {
-    local sum
-    sum=$(screen_brightness) || return 1
-    [[ -n "$sum" ]] && ((sum > LOGIN_SCREEN_BRIGHTNESS))
+    local sum waited=0
+    while true; do
+        sum=$(screen_brightness) && [[ -n "$sum" ]] && ((sum > LOGIN_SCREEN_BRIGHTNESS)) && return 0
+        awk -v w="$waited" -v c="$IS_LOGIN_SCREEN_RETRY_WAIT" 'BEGIN { exit !(w < c) }' || return 1
+        "$SLEEP" "$IS_LOGIN_SCREEN_RETRY_INTERVAL"
+        waited=$(awk -v w="$waited" -v i="$IS_LOGIN_SCREEN_RETRY_INTERVAL" 'BEGIN { print w + i }')
+    done
 }
 
 # Drives the client back to a clean account-login screen by restarting it on the same slot, instead
@@ -916,7 +908,7 @@ cmd_login() {
     # state instead (measured live, 2026-10-26: a manual launch + login reaches the login screen well
     # under LOGIN_WAIT's 20s); each still never waits longer than the original constant, so a condition
     # memory cannot confirm (or a client memory cannot read at all) costs no more than before.
-    wait_or_sleep glue_check_login_ready "$LOGIN_WAIT" || true
+    glue_until login "$LOGIN_WAIT" > /dev/null || true
     # The pixel-brightness check (`is_login_screen`) still runs unconditionally, even when memory already
     # confirmed the screen: it also catches a leftover error dialog layered over the login screen (e.g. a
     # previous wrong-password attempt), which shares the same `current_screen` value in memory ("login")
@@ -948,10 +940,10 @@ cmd_login() {
     xdotool key --window "$WINDOW" --delay 30 $backspaces
     xdotool type --window "$WINDOW" --delay 60 "$password"
     xdotool key --window "$WINDOW" Return
-    wait_or_sleep glue_check_charselect_ready "$REALM_WAIT" || true
+    glue_until charselect-loaded "$REALM_WAIT" > /dev/null || true
     if [[ -n "$character" ]]; then
-        # `wait_or_sleep glue_check_charselect_ready` above already waited for the character list to be
-        # loaded (when memory is usable); re-check here only confirms memory is still usable right now.
+        # `glue_until charselect-loaded` above already waited for the character list to be loaded (when
+        # memory is usable); re-check here only confirms memory is still usable right now.
         if glue_state > /dev/null 2>&1; then
             select_character_via_memory "$character" \
                 || die "could not highlight $character in the character-select list within its own length;" \
@@ -961,15 +953,11 @@ cmd_login() {
         fi
     fi
     xdotool key --window "$WINDOW" Return
-    wait_or_sleep glue_check_in_world "$WORLD_WAIT" || true
-    # In-game sound options, set through the client's own CVars: they take effect at once and are saved with the
-    # rest of the settings. The null sink above covers the login screen, where there is no chat to type into.
-    local setting
-    for setting in Sound_EnableAllSound Sound_EnableSFX Sound_EnableAmbience Sound_EnableMusic Sound_EnableErrorSpeech; do
-        cmd_chat "/console $setting 0"
-        "$SLEEP" 0.3
-    done
-    cmd_chat "/console Sound_MasterVolume 0"
+    glue_until in-world "$WORLD_WAIT" > /dev/null || true
+    # Sound is silenced through Config.wtf, written by apply_profile on every start (reports/l7: the client
+    # rewrites its own Config.wtf on exit, so this has to be reasserted at every start, not just `create`;
+    # proven live by reading the CVar back in world: `coa-client-lab probe eval 'GetCVar("Sound_EnableAllSound")'`
+    # -- see docs/design/client-lab-level3.md). No in-world /console round trip is needed any more.
     echo "login sent for $account; check the world with: coa-client-lab screenshot"
     if [[ -n "$character" ]]; then
         write_descriptor "$account" "$character"

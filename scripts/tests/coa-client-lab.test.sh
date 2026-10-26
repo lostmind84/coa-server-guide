@@ -260,6 +260,12 @@ assert_eq "start exits 0" "$?" "0"
 assert_contains "lab realmList" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" 'SET realmList "127.0.0.1:3924"'
 assert_contains "lab realmlist.wtf" "$COA_LAB_ROOT/ascension-lab/Data/enUS/realmlist.wtf" "set realmlist 127.0.0.1:3924"
 assert_contains "user realmList untouched" "$COA_USER_CLIENT/WTF/Config.wtf" 'SET realmList "127.0.0.1:3824"'
+# Sound is silenced at every start, readable profile included (reports/l7): the client rewrites Config.wtf
+# on exit, so this has to be reasserted every time, not only at `create`.
+for setting in 'Sound_EnableAllSound "0"' 'Sound_EnableSFX "0"' 'Sound_EnableAmbience "0"' \
+    'Sound_EnableMusic "0"' 'Sound_EnableErrorSpeech "0"' 'Sound_MasterVolume "0"'; do
+    assert_contains "start silences $setting" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" "SET $setting"
+done
 assert_contains "launched on workspace 9" "$FAKE_LOG" 'workspace = "9 silent"'
 assert_contains "gamescope size" "$FAKE_LOG" "gamescope -W 1920 -H 1080 -w 1920 -h 1080"
 assert_contains "lock holder" "$COA_LAB_ROOT/state/lock" "slot 3"
@@ -328,13 +334,12 @@ assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 6
 # Two Returns reach the world (submit the password, then enter the world) on the FIRST login of a lab
 # session: no dismiss Return yet, since nothing can have left a leftover dialog before any login was
 # attempted (confirmed live on slot 2, 2026-10-26: an unconditional dismiss Return on an untouched login
-# screen corrupted the account field instead of closing a dialog that was never there). The sound CVars
-# typed afterwards each open the chat with a Return of their own, so stop counting at the first /console
-# line and drop the Return that opened it.
+# screen corrupted the account field instead of closing a dialog that was never there). Sound is silenced
+# through Config.wtf at `start` (reports/l7), not through post-login /console chat any more, so these are
+# the only two Returns login itself ever sends.
 assert_eq "login's first attempt sends two Returns (submit, enter world), no dismiss yet" \
-    "$(awk '/--delay 40 \/console/ { print n - 1; found = 1; exit } /key --window 4242 Return$/ { n++ } END { if (!found) print n + 0 }' "$FAKE_LOG")" "2"
-assert_contains "login silences the client" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_EnableAllSound 0"
-assert_contains "login zeroes the master volume" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_MasterVolume 0"
+    "$(grep -c 'key --window 4242 Return$' "$FAKE_LOG")" "2"
+assert_not_contains "login no longer silences the client over chat" "$FAKE_LOG" "/console Sound_"
 
 # A SECOND login in the same lab session (state/account already exists from the one above) no longer
 # tries to recover in place (an earlier /camp + character-select Back design, dropped: it failed to
