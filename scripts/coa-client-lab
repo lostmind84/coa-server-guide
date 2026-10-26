@@ -85,7 +85,8 @@ Running (one lab client per instance):
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
-                           ca [ENTRY], log [n], state, frame NAME, errors, pksend OPCODE [u32:N u8:N s:TEXT ...],
+                           ca [ENTRY], log [n], state, frame NAME, errors [N] [previous] [locals],
+                           pksend OPCODE [u32:N u8:N s:TEXT ...],
                            pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
                            pkunwatch OPCODE); prints JSON. With state/lab.json, read-only commands go through the
                            server relay (coa-lab-relay, no /reload); COA_LAB_TRANSPORT=reload forces /reload
@@ -461,7 +462,7 @@ cmd_login() {
 # `preflight` is "pass" only for a pass recorded for this slot after the slot's last deploy; an older or foreign
 # pass is "stale". The recorded slot and times are copied too, so the server check can apply the same rule.
 write_descriptor() {
-    local account="$1" character="$2" slot state_file
+    local account="$1" character="$2" slot state_file etc
     [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
     if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
         echo "no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): no lab descriptor written"
@@ -469,14 +470,17 @@ write_descriptor() {
     fi
     slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
     state_file=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^STATE_FILE=//p') || state_file=""
+    etc=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^ETC=//p') || etc=""
     ( umask 077
       python3 - "$LAB_ROOT/relay.env" "$STATE_DIR/lab.json" "${COA_LAB_INSTANCE:-}" "$slot" "$account" \
-          "$character" "${state_file:-/nonexistent}" "$STATE_DIR/preflight" <<'PYEOF'
+          "$character" "${state_file:-/nonexistent}" "$STATE_DIR/preflight" "$LAB_CLIENT" \
+          "${etc:+$etc/worldserver.conf}" <<'PYEOF'
 import json
 import sys
 from datetime import datetime
 
-env_path, out, instance, slot, account, character, state_path, preflight_path = sys.argv[1:]
+(env_path, out, instance, slot, account, character, state_path, preflight_path, client_dir,
+ worldserver_conf) = sys.argv[1:]
 
 
 def first_line(path):
@@ -518,7 +522,8 @@ descriptor = {
     "soap_password_file": env["SOAP_PASSWORD_FILE"], "account": account.upper(), "character": character,
     "deployed_commit": deployed_commit, "deployed_at": deployed_at, "preflight": result,
     "preflight_slot": int(preflight_slot) if preflight_slot.isdigit() else preflight_slot,
-    "preflight_time": preflight_time,
+    "preflight_time": preflight_time, "client_dir": client_dir,
+    "worldserver_conf": worldserver_conf or None,
 }
 with open(out, "w") as handle:
     json.dump(descriptor, handle, indent=2, sort_keys=True)

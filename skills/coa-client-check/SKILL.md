@@ -51,10 +51,12 @@ what will be observed, with which probe, and which result means the issue is rep
 If the issue cannot be turned into an expectation (no spell id, no reproduction path, a symptom nobody can see
 twice), ask the question in the issue and stop with **inconclusive**.
 
-What the tools cannot observe today: Lua error text (the client's own error reporter keeps the handler; a Lua
-error shows only as the system line `UI Error: an interface error occured` in `probe log`), action-bar contents,
-3D models, animations, anything purely visual. That is different from the red on-screen UI errors, which
-`probe log` does capture (section 4 below). Pure visuals are judged from screenshots and marked "visual, needs
+`probe errors [N] [previous] [locals]` reads the client's own `ERROR_HANDLER_DATABASE` directly (no handler
+install) and returns the Lua error text and stack, not just the system line `probe log` already captures; a
+`/reload` empties the table, so read `previous` for the errors seen just before the last world entry. Still
+cannot observe: action-bar contents, 3D models, animations, anything purely visual. That is different from
+the red on-screen UI errors, which `probe log` does capture (section 4 below). Pure visuals are judged from
+screenshots and marked "visual, needs
 user confirmation"; the rest is **inconclusive** with the missing capability named.
 
 ## 3. Setup and action: Ghost first
@@ -102,6 +104,13 @@ folder.
    reports mana, rage, focus, energy and runic power); `.gps` prints the position into the captured system
    messages; `.go xyz X Y Z MAP O` takes the facing as its fifth number, which answers "Target needs to be in
    front of you".
+7. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
+   (guide, part 2) reads the lab client's own process memory (object manager, unit/aura data, loaded
+   `Spell.dbc` row) independently of the addon API, so it can show that the engine disagrees with
+   `probe state`/`probe auras` themselves. `scripts/coa-lab-packets` reads the worldserver's packet log to
+   show what the server actually sent. Both are read-only, lab-only, and need a slot with
+   `Warden.Enabled = 0`; neither substitutes for a Ghost scenario or for `probe state`/`probe auras`, and
+   both are a last resort when the display and the Lua view already disagree and the cause matters.
 
 ## Getting the state you need, shortest route first
 

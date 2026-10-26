@@ -7,6 +7,10 @@ Commands.handlers = {}
 
 local MAX_AURAS = 40
 local MAX_SPELLBOOK = 1024
+local DEFAULT_ERRORS = 5
+local MAX_ERRORS = 20
+local MAX_ERROR_MESSAGE = 500
+local MAX_ERROR_TEXT = 1500
 
 local function tooltipLines(api, link)
     local tip = api.GameTooltip
@@ -476,12 +480,71 @@ function Commands.watchEvent(api, event)
     end)
 end
 
-Commands.handlers.errors = function(api)
-    local errors = CoaProbe.Errors
-    if not errors then
-        return nil, "error capture not loaded"
+-- Truncate to at most `limit` bytes without splitting a UTF-8 sequence, like Relay.chunks. Returns the text and
+-- whether it was cut.
+local function truncateText(text, limit)
+    if #text <= limit then
+        return text, false
     end
-    return { installed = errors.current(api), total = errors.total, entries = errors.entries }
+    local cut = limit
+    while cut > 0 and text:byte(cut + 1) >= 0x80 and text:byte(cut + 1) < 0xC0 do
+        cut = cut - 1
+    end
+    return text:sub(1, cut), true
+end
+
+-- errors [N] [previous] [locals]: the newest N entries (default 5, max 20) ErrorHandler.lua stored in the
+-- plain global ERROR_HANDLER_DATABASE.errors.current (SharedXML/ErrorHandler/ErrorHandler.lua:11-16, 290-318),
+-- read only -- no seterrorhandler call, no install of our own handler. `previous` reads .previous (the prior
+-- session's errors, moved there at PLAYER_ENTERING_WORLD); `locals` adds debuglocals output, left out by
+-- default since it is usually the largest field. message is capped to 500 bytes, stack/locals to 1500.
+Commands.handlers.errors = function(api, args)
+    local database = api.ERROR_HANDLER_DATABASE
+    if type(database) ~= "table" or type(database.errors) ~= "table" then
+        return nil, "ERROR_HANDLER_DATABASE is not available on this client"
+    end
+
+    local count = DEFAULT_ERRORS
+    local nextIndex = 1
+    if args[1] and tonumber(args[1]) then
+        count = tonumber(args[1])
+        nextIndex = 2
+    end
+    count = math.max(1, math.min(MAX_ERRORS, math.floor(count)))
+
+    local wantPrevious, wantLocals = false, false
+    for i = nextIndex, #args do
+        if args[i] == "previous" then
+            wantPrevious = true
+        elseif args[i] == "locals" then
+            wantLocals = true
+        end
+    end
+
+    local current = database.errors.current or {}
+    local previous = database.errors.previous or {}
+    local list = wantPrevious and previous or current
+    local entries = {}
+    for i = #list, math.max(1, #list - count + 1), -1 do
+        local source = list[i]
+        local message, messageTruncated = truncateText(tostring(source.message or ""), MAX_ERROR_MESSAGE)
+        local stack, stackTruncated = truncateText(tostring(source.stack or ""), MAX_ERROR_TEXT)
+        local entry = {
+            message = message, messageTruncated = messageTruncated,
+            stack = stack, stackTruncated = stackTruncated,
+            time = source.time, counter = source.counter,
+        }
+        if wantLocals then
+            entry.locals, entry.localsTruncated = truncateText(tostring(source.locals or ""), MAX_ERROR_TEXT)
+        end
+        entries[#entries + 1] = entry
+    end
+
+    return {
+        source = "ERROR_HANDLER_DATABASE",
+        total_current = #current, total_previous = #previous,
+        entries = entries,
+    }
 end
 
 local function widgetCall(widget, method)

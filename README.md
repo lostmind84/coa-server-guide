@@ -672,9 +672,12 @@ coa-client-lab preflight 2                  # also records pass/fail for the lab
 COA_LAB_PROFILE=minimal coa-client-lab start 2               # 800x600, low-cost settings, gamescope headless
 coa-client-lab login COALAB1 <password> Coalabone            # CHARACTER writes state/lab.json
 coa-client-lab probe spell 501281           # now goes through the relay: no /reload, the target is kept
-coa-lab-relay probe frame GameTooltip       # the same, directly; `errors` reports the addon's handler only:
-                                            #   this client replaces it after login, so read Lua errors from `probe log`
+coa-lab-relay probe frame GameTooltip       # the same, directly
+coa-client-lab probe errors 5               # the client's own Lua error text and stack (ERROR_HANDLER_DATABASE);
+                                            #   a /reload empties it: pass `previous` to read the errors from before the last one
 coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this lab client and its wineserver
+coa-lab-mem check                           # read-only process-memory diagnostics: object manager, unit/aura state, spell rows
+coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 
 - `COA_LAB_PROFILE=minimal` writes `gxResolution` and low-cost CVars (`maxFPS`, `farclip`, `baseMip`, ...) before
@@ -690,6 +693,10 @@ coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this l
   prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.
 - Measured footprint and design notes: [`docs/design/client-lab-level3.md`](docs/design/client-lab-level3.md).
+- [`scripts/coa-lab-mem`](scripts/coa-lab-mem) and [`scripts/coa-lab-packets`](scripts/coa-lab-packets) read the
+  lab client's own process memory and the worldserver's packet log, read only, lab only, and only on a slot with
+  `Warden.Enabled = 0` — see [Part 2, "reading the lab client's own state"](docs/design/client-lab-level3.md#part-2-reading-the-lab-clients-own-state)
+  and [ADR 0001](docs/adr/0001-lab-client-read-only-diagnostics.md).
 
 ### CoaProbe on its own
 
@@ -699,7 +706,8 @@ The probe addon does not need the lab client, the slots or Linux: it answers in 
    and start the client (an addon folder added while it runs is not loaded by `/reload`).
 2. In game, type a request with an id of your choice:
    `/coaprobe r1 spell 706240`, `/coaprobe r2 item 6948`, `/coaprobe r3 auras target`, `/coaprobe r4 spellbook`,
-   `/coaprobe r5 known 78`, `/coaprobe r6 log 20`, `/coaprobe r7 state`. The chat answers `COAPROBE r1 ok`.
+   `/coaprobe r5 known 78`, `/coaprobe r6 log 20`, `/coaprobe r7 state`, `/coaprobe r8 errors 5`. The chat answers
+   `COAPROBE r1 ok`.
 3. Type `/reload`: the client writes the answers to
    `WTF/Account/<ACCOUNT>/SavedVariables/CoaProbe.lua` (`WTF\Account\<ACCOUNT>\SavedVariables\CoaProbe.lua` on
    Windows).
@@ -709,9 +717,11 @@ Answers are JSON: `spell` gives name, rank, icon, cost, cast time, range, whethe
 tooltip lines; `item` gives the tooltip lines; `auras` gives name, spell id, count, duration, expirationTime, caster
 and whether it is harmful for every aura on the unit; `spellbook` lists the known spells with their ids; `known`
 answers one spell id; `log` returns the addon's own continuous capture (see below); `state` snapshots the player
-and target together. The addon keeps the last 50 answers and never talks to the server, so it is safe on a live
-realm. Limits: it cannot read action bars, 3D models or Lua errors (a `seterrorhandler` wrapper never sees them),
-and a request must not contain `|`.
+and target together; `errors [N] [previous] [locals]` reads the client's own Lua error log
+(`ERROR_HANDLER_DATABASE`) directly, no handler install — on this path a `/reload` is also what rotates
+`errors.current` into `.previous`, so `errors` and `errors previous` in the same `/reload` describe the errors
+from right before and right after it. The addon keeps the last 50 answers and never talks to the server, so it
+is safe on a live realm. Limits: it cannot read action bars or 3D models, and a request must not contain `|`.
 
 Installing the addon adds a second SavedVariable, `CoaProbeLog`, written into the same `CoaProbe.lua` file: the
 addon continuously captures UI errors ("Not enough rage"), system messages and the player's own casts (with their

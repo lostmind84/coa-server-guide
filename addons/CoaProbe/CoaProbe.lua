@@ -61,19 +61,9 @@ for _, event in ipairs(CoaProbe.Events.WATCHED) do
 end
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("CHAT_MSG_ADDON")
-frame:RegisterEvent("PLAYER_ENTERING_WORLD")
-if CoaProbe.Errors and type(geterrorhandler) == "function" then
-    CoaProbe.Errors.install(_G)
-end
 frame:SetScript("OnEvent", function(_, event, ...)
     if event == "CHAT_MSG_ADDON" then
         CoaProbe.Relay.onAddonMessage(_G, ...)
-        return
-    end
-    if event == "PLAYER_ENTERING_WORLD" then
-        if CoaProbe.Errors and not CoaProbe.Errors.current(_G) then
-            CoaProbe.Errors.install(_G)
-        end
         return
     end
     if event == "ADDON_LOADED" then

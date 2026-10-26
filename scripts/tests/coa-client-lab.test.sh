@@ -609,7 +609,8 @@ assert_file "descriptor written" "$lab_json"
 assert_eq "descriptor mode 600" "$(stat -c %a "$lab_json")" "600"
 for key in '"instance": ""' '"slot": 3' '"soap_url": "http://127.0.0.1:8078/"' '"soap_account": "COALABSOAP"' \
     "\"soap_password_file\": \"$WORK/soap.password\"" '"account": "COALAB1"' '"character": "Coalabone"' \
-    '"deployed_commit": "0123456789abcdef"' '"preflight": "pass"'; do
+    '"deployed_commit": "0123456789abcdef"' '"preflight": "pass"' \
+    "\"client_dir\": \"$COA_LAB_ROOT/ascension-lab\"" "\"worldserver_conf\": \"$FAKE_ETC/worldserver.conf\""; do
     assert_contains "descriptor has $key" "$lab_json" "$key"
 done
 : > "$FAKE_LOG"
