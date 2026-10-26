@@ -51,7 +51,8 @@ what will be observed, with which probe, and which result means the issue is rep
 If the issue cannot be turned into an expectation (no spell id, no reproduction path, a symptom nobody can see
 twice), ask the question in the issue and stop with **inconclusive**.
 
-What the tools cannot observe today: Lua errors (a `seterrorhandler` wrapper never sees them), action-bar contents,
+What the tools cannot observe today: Lua error text (the client's own error reporter keeps the handler; a Lua
+error shows only as the system line `UI Error: an interface error occured` in `probe log`), action-bar contents,
 3D models, animations, anything purely visual. That is different from the red on-screen UI errors, which
 `probe log` does capture (section 4 below). Pure visuals are judged from screenshots and marked "visual, needs
 user confirmation"; the rest is **inconclusive** with the missing capability named.
@@ -80,16 +81,21 @@ folder.
 
 ## 4. Observe
 
-1. `coa-client-lab start N`, then `coa-client-lab login <account> <password>` (about 90 s).
+1. `coa-client-lab start N`, then `coa-client-lab login <account> <password>` (about 90 s). On a slot prepared with
+   `coa-client-lab relay-setup N` (guide README, "Headless lab with relay probes"), prefer
+   `COA_LAB_PROFILE=minimal coa-client-lab start N` and `coa-client-lab login <account> <password> <character>`:
+   read-only probes then go through the server relay in a fraction of a second, without `/reload`.
 2. Drive the client with `chat` (slash and GM commands), `key`, `hold KEY MS` (walk with `w`/`s`, turn with
    `Left`/`Right`) and `screenshot`. Typed text must not contain `|`.
 3. **Read what the screen forgets.** `coa-client-lab probe log [n]` returns the addon's capture of UI errors
    ("Target too close", "Not enough rage"), system messages and the player's casts with their failure reason.
    Nothing else shows why an action did not happen: the red error text fades and `/reload` clears the chat.
    Read the log after every action that could fail, before concluding anything.
-4. **One request per moment.** `coa-client-lab probe state` snapshots the player and the current target together
-   (name, level, health, every power index the client exposes, auras). A probe writes its answer through
-   `/reload`, which clears the target selection, so two probes never describe the same situation.
+4. **One request per moment (reload path).** `coa-client-lab probe state` snapshots the player and the current
+   target together (name, level, health, every power index the client exposes, auras). A probe on the `/reload`
+   path writes its answer through `/reload`, which clears the target selection, so two such probes never describe
+   the same situation. Relay probes keep the target and the chat: several of them can describe one moment, and
+   answers with the same `loadId` prove no reload happened between them.
 5. **Snapshot inside the effect window.** Many auras last seconds: send the probe immediately after the action,
    without waiting. An empty aura list after a finished cast proves nothing.
 6. Useful facts the client hides: the displayed bar is not always the resource a spell charges (`probe state`

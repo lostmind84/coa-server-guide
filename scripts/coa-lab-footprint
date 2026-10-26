@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Memory and CPU of one lab client: the gamescope process tree started by `coa-client-lab start` plus every
+process running in the lab Wine prefix (the daemonized wineserver leaves the gamescope tree).
+
+    coa-lab-footprint sample [--seconds S] [--state-dir DIR] [--prefix PREFIX]
+
+Prints JSON: pids, rss_kib and pss_kib at the end of the window, peak_pss_kib over the window,
+cpu_percent (100 = one core) and seconds.
+"""
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+PROC = Path("/proc")
+
+
+def _stat_fields(pid: int, proc: Path):
+    try:
+        text = (proc / str(pid) / "stat").read_text()
+    except OSError:
+        return None
+    return text[text.rindex(")") + 2:].split()
+
+
+def _children_map(proc: Path) -> dict:
+    children = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        fields = _stat_fields(int(entry.name), proc)
+        if fields is None:
+            continue
+        children.setdefault(int(fields[1]), []).append(int(entry.name))
+    return children
+
+
+def process_tree(root_pid: int, proc: Path = PROC) -> list:
+    if _stat_fields(root_pid, proc) is None:
+        return []
+    children = _children_map(proc)
+    tree, pending = [], [root_pid]
+    while pending:
+        pid = pending.pop()
+        tree.append(pid)
+        pending.extend(children.get(pid, []))
+    return tree
+
+
+def prefix_processes(prefix: str, proc: Path = PROC) -> list:
+    wanted = f"WINEPREFIX={prefix}".encode()
+    found = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            environ = (entry / "environ").read_bytes()
+        except OSError:
+            continue
+        if wanted in environ.split(b"\0"):
+            found.append(int(entry.name))
+    return found
+
+
+def memory_kib(pids, proc: Path = PROC) -> dict:
+    totals = {"rss_kib": 0, "pss_kib": 0}
+    for pid in pids:
+        try:
+            lines = (proc / str(pid) / "smaps_rollup").read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            key, _, rest = line.partition(":")
+            if key in ("Rss", "Pss"):
+                totals[f"{key.lower()}_kib"] += int(rest.split()[0])
+    return totals
+
+
+def cpu_seconds(pids, proc: Path = PROC, ticks: int = 0) -> float:
+    ticks = ticks or os.sysconf("SC_CLK_TCK")
+    total = 0
+    for pid in pids:
+        fields = _stat_fields(pid, proc)
+        if fields is None:
+            continue
+        total += int(fields[11]) + int(fields[12])
+    return total / ticks
+
+
+def lab_pids(state_dir: Path, prefix: str, proc: Path = PROC) -> list:
+    pids = set(prefix_processes(prefix, proc))
+    try:
+        root = int((state_dir / "gamescope.pid").read_text().strip())
+    except (OSError, ValueError):
+        root = None
+    if root is not None:
+        pids.update(process_tree(root, proc))
+    return sorted(pids)
+
+
+def sample(state_dir: Path, prefix: str, seconds: float) -> dict:
+    pids = lab_pids(state_dir, prefix)
+    if not pids:
+        raise SystemExit(f"no lab process found (state {state_dir}, prefix {prefix})")
+    cpu_start = {pid: cpu_seconds([pid]) for pid in pids}
+    started = time.monotonic()
+    peak = 0
+    while True:
+        peak = max(peak, memory_kib(lab_pids(state_dir, prefix))["pss_kib"])
+        if time.monotonic() - started >= seconds:
+            break
+        time.sleep(min(1.0, max(0.0, seconds - (time.monotonic() - started))))
+    elapsed = time.monotonic() - started
+    pids = lab_pids(state_dir, prefix)
+    used = sum(cpu_seconds([pid]) - cpu_start.get(pid, 0.0) for pid in pids)
+    result = {"pids": pids}
+    result.update(memory_kib(pids))
+    result["peak_pss_kib"] = max(peak, result["pss_kib"])
+    result["cpu_percent"] = round(100.0 * used / elapsed, 1) if elapsed > 0 else 0.0
+    result["seconds"] = round(elapsed, 1)
+    return result
+
+
+def main(argv=None) -> int:
+    lab_root = Path(os.environ.get("COA_LAB_ROOT", Path.home() / "CoaServer/client-lab"))
+    instance = os.environ.get("COA_LAB_INSTANCE", "")
+    prefix = os.environ.get("COA_LAB_PREFIX", str(Path.home() / "Games/umu/coa-client-lab")).rstrip("/")
+    parser = argparse.ArgumentParser(prog="coa-lab-footprint")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sampler = sub.add_parser("sample", help="measure the running lab client (COA_LAB_INSTANCE selects one)")
+    sampler.add_argument("--seconds", type=float, default=10.0)
+    sampler.add_argument("--state-dir", type=Path,
+                         default=lab_root / "state" / instance if instance else lab_root / "state")
+    sampler.add_argument("--prefix", default=f"{prefix}-{instance}" if instance else prefix)
+    args = parser.parse_args(argv)
+    print(json.dumps(sample(args.state_dir, args.prefix, args.seconds)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

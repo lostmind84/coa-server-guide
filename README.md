@@ -512,7 +512,7 @@ and made configurable afterwards: defaults assume the layout of Part 1 (`~/Proje
 
 ```bash
 git clone https://github.com/lostmind84/coa-server-guide.git ~/Projects/coa-server-guide
-ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab} ~/.local/bin/
+ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint} ~/.local/bin/
 ```
 
 ## Prerequisites
@@ -524,7 +524,7 @@ ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab} ~/.local/bin
 | [mpqcli](https://github.com/TheGrayDot/mpqcli) | preflight DBC checks, step 8 | on `PATH`; without it the DBC checks FAIL (`--skip-dbc` skips them) |
 | [ConquestOfAzerothGhost](https://github.com/lostmind84/ConquestOfAzerothGhost) + Go | `coa-slot create`, e2e tests | protocol-level bot tests; `coa-slot create` derives each slot's `ghost.env` from the Ghost checkout's `.env` (see the Ghost README) |
 | btrfs or xfs | `coa-client-lab create` | the lab copy is a reflink copy of the client and its Wine prefix |
-| Hyprland 0.56 (Lua config), gamescope, xdotool, ImageMagick | `coa-client-lab` | Hyprland only: the lab client is launched with `hyprctl eval` on a dedicated workspace |
+| Hyprland 0.56 (Lua config), gamescope, xdotool, ImageMagick | `coa-client-lab` | Hyprland only for the nested display (`hyprctl eval` on a dedicated workspace); the headless display needs gamescope alone |
 | lua5.1 | CoaProbe addon tests | tests only |
 
 ## Script configuration
@@ -656,6 +656,40 @@ slot; create the character through a Ghost bot login rather than the character c
 including a 10-second wait so the reloaded interface accepts input again). Tests:
 `lua5.1 addons/CoaProbe/tests/run.lua` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`
 (`scripts/tests/coa-client-lab.test.sh` needs `python3`).
+
+### Headless lab with relay probes
+
+The lab can also run without a window and answer probes in a quarter of a second, through the server instead of
+`/reload`. The slot must run a server with the CoA probe relay (`CoA.ProbeRelay.Enable`, in the server repository's
+`src/server/coa/CoAProbeRelay*`) and an admin account for SOAP, here `COALABSOAP`, whose password sits in a mode-600
+file. Lab accounts must start with `COALAB`.
+
+```bash
+coa-client-lab relay-setup 2 --soap-account COALABSOAP --soap-password-file ~/CoaServer/client-lab/secrets/coalabsoap.password
+coa-slot compose 2 restart ac-worldserver   # SOAP and the relay are read at startup
+coa-lab-relay soap ".server info"           # checks SOAP before any login
+coa-client-lab preflight 2                  # also records pass/fail for the lab descriptor
+COA_LAB_PROFILE=minimal coa-client-lab start 2               # 800x600, low-cost settings, gamescope headless
+coa-client-lab login COALAB1 <password> Coalabone            # CHARACTER writes state/lab.json
+coa-client-lab probe spell 501281           # now goes through the relay: no /reload, the target is kept
+coa-lab-relay probe frame GameTooltip       # the same, directly; `errors` reports the addon's handler only:
+                                            #   this client replaces it after login, so read Lua errors from `probe log`
+coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this lab client and its wineserver
+```
+
+- `COA_LAB_PROFILE=minimal` writes `gxResolution` and low-cost CVars (`maxFPS`, `farclip`, `baseMip`, ...) before
+  every start and defaults to `COA_LAB_DISPLAY=headless` (gamescope `--backend headless`: no Hyprland window;
+  `screenshot` and keyboard input still work). `COA_LAB_DISPLAY=nested` shows it on the workspace again.
+  `COA_LAB_WIDTH`/`COA_LAB_HEIGHT` change the size (640x480 was accepted).
+- Only read-only commands go through the relay (`ping spell item auras spellbook known log state ca frame errors`);
+  `eval`, `pksend` and the watches keep the `/reload` path (`COA_LAB_TRANSPORT=reload` forces it for any command).
+  Every relay answer carries `loadId` (changes on each UI load) and the answering `character`.
+- `login` waits 20 + 25 + 45 s by default; `COA_LAB_LOGIN_WAIT`, `COA_LAB_REALM_WAIT` and `COA_LAB_WORLD_WAIT`
+  change them. With 6, 8 and 0 the lab answered its first relay probe 37-39 s after `start` (slot 2, 2026-10-26).
+- Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (reflink copy of the base lab and
+  prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
+  one. Three headless instances ran side by side against one slot.
+- Measured footprint and design notes: [`docs/design/client-lab-level3.md`](docs/design/client-lab-level3.md).
 
 ### CoaProbe on its own
 

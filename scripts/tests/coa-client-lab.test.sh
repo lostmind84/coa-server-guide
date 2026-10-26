@@ -26,6 +26,8 @@ export COA_PROTONPATH="$WORK/proton"
 export COA_LAB_WINDOW_TIMEOUT=10
 export COA_LAB_SLEEP=true
 export FAKE_LOG="$WORK/fake.log"
+export FAKE_ETC="$WORK/etc"
+export FAKE_SLOT_STATE="$WORK/slot-state"
 
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
@@ -72,6 +74,7 @@ echo ok
 EOF
     cat > "$WORK/bin/gamescope" <<'EOF'
 #!/usr/bin/env bash
+printf 'gamescope-argv %s\n' "$*" >> "$FAKE_LOG"
 if [[ "${FAKE_STUBBORN:-}" == 1 ]]; then
     # Ignores SIGTERM itself, and its "Ascension.exe" child ignores SIGTERM too: only SIGKILL on both
     # PIDs stops this pair, exercising cmd_stop's escalation (Task 4 fix round 1).
@@ -105,7 +108,8 @@ EOF
     cat > "$WORK/bin/coa-slot" <<'EOF'
 #!/usr/bin/env bash
 printf 'coa-slot %s\n' "$*" >> "$FAKE_LOG"
-[[ "$1" == env ]] && printf 'SLOT=%s\nAUTH_ADDR=127.0.0.1:3924\n' "$2"
+[[ "$1" == env ]] && printf 'SLOT=%s\nAUTH_ADDR=127.0.0.1:3924\nETC=%s\nSTATE_FILE=%s\n' "$2" "$FAKE_ETC" "$FAKE_SLOT_STATE"
+[[ "$1" == preflight && "${FAKE_PREFLIGHT_FAIL:-}" == 1 ]] && exit 1
 exit 0
 EOF
     # Answers `list sink-inputs` with two sink inputs: #50 carries the pid of the fake lab client's own
@@ -134,6 +138,11 @@ SINKS
         ;;
     set-sink-input-mute)
         echo "Mute: yes"
+        ;;
+esac
+case "$1 ${2:-} ${3:-}" in
+    "list short modules")
+        printf '77\tmodule-null-sink\tsink_name=coa_client_lab_silence\n'
         ;;
 esac
 EOF
@@ -507,6 +516,257 @@ assert_contains "probe timeout message" "$WORK/out" "no CoaProbe answer"
 
 run_lab stop
 assert_absent "account cleared by stop" "$COA_LAB_ROOT/state/account"
+
+# Profiles: the minimal profile writes each low-cost setting once and the smaller window; readable keeps 1920x1080.
+config="$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf"
+: > "$FAKE_LOG"
+COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=nested run_lab start 3
+assert_eq "minimal start exits 0" "$?" "0"
+assert_contains "minimal resolution" "$config" 'SET gxResolution "800x600"'
+for setting in 'maxFPS "10"' 'maxFPSBk "5"' 'farclip "177"' 'groundEffectDensity "16"' 'environmentDetail "0.5"' \
+    'particleDensity "0.1"' 'weatherDensity "0"' 'spellEffectLevel "0"' 'specular "0"' 'projectedTextures "0"' \
+    'textureFilteringMode "0"' 'baseMip "1"' 'ffxGlow "0"' 'ffxDeath "0"' 'showfootprints "0"'; do
+    assert_contains "minimal sets $setting" "$config" "SET $setting"
+done
+assert_contains "minimal gamescope size" "$FAKE_LOG" "gamescope -W 800 -H 600 -w 800 -h 600"
+run_lab stop
+COA_LAB_PROFILE=minimal run_lab start 3
+assert_contains "minimal defaults to headless" "$FAKE_LOG" "gamescope-argv --backend headless -W 800 -H 600"
+run_lab stop
+assert_eq "minimal settings not duplicated" "$(grep -c '^SET maxFPS ' "$config")" "1"
+assert_eq "minimal resolution not duplicated" "$(grep -c '^SET gxResolution ' "$config")" "1"
+
+sed -i '/^SET \(maxFPS\|maxFPSBk\|farclip\|baseMip\) /d' "$config"
+run_lab start 3
+assert_contains "readable resolution" "$config" 'SET gxResolution "1920x1080"'
+assert_not_contains "readable adds no minimal setting" "$config" 'SET maxFPS '
+assert_not_contains "readable adds no baseMip" "$config" 'SET baseMip '
+run_lab stop
+
+# Headless display: gamescope's headless backend, no Hyprland, same window discovery.
+: > "$FAKE_LOG"
+COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=headless run_lab start 3
+assert_eq "headless start exits 0" "$?" "0"
+assert_contains "headless backend" "$FAKE_LOG" \
+    "gamescope-argv --backend headless -W 800 -H 600 -w 800 -h 600 -r 10 -- umu-run Ascension.exe"
+assert_not_contains "headless does not use hyprctl" "$FAKE_LOG" "hyprctl"
+run_lab status
+assert_contains "headless status shows the window" "$WORK/out" "window: 4242"
+run_lab stop
+assert_absent "headless stop releases the lock" "$COA_LAB_ROOT/state/lock"
+
+if COA_LAB_DISPLAY=bogus run_lab start 3; then fail "bogus display refused"; else pass "bogus display refused"; fi
+assert_contains "bogus display message" "$WORK/out" "COA_LAB_DISPLAY must be nested or headless"
+assert_absent "bogus display takes no lock" "$COA_LAB_ROOT/state/lock"
+if COA_LAB_PROFILE=fancy run_lab start 3; then fail "bogus profile refused"; else pass "bogus profile refused"; fi
+assert_contains "bogus profile message" "$WORK/out" "COA_LAB_PROFILE must be readable or minimal"
+
+# relay-setup: one line per key after two runs, relay.env with slot 3's SOAP port.
+mkdir -p "$FAKE_ETC/modules"
+printf 'Ra.Enable = 0\nSOAP.Enabled = 0\nSOAP.IP = "127.0.0.1"\nSOAP.Port = 7878\n' > "$FAKE_ETC/worldserver.conf"
+printf 'CoA.Enable = 1\n' > "$FAKE_ETC/modules/coa.conf"
+printf 'PW\n' > "$WORK/soap.password"
+run_lab relay-setup 3 --soap-account COALABSOAP --soap-password-file "$WORK/soap.password"
+assert_eq "relay-setup exits 0" "$?" "0"
+run_lab relay-setup 3 --soap-account COALABSOAP --soap-password-file "$WORK/soap.password"
+assert_contains "relay-setup prints the restart" "$WORK/out" "coa-slot compose 3 restart ac-worldserver"
+assert_eq "SOAP.Enabled once" "$(grep -c '^SOAP.Enabled = 1$' "$FAKE_ETC/worldserver.conf")" "1"
+assert_eq "SOAP.IP once" "$(grep -c '^SOAP.IP = "0.0.0.0"$' "$FAKE_ETC/worldserver.conf")" "1"
+assert_eq "SOAP.Port untouched" "$(grep -c '^SOAP.Port = 7878$' "$FAKE_ETC/worldserver.conf")" "1"
+assert_eq "relay enabled once" "$(grep -c '^CoA.ProbeRelay.Enable = 1$' "$FAKE_ETC/modules/coa.conf")" "1"
+assert_contains "relay.env url" "$COA_LAB_ROOT/relay.env" "SOAP_URL=http://127.0.0.1:8078/"
+assert_contains "relay.env account" "$COA_LAB_ROOT/relay.env" "SOAP_ACCOUNT=COALABSOAP"
+assert_contains "relay.env password file" "$COA_LAB_ROOT/relay.env" "SOAP_PASSWORD_FILE=$WORK/soap.password"
+assert_eq "relay.env mode 600" "$(stat -c %a "$COA_LAB_ROOT/relay.env")" "600"
+if run_lab relay-setup 3 --soap-account COALABSOAP; then
+    fail "relay-setup needs a password file"
+else
+    pass "relay-setup needs a password file"
+fi
+
+# preflight records its result for the descriptor.
+run_lab preflight 3
+assert_contains "preflight records pass" "$COA_LAB_ROOT/state/preflight" "pass slot 3"
+if FAKE_PREFLIGHT_FAIL=1 run_lab preflight 3; then
+    fail "failed preflight exits non-zero"
+else
+    pass "failed preflight exits non-zero"
+fi
+assert_contains "preflight records fail" "$COA_LAB_ROOT/state/preflight" "fail slot 3"
+run_lab preflight 3
+
+# login with a character writes the descriptor; probe then goes through the relay; stop removes it.
+printf 'feat/x 0123456789abcdef 2026-10-25T23:00:00+01:00\n' > "$FAKE_SLOT_STATE"
+printf '#!/usr/bin/env bash\nprintf "relay %%s\\n" "$*" >> "$FAKE_LOG"\necho %s\n' \
+    "'{\"pong\": true, \"via\": \"relay\"}'" > "$WORK/bin/fake-relay"
+chmod +x "$WORK/bin/fake-relay"
+export COA_LAB_RELAY="$WORK/bin/fake-relay"
+run_lab start 3
+run_lab login coalab1 secretpw Coalabone
+assert_eq "login with character exits 0" "$?" "0"
+lab_json="$COA_LAB_ROOT/state/lab.json"
+assert_file "descriptor written" "$lab_json"
+assert_eq "descriptor mode 600" "$(stat -c %a "$lab_json")" "600"
+for key in '"instance": ""' '"slot": 3' '"soap_url": "http://127.0.0.1:8078/"' '"soap_account": "COALABSOAP"' \
+    "\"soap_password_file\": \"$WORK/soap.password\"" '"account": "COALAB1"' '"character": "Coalabone"' \
+    '"deployed_commit": "0123456789abcdef"' '"preflight": "pass"'; do
+    assert_contains "descriptor has $key" "$lab_json" "$key"
+done
+: > "$FAKE_LOG"
+run_lab probe spell 501281
+assert_eq "relay probe exits 0" "$?" "0"
+assert_contains "relay probe calls the relay" "$FAKE_LOG" "relay --descriptor $lab_json probe spell 501281"
+assert_not_contains "relay probe does not reload" "$FAKE_LOG" "/reload"
+assert_contains "relay probe prints the answer" "$WORK/out" '"via": "relay"'
+: > "$FAKE_LOG"
+COA_LAB_TRANSPORT=reload run_lab probe ping
+assert_contains "reload transport still reloads" "$FAKE_LOG" "/reload"
+if run_lab login coalab1 secretpw 'Bad Name'; then
+    fail "login refuses a bad character name"
+else
+    pass "login refuses a bad character name"
+fi
+run_lab stop
+assert_absent "stop removes the descriptor" "$lab_json"
+assert_absent "stop clears the preflight record" "$COA_LAB_ROOT/state/preflight"
+
+# Routing: only the relay's read-only commands go through the relay once lab.json exists.
+export COA_LAB_RELAY="$WORK/bin/fake-relay"
+run_lab preflight 3
+run_lab start 3
+run_lab login coalab1 secretpw Coalabone
+for command in "eval 1" "pksend 1617 u32:1" "pkwatch 1618" "evwatch X"; do
+    : > "$FAKE_LOG"
+    # shellcheck disable=SC2086
+    run_lab probe $command
+    assert_not_contains "probe $command does not use the relay" "$FAKE_LOG" "relay --descriptor"
+    assert_contains "probe $command keeps the /reload path" "$FAKE_LOG" "/reload"
+done
+for command in ping "frame GameTooltip" errors "auras target"; do
+    : > "$FAKE_LOG"
+    # shellcheck disable=SC2086
+    run_lab probe $command
+    assert_contains "probe $command uses the relay" "$FAKE_LOG" "relay --descriptor $lab_json probe $command"
+    assert_not_contains "probe $command does not reload" "$FAKE_LOG" "/reload"
+done
+assert_contains "fresh pass for this slot is pass" "$lab_json" '"preflight": "pass"'
+assert_contains "descriptor records the preflight slot" "$lab_json" '"preflight_slot": 3'
+assert_contains "descriptor records the deploy time" "$lab_json" '"deployed_at": "2026-10-25T23:00:00+01:00"'
+
+# Stale preflight records never become "pass".
+printf 'pass slot 2 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "pass from another slot is stale" "$lab_json" '"preflight": "stale"'
+printf 'pass slot 3 2026-10-25T22:00:00+01:00\n' > "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "pass older than the deploy is stale" "$lab_json" '"preflight": "stale"'
+printf 'fail slot 3 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "fail stays fail" "$lab_json" '"preflight": "fail"'
+rm -f "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "missing preflight is unknown" "$lab_json" '"preflight": "unknown"'
+run_lab stop
+
+# start drops a preflight recorded for another slot.
+printf 'pass slot 2 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
+run_lab start 3
+assert_absent "start drops a preflight of another slot" "$COA_LAB_ROOT/state/preflight"
+run_lab stop
+
+# relay.env set up for another slot: no descriptor that mixes two slots.
+sed -i 's/^SLOT=3$/SLOT=2/' "$COA_LAB_ROOT/relay.env"
+run_lab start 3
+if run_lab login coalab1 secretpw Coalabone; then
+    fail "login refuses a relay.env of another slot"
+else
+    pass "login refuses a relay.env of another slot"
+fi
+assert_contains "relay.env slot mismatch message" "$WORK/out" "relay.env is set up for slot 2"
+assert_absent "no descriptor for a slot mismatch" "$lab_json"
+run_lab stop
+sed -i 's/^SLOT=2$/SLOT=3/' "$COA_LAB_ROOT/relay.env"
+unset COA_LAB_RELAY
+
+# Instances: separate client, prefix, state, lock and pid per COA_LAB_INSTANCE; the silent sink stays while any
+# other lab client still holds its lock.
+if COA_LAB_INSTANCE=1 COA_LAB_ROOT="$WORK/no-base" run_lab create-instance; then
+    fail "create-instance without a base lab dies"
+else
+    pass "create-instance without a base lab dies"
+fi
+assert_contains "create-instance without base message" "$WORK/out" "no base lab"
+if COA_LAB_INSTANCE=x run_lab status; then fail "bad instance refused"; else pass "bad instance refused"; fi
+if COA_LAB_INSTANCE=1 run_lab create; then fail "create refuses an instance"; else pass "create refuses an instance"; fi
+if COA_LAB_INSTANCE=1 run_lab start 3; then fail "start needs the instance"; else pass "start needs the instance"; fi
+assert_contains "start without instance message" "$WORK/out" "no instance 1"
+
+COA_LAB_INSTANCE=1 run_lab create-instance
+assert_eq "create-instance 1 exits 0" "$?" "0"
+COA_LAB_INSTANCE=2 run_lab create-instance
+assert_file "instance 1 client" "$COA_LAB_ROOT/instances/1/ascension-lab/Ascension.exe"
+assert_file "instance 2 prefix" "$COA_LAB_PREFIX-2/system.reg"
+assert_file "instance 1 marker" "$COA_LAB_ROOT/instances/1/.coa-client-lab"
+assert_file "instance 2 prefix marker" "$COA_LAB_PREFIX-2/.coa-client-lab"
+if COA_LAB_INSTANCE=1 run_lab create-instance; then fail "second create-instance refused"; else pass "second create-instance refused"; fi
+
+: > "$FAKE_LOG"
+COA_LAB_INSTANCE=1 COA_LAB_DISPLAY=headless run_lab start 3
+assert_eq "instance 1 start exits 0" "$?" "0"
+COA_LAB_INSTANCE=2 COA_LAB_DISPLAY=headless run_lab start 3
+assert_eq "instance 2 start exits 0" "$?" "0"
+assert_file "instance 1 lock" "$COA_LAB_ROOT/state/1/lock"
+assert_file "instance 2 lock" "$COA_LAB_ROOT/state/2/lock"
+assert_absent "base lock untouched" "$COA_LAB_ROOT/state/lock"
+pid1=$(cat "$COA_LAB_ROOT/state/1/gamescope.pid")
+pid2=$(cat "$COA_LAB_ROOT/state/2/gamescope.pid")
+[[ -n "$pid1" && -n "$pid2" && "$pid1" != "$pid2" ]] && pass "instances have distinct gamescope pids" \
+    || fail "instances have distinct gamescope pids: [$pid1] [$pid2]"
+assert_contains "instance 1 launched from its client" "$FAKE_LOG" "gamescope-argv --backend headless"
+grep -q "WINEPREFIX=$COA_LAB_PREFIX-1" "/proc/$pid1/environ" 2>/dev/null \
+    && pass "instance 1 runs in its own prefix" || fail "instance 1 runs in its own prefix"
+
+: > "$FAKE_LOG"
+COA_LAB_INSTANCE=1 run_lab stop
+assert_absent "instance 1 lock released" "$COA_LAB_ROOT/state/1/lock"
+kill -0 "$pid2" 2>/dev/null && pass "instance 2 still running" || fail "instance 2 still running"
+assert_not_contains "sink kept while instance 2 runs" "$FAKE_LOG" "pactl unload-module"
+if COA_LAB_INSTANCE=2 run_lab destroy-instance --yes; then
+    fail "destroy-instance refused while running"
+else
+    pass "destroy-instance refused while running"
+fi
+: > "$FAKE_LOG"
+COA_LAB_INSTANCE=2 run_lab stop
+assert_contains "sink unloaded with the last client" "$FAKE_LOG" "pactl unload-module 77"
+
+COA_LAB_INSTANCE=2 run_lab destroy-instance --yes
+assert_eq "destroy-instance exits 0" "$?" "0"
+assert_absent "instance 2 client removed" "$COA_LAB_ROOT/instances/2"
+assert_absent "instance 2 prefix removed" "$COA_LAB_PREFIX-2"
+assert_file "base lab kept" "$COA_LAB_ROOT/ascension-lab/Ascension.exe"
+assert_file "base prefix kept" "$COA_LAB_PREFIX/system.reg"
+
+rm -f "$COA_LAB_ROOT/instances/1/.coa-client-lab"
+if COA_LAB_INSTANCE=1 run_lab destroy-instance --yes; then
+    fail "destroy-instance without marker dies"
+else
+    pass "destroy-instance without marker dies"
+fi
+assert_file "unmarked instance kept" "$COA_LAB_ROOT/instances/1/ascension-lab/Ascension.exe"
+touch "$COA_LAB_ROOT/instances/1/.coa-client-lab"
+COA_LAB_INSTANCE=1 run_lab destroy-instance --yes
+
+mkdir -p "$COA_LAB_PREFIX-1"
+touch "$COA_LAB_PREFIX-1/user-data"
+if COA_LAB_INSTANCE=1 COA_USER_PREFIX="$COA_LAB_PREFIX-1" run_lab create-instance; then
+    fail "instance prefix aliasing the user's prefix refused"
+else
+    pass "instance prefix aliasing the user's prefix refused"
+fi
+assert_contains "instance alias message" "$WORK/out" "aliases the user's path"
+assert_file "aliased user prefix untouched" "$COA_LAB_PREFIX-1/user-data"
+rm -rf "$COA_LAB_PREFIX-1"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

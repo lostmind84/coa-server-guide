@@ -7,8 +7,19 @@ set -euo pipefail
 USER_CLIENT="${COA_USER_CLIENT:-$HOME/CoaServer/client/ascension-live}"
 USER_PREFIX="${COA_USER_PREFIX:-$HOME/Games/umu/coa-client}"
 LAB_ROOT="${COA_LAB_ROOT:-$HOME/CoaServer/client-lab}"
-LAB_CLIENT="$LAB_ROOT/ascension-lab"
-LAB_PREFIX="${COA_LAB_PREFIX:-$HOME/Games/umu/coa-client-lab}"
+BASE_CLIENT="$LAB_ROOT/ascension-lab"
+BASE_PREFIX="${COA_LAB_PREFIX:-$HOME/Games/umu/coa-client-lab}"
+INSTANCE="${COA_LAB_INSTANCE:-}"
+if [[ -n "$INSTANCE" ]]; then
+    [[ "$INSTANCE" =~ ^[1-9]$ ]] || { printf 'ERROR: COA_LAB_INSTANCE must be 1-9 or empty\n' >&2; exit 1; }
+    INSTANCE_DIR="$LAB_ROOT/instances/$INSTANCE"
+    LAB_CLIENT="$INSTANCE_DIR/ascension-lab"
+    LAB_PREFIX="${BASE_PREFIX%/}-$INSTANCE"
+else
+    INSTANCE_DIR=""
+    LAB_CLIENT="$BASE_CLIENT"
+    LAB_PREFIX="$BASE_PREFIX"
+fi
 PROTON="${COA_PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64}"
 WORKSPACE="${COA_LAB_WORKSPACE:-9}"
 WINDOW_TIMEOUT="${COA_LAB_WINDOW_TIMEOUT:-120}"
@@ -17,12 +28,34 @@ SLEEP="${COA_LAB_SLEEP:-sleep}"
 SILENT_SINK="${COA_LAB_SILENT_SINK:-coa_client_lab_silence}"
 PROBE_TIMEOUT="${COA_LAB_PROBE_TIMEOUT:-30}"
 RELOAD_WAIT="${COA_LAB_RELOAD_WAIT:-10}"
+LOGIN_WAIT="${COA_LAB_LOGIN_WAIT:-20}"
+REALM_WAIT="${COA_LAB_REALM_WAIT:-25}"
+WORLD_WAIT="${COA_LAB_WORLD_WAIT:-45}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ADDON_SRC="$SCRIPT_DIR/../addons/CoaProbe"
 PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
-WIDTH=1920
-HEIGHT=1080
-STATE_DIR="$LAB_ROOT/state"
+RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
+# Commands the server relay and the addon accept over addon whispers; everything else keeps the /reload path.
+RELAY_COMMANDS=" ping spell item auras spellbook known log state ca frame errors "
+PROFILE="${COA_LAB_PROFILE:-readable}"
+FPS="${COA_LAB_FPS:-10}"
+if [[ "$PROFILE" == minimal ]]; then
+    DISPLAY_MODE="${COA_LAB_DISPLAY:-headless}"
+    WIDTH="${COA_LAB_WIDTH:-800}"
+    HEIGHT="${COA_LAB_HEIGHT:-600}"
+else
+    DISPLAY_MODE="${COA_LAB_DISPLAY:-nested}"
+    WIDTH="${COA_LAB_WIDTH:-1920}"
+    HEIGHT="${COA_LAB_HEIGHT:-1080}"
+fi
+# Low-cost settings of the minimal profile. Each name was found in the lab Ascension.exe (strings) or is already
+# in the lab Config.wtf; see docs/design/client-lab-level3.md for the kept and dropped candidates.
+MINIMAL_CVARS=(
+    "maxFPS=$FPS" "maxFPSBk=5" "farclip=177" "groundEffectDensity=16" "environmentDetail=0.5"
+    "particleDensity=0.1" "weatherDensity=0" "spellEffectLevel=0" "specular=0" "projectedTextures=0"
+    "textureFilteringMode=0" "baseMip=1" "ffxGlow=0" "ffxDeath=0" "showfootprints=0"
+)
+STATE_DIR="$LAB_ROOT/state${INSTANCE:+/$INSTANCE}"
 LOCK="$STATE_DIR/lock"
 
 usage() {
@@ -34,9 +67,17 @@ Lab copy:
                            set 1920x1080
   destroy --yes            remove the lab client and prefix (refused while the lab client runs)
 
-Running (one lab client at a time):
-  start N                  point the lab client at slot N's authserver and launch it on the lab workspace
-  login ACCOUNT PASSWORD   keyboard login and world entry; check the result with a screenshot
+Instances (several lab clients side by side; select one with COA_LAB_INSTANCE=1..9 for every command):
+  create-instance          reflink-copy the base lab client and prefix for COA_LAB_INSTANCE
+  destroy-instance --yes   remove that instance's client and prefix (refused while it runs)
+
+Running (one lab client per instance):
+  start N                  point the lab client at slot N's authserver and launch it (env: COA_LAB_PROFILE
+                           readable|minimal, COA_LAB_DISPLAY nested|headless (minimal defaults to headless),
+                           COA_LAB_WIDTH/HEIGHT, COA_LAB_FPS)
+  login ACCOUNT PASSWORD [CHARACTER]
+                           keyboard login and world entry; with CHARACTER and a relay-setup slot, also writes
+                           the lab descriptor state/lab.json used by relay probes
   type TEXT                type text into the client
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
@@ -44,11 +85,19 @@ Running (one lab client at a time):
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
-                           ca [ENTRY], log [n], state, pksend OPCODE [u32:N u8:N s:TEXT ...], pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
-                           pkunwatch OPCODE); prints JSON
+                           ca [ENTRY], log [n], state, frame NAME, errors, pksend OPCODE [u32:N u8:N s:TEXT ...],
+                           pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
+                           pkunwatch OPCODE); prints JSON. With state/lab.json, read-only commands go through the
+                           server relay (coa-lab-relay, no /reload); COA_LAB_TRANSPORT=reload forces /reload
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window
-  preflight N              coa-slot preflight N against the lab client's data
+  preflight N              coa-slot preflight N against the lab client's data; records pass/fail, slot and time
+                           for lab.json (a pass counts only for that slot and after its last deploy; stop clears it)
+
+Server relay:
+  relay-setup N --soap-account NAME --soap-password-file PATH
+                           enable SOAP (container 0.0.0.0, host loopback) and CoA.ProbeRelay.Enable in slot N's
+                           configuration and write relay.env; restart the worldserver afterwards
 EOF
 }
 
@@ -63,6 +112,27 @@ set_wtf() {
     else
         printf 'SET %s "%s"\n' "$key" "$value" >> "$file"
     fi
+}
+
+# Replace the `KEY = value` line of a worldserver-style .conf file, or append it.
+set_conf() {
+    local file="$1" key="$2" value="$3" escaped
+    escaped=$(printf '%s' "$key" | sed 's/\./\\./g')
+    if grep -q "^$escaped *=" "$file"; then
+        sed -i "s|^$escaped *=.*|$key = $value|" "$file"
+    else
+        printf '%s = %s\n' "$key" "$value" >> "$file"
+    fi
+}
+
+# Written before every start: the client rewrites Config.wtf on exit.
+apply_profile() {
+    local config="$LAB_CLIENT/WTF/Config.wtf" setting
+    set_wtf "$config" gxResolution "${WIDTH}x${HEIGHT}"
+    [[ "$PROFILE" == minimal ]] || return 0
+    for setting in "${MINIMAL_CVARS[@]}"; do
+        set_wtf "$config" "${setting%%=*}" "${setting#*=}"
+    done
 }
 
 # I2: shared by create and destroy. Resolve every lab and user path with `realpath -m` (symlinks, "..",
@@ -85,6 +155,7 @@ check_lab_paths() {
 }
 
 cmd_create() {
+    [[ -z "$INSTANCE" ]] || die "create makes the base lab; use create-instance for COA_LAB_INSTANCE"
     check_lab_paths
     [[ -e "$LAB_CLIENT" || -e "$LAB_PREFIX" ]] && die "lab already exists: $LAB_CLIENT or $LAB_PREFIX"
     [[ -f "$USER_CLIENT/Ascension.exe" ]] || die "Ascension.exe not found in $USER_CLIENT"
@@ -111,6 +182,7 @@ cmd_create() {
 }
 
 cmd_destroy() {
+    [[ -z "$INSTANCE" ]] || die "destroy removes the base lab; use destroy-instance for COA_LAB_INSTANCE"
     [[ "${1:-}" == --yes ]] || die "usage: coa-client-lab destroy --yes"
     [[ -e "$LOCK" ]] && die "the lab client is running or its lock is stale: coa-client-lab stop"
     check_lab_paths
@@ -121,6 +193,44 @@ cmd_destroy() {
     done
     rm -rf "$LAB_ROOT" "$LAB_PREFIX"
     echo "lab removed"
+}
+
+cmd_create_instance() {
+    [[ -n "$INSTANCE" ]] || die "create-instance needs COA_LAB_INSTANCE=1..9"
+    check_lab_paths
+    [[ -f "$BASE_CLIENT/Ascension.exe" && -d "$BASE_PREFIX" ]] || die "no base lab: coa-client-lab create"
+    [[ -e "$LAB_CLIENT" || -e "$LAB_PREFIX" ]] && die "instance $INSTANCE already exists: $LAB_CLIENT or $LAB_PREFIX"
+    mkdir -p "$INSTANCE_DIR"
+    step "Copying the base lab client and prefix for instance $INSTANCE (reflink)"
+    cp -a --reflink=always "$BASE_CLIENT" "$LAB_CLIENT" || die "reflink copy failed (needs btrfs or xfs)"
+    cp -a --reflink=always "$BASE_PREFIX" "$LAB_PREFIX" || die "reflink copy failed (needs btrfs or xfs)"
+    touch "$INSTANCE_DIR/.coa-client-lab" "$LAB_PREFIX/.coa-client-lab"
+    rm -rf "$LAB_CLIENT/WTF/Account" "$LAB_CLIENT/Cache" "$LAB_CLIENT/Screenshots"
+    echo "instance $INSTANCE created: $LAB_CLIENT"
+}
+
+cmd_destroy_instance() {
+    [[ -n "$INSTANCE" ]] || die "destroy-instance needs COA_LAB_INSTANCE=1..9"
+    [[ "${1:-}" == --yes ]] || die "usage: COA_LAB_INSTANCE=N coa-client-lab destroy-instance --yes"
+    [[ -e "$LOCK" ]] && die "instance $INSTANCE is running or its lock is stale: coa-client-lab stop"
+    check_lab_paths
+    local dir
+    for dir in "$INSTANCE_DIR" "$LAB_PREFIX"; do
+        [[ -e "$dir" && ! -e "$dir/.coa-client-lab" ]] \
+            && die "$dir has no .coa-client-lab marker (not created by create-instance?): refusing to remove it"
+    done
+    rm -rf "$INSTANCE_DIR" "$LAB_PREFIX"
+    rmdir "$STATE_DIR" 2>/dev/null || true
+    echo "instance $INSTANCE removed"
+}
+
+# Locks of the other lab clients (base and instances) that are still held.
+other_locks() {
+    local lock
+    for lock in "$LAB_ROOT/state/lock" "$LAB_ROOT"/state/*/lock; do
+        [[ -e "$lock" && "$lock" != "$LOCK" ]] && echo "$lock"
+    done
+    return 0
 }
 
 descendants() {
@@ -181,6 +291,10 @@ require_running() {
 cmd_start() {
     local n="${1:-}" auth pid display window waited
     [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab start N (slot 1, 2 or 3)"
+    [[ "$PROFILE" == readable || "$PROFILE" == minimal ]] || die "COA_LAB_PROFILE must be readable or minimal"
+    [[ "$DISPLAY_MODE" == nested || "$DISPLAY_MODE" == headless ]] || die "COA_LAB_DISPLAY must be nested or headless"
+    [[ "$WIDTH$HEIGHT$FPS" =~ ^[0-9]+$ ]] || die "COA_LAB_WIDTH, COA_LAB_HEIGHT and COA_LAB_FPS must be numbers"
+    [[ -z "$INSTANCE" || -e "$INSTANCE_DIR/.coa-client-lab" ]] || die "no instance $INSTANCE: coa-client-lab create-instance"
     [[ -f "$LAB_CLIENT/Ascension.exe" ]] || die "no lab client: coa-client-lab create"
     # Paths go inside a Lua long string and a single-quoted bash -c: refuse characters that would break them.
     [[ "$LAB_CLIENT$LAB_PREFIX$PROTON$STATE_DIR" != *[[:space:]\'\]]* ]] || die "lab paths contain spaces, quotes or ]"
@@ -192,7 +306,12 @@ cmd_start() {
     fi
     rm -f "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/gamescope.starttime"
     touch "$STATE_DIR/started"
+    echo "$n" > "$STATE_DIR/slot"
+    if [[ "$(awk 'NR == 1 { print $3 }' "$STATE_DIR/preflight" 2>/dev/null)" != "$n" ]]; then
+        rm -f "$STATE_DIR/preflight"
+    fi
 
+    apply_profile
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
     printf 'set realmlist %s\r\n' "$auth" > "$LAB_CLIENT/Data/enUS/realmlist.wtf"
     rm -rf "$LAB_CLIENT/Cache"
@@ -206,9 +325,17 @@ cmd_start() {
     if command -v pactl > /dev/null && ! pactl list short sinks | grep -q "$SILENT_SINK"; then
         pactl load-module module-null-sink sink_name="$SILENT_SINK" > /dev/null || true
     fi
-    step "Launching the lab client on workspace $WORKSPACE for slot $n ($auth)"
-    local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env PULSE_SINK=$SILENT_SINK WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d,winepulse.drv=d,winealsa.drv=d,winecoreaudio.drv=d,wineoss.drv=d gamescope -W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
-    hyprctl eval "hl.exec_cmd([[$cmd]], { workspace = \"$WORKSPACE silent\" })" > /dev/null
+    local env="PULSE_SINK=$SILENT_SINK WINEPREFIX=$LAB_PREFIX GAMEID=0 PROTONPATH=$PROTON WINEDLLOVERRIDES=divxtac=d,winepulse.drv=d,winealsa.drv=d,winecoreaudio.drv=d,wineoss.drv=d"
+    local size="-W $WIDTH -H $HEIGHT -w $WIDTH -h $HEIGHT"
+    if [[ "$DISPLAY_MODE" == headless ]]; then
+        step "Launching the lab client headless (${WIDTH}x${HEIGHT}, $FPS fps, profile $PROFILE) for slot $n ($auth)"
+        setsid -f bash -c "echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env $env gamescope --backend headless $size -r $FPS -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1" \
+            < /dev/null > /dev/null 2>&1
+    else
+        step "Launching the lab client on workspace $WORKSPACE (${WIDTH}x${HEIGHT}, profile $PROFILE) for slot $n ($auth)"
+        local cmd="bash -c 'echo \$\$ > $STATE_DIR/gamescope.pid && cd $LAB_CLIENT && exec env $env gamescope $size -- umu-run Ascension.exe >>$STATE_DIR/client.log 2>&1'"
+        hyprctl eval "hl.exec_cmd([[$cmd]], { workspace = \"$WORKSPACE silent\" })" > /dev/null
+    fi
 
     # Discovery reads the PID we just wrote via `echo $$` above directly, not through gamescope_pid.
     # gamescope.starttime is written below as soon as that PID is confirmed alive, once, before display
@@ -294,14 +421,14 @@ cmd_chat() {
 # Sequence and delays from the spike findings (Q2). The account field sits at x = width / 2,
 # y = 315 / 600 of the height; `Return` on the character list works only once the list is loaded.
 cmd_login() {
-    [[ $# -eq 2 ]] || die "usage: coa-client-lab login ACCOUNT PASSWORD"
+    [[ $# -eq 2 || $# -eq 3 ]] || die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER]"
     require_running
     echo "$1" > "$STATE_DIR/account"
-    local account="$1" password="$2" backspaces geometry
+    local account="$1" password="$2" character="${3:-}" backspaces geometry
     backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
     eval "$geometry"
-    "$SLEEP" 20
+    "$SLEEP" "$LOGIN_WAIT"
     xdotool mousemove --window "$WINDOW" $((WIDTH / 2)) $((HEIGHT * 315 / 600)) click 1
     "$SLEEP" 0.5
     # shellcheck disable=SC2086
@@ -313,9 +440,9 @@ cmd_login() {
     xdotool key --window "$WINDOW" --delay 30 $backspaces
     xdotool type --window "$WINDOW" --delay 60 "$password"
     xdotool key --window "$WINDOW" Return
-    "$SLEEP" 25
+    "$SLEEP" "$REALM_WAIT"
     xdotool key --window "$WINDOW" Return
-    "$SLEEP" 45
+    "$SLEEP" "$WORLD_WAIT"
     # In-game sound options, set through the client's own CVars: they take effect at once and are saved with the
     # rest of the settings. The null sink above covers the login screen, where there is no chat to type into.
     local setting
@@ -325,6 +452,80 @@ cmd_login() {
     done
     cmd_chat "/console Sound_MasterVolume 0"
     echo "login sent for $account; check the world with: coa-client-lab screenshot"
+    if [[ -n "$character" ]]; then
+        write_descriptor "$account" "$character"
+    fi
+}
+
+# The lab descriptor tells coa-lab-relay (and the server repo's client_lab check) where to send relay probes.
+# `preflight` is "pass" only for a pass recorded for this slot after the slot's last deploy; an older or foreign
+# pass is "stale". The recorded slot and times are copied too, so the server check can apply the same rule.
+write_descriptor() {
+    local account="$1" character="$2" slot state_file
+    [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
+    if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
+        echo "no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): no lab descriptor written"
+        return 0
+    fi
+    slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
+    state_file=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^STATE_FILE=//p') || state_file=""
+    ( umask 077
+      python3 - "$LAB_ROOT/relay.env" "$STATE_DIR/lab.json" "${COA_LAB_INSTANCE:-}" "$slot" "$account" \
+          "$character" "${state_file:-/nonexistent}" "$STATE_DIR/preflight" <<'PYEOF'
+import json
+import sys
+from datetime import datetime
+
+env_path, out, instance, slot, account, character, state_path, preflight_path = sys.argv[1:]
+
+
+def first_line(path):
+    try:
+        with open(path) as handle:
+            return handle.readline().split()
+    except OSError:
+        return []
+
+
+def when(text):
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+env = {}
+for line in open(env_path):
+    key, sep, value = line.strip().partition("=")
+    if sep:
+        env[key] = value
+if env.get("SLOT") != slot:
+    sys.exit(f"relay.env is set up for slot {env.get('SLOT')}, the lab client runs on slot {slot}: "
+             f"run coa-client-lab relay-setup {slot} ...")
+deploy = first_line(state_path)
+deployed_commit = deploy[1] if len(deploy) > 1 else "unknown"
+deployed_at = deploy[2] if len(deploy) > 2 else "unknown"
+record = first_line(preflight_path)
+result = record[0] if record else "unknown"
+preflight_slot = record[2] if len(record) > 2 and record[1] == "slot" else "unknown"
+preflight_time = record[3] if len(record) > 3 else "unknown"
+checked, deployed = when(preflight_time), when(deployed_at)
+if result == "pass" and not (preflight_slot == slot and checked and deployed and checked >= deployed):
+    result = "stale"
+descriptor = {
+    "instance": instance, "slot": int(slot) if slot.isdigit() else slot,
+    "soap_url": env["SOAP_URL"], "soap_account": env["SOAP_ACCOUNT"],
+    "soap_password_file": env["SOAP_PASSWORD_FILE"], "account": account.upper(), "character": character,
+    "deployed_commit": deployed_commit, "deployed_at": deployed_at, "preflight": result,
+    "preflight_slot": int(preflight_slot) if preflight_slot.isdigit() else preflight_slot,
+    "preflight_time": preflight_time,
+}
+with open(out, "w") as handle:
+    json.dump(descriptor, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PYEOF
+    ) || die "no lab descriptor written"
+    echo "lab descriptor: $STATE_DIR/lab.json (preflight: $(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["preflight"])' "$STATE_DIR/lab.json"))"
 }
 
 # Hold a key down: walking, turning and any other continuous input the client reads as "key still pressed".
@@ -350,6 +551,10 @@ cmd_probe() {
     [[ $# -ge 1 ]] || die "usage: coa-client-lab probe COMMAND [ARGS...]"
     [[ "$*" != *'|'* ]] || die "probe arguments cannot contain | (the chat edit box doubles it)"
     require_running
+    if [[ -f "$STATE_DIR/lab.json" && "${COA_LAB_TRANSPORT:-relay}" != reload && "$RELAY_COMMANDS" == *" $1 "* ]]; then
+        "$RELAY" --descriptor "$STATE_DIR/lab.json" probe "$@"
+        return
+    fi
     local account file req waited
     account=$(cat "$STATE_DIR/account" 2>/dev/null) || die "no login recorded: coa-client-lab login ACCOUNT PASSWORD"
     file="$LAB_CLIENT/WTF/Account/${account^^}/SavedVariables/CoaProbe.lua"
@@ -409,21 +614,56 @@ cmd_stop() {
             done <<< "$changed"
         fi
     fi
-    if command -v pactl > /dev/null; then
+    if command -v pactl > /dev/null && [[ -z "$(other_locks)" ]]; then
         while read -r module; do
             [[ -n "$module" ]] && pactl unload-module "$module" || true
         done < <(pactl list short modules | awk -v name="sink_name=$SILENT_SINK" '$0 ~ name { print $1 }')
     fi
     rm -f "$LOCK" "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/started" \
-        "$STATE_DIR/gamescope.starttime" "$STATE_DIR/account"
+        "$STATE_DIR/gamescope.starttime" "$STATE_DIR/account" "$STATE_DIR/lab.json" "$STATE_DIR/slot" \
+        "$STATE_DIR/preflight"
     echo "lab client stopped"
 }
 
 cmd_preflight() {
-    local n="${1:-}"
+    local n="${1:-}" status=0
     [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab preflight N"
     shift
-    exec coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@"
+    mkdir -p "$STATE_DIR"
+    coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@" || status=$?
+    if [[ "$status" == 0 ]]; then
+        echo "pass slot $n $(date -Is)" > "$STATE_DIR/preflight"
+    else
+        echo "fail slot $n $(date -Is)" > "$STATE_DIR/preflight"
+    fi
+    return "$status"
+}
+
+cmd_relay_setup() {
+    local n="${1:-}" account="" password_file="" etc
+    [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab relay-setup N --soap-account NAME --soap-password-file PATH"
+    shift
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --soap-account) account="${2:-}"; shift 2 ;;
+            --soap-password-file) password_file="${2:-}"; shift 2 ;;
+            *) die "unknown relay-setup argument: $1" ;;
+        esac
+    done
+    [[ "$account" =~ ^[A-Za-z0-9]+$ ]] || die "relay-setup needs --soap-account NAME (letters and digits)"
+    [[ -f "$password_file" ]] || die "relay-setup needs --soap-password-file PATH (an existing file)"
+    password_file=$(realpath -- "$password_file")
+    etc=$(coa-slot env "$n" | sed -n 's/^ETC=//p')
+    [[ -n "$etc" && -f "$etc/worldserver.conf" ]] || die "coa-slot env $n gave no ETC with worldserver.conf"
+    [[ -f "$etc/modules/coa.conf" ]] || die "no $etc/modules/coa.conf"
+    set_conf "$etc/worldserver.conf" SOAP.Enabled 1
+    set_conf "$etc/worldserver.conf" SOAP.IP '"0.0.0.0"'
+    set_conf "$etc/modules/coa.conf" CoA.ProbeRelay.Enable 1
+    mkdir -p "$LAB_ROOT"
+    ( umask 077
+      printf 'SLOT=%s\nSOAP_URL=http://127.0.0.1:%s/\nSOAP_ACCOUNT=%s\nSOAP_PASSWORD_FILE=%s\n' \
+          "$n" "$((7878 + (n - 1) * 100))" "$account" "$password_file" > "$LAB_ROOT/relay.env" )
+    echo "relay configured for slot $n; restart: coa-slot compose $n restart ac-worldserver"
 }
 
 main() {
@@ -432,6 +672,8 @@ main() {
     case "$command" in
         create) cmd_create ;;
         destroy) cmd_destroy "$@" ;;
+        create-instance) cmd_create_instance ;;
+        destroy-instance) cmd_destroy_instance "$@" ;;
         start) cmd_start "$@" ;;
         status) cmd_status ;;
         type) cmd_type "$@" ;;
@@ -444,6 +686,7 @@ main() {
         probe) cmd_probe "$@" ;;
         stop) cmd_stop ;;
         preflight) cmd_preflight "$@" ;;
+        relay-setup) cmd_relay_setup "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage >&2; exit 2 ;;
     esac
