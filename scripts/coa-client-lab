@@ -700,9 +700,11 @@ wait_or_sleep() {
 
 # Clicks the character-select screen's "Back" button (proportional to window size, same pattern as the
 # account-login field click in `cmd_login`; measured live, slot 2, 2026-10-26, 1024x768: pixel (966, 743) of
-# a (1024, 768) window, i.e. (0.943, 0.967) of width/height). Kept for reference and possible future reuse
-# (e.g. driven as a separate, external invocation, which has always worked -- see below), but no longer called
-# from `cmd_login`: see `goto_login_screen_via_memory`.
+# a (1024, 768) window, i.e. (0.943, 0.967) of width/height). Kept for reference, unused: this is the
+# `--window`-targeted `xdotool mousemove --window "$WINDOW" ... click 1` form (XSendEvent), which L3/L5 both
+# found registers reliably only as a separate, external invocation and not when driven from inside `login`'s
+# own process (cause never established). See `click_charselect_back_xtest` below for the form proven to work
+# in-process (L6).
 click_charselect_back() {
     local geometry
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || return 1
@@ -710,29 +712,50 @@ click_charselect_back() {
     xdotool mousemove --window "$WINDOW" $((WIDTH * 943 / 1000)) $((HEIGHT * 967 / 1000)) click 1
 }
 
-# Returns 0 only if memory already confirms the account-login screen right now (current_screen == "login",
-# in_world == false); 1 otherwise, including when memory itself is unusable. This used to also try to *drive*
-# the client there with /camp + a click on the character-select "Back" button, each step confirmed by a
-# bounded poll. That recovery is no longer attempted: live testing (slot 2, 2026-10-26, after fixing a real
-# bug below) confirmed /camp reliably reaches character-select every time, but the same `click_charselect_back`
-# call that succeeds every time run on its own, outside this script, timed out (no screen change within the
-# bounded poll) every time it was driven from inside this function's own process -- 2/2 full attempts after
-# the fix, matching the 4/4 failures the original /camp + Back recovery hit before this session (ADR 0003) for
-# a cause neither session established (not verified; ruled out live before this session: click coordinates,
-# combined vs split mousemove+click, hover-state, rapid-repeat-click interference, elapsed time up to 330s).
-# The bug fixed first: `glue_field` printed Python's capitalized "True"/"False" for the `in_world` boolean,
-# which never matched this file's own "true"/"false" string comparisons, so the in-world branch below was
-# silently skipped and the stale (not cleared on entering the world) `current_screen` value coincidentally
-# matched the character-select branch -- the Back click was being attempted while still in the world, before
-# ever sending /camp. Fixing that made the /camp step run correctly (confirmed live) but did not fix the
-# click's own unreliability in this process, so the caller now goes straight to `restart_client` whenever this
-# returns 1, instead of spending a further bounded poll on a transition already shown not to complete here.
+# Same click as click_charselect_back, delivered as XTEST fake input to the active window (activate the
+# window, then mousemove/click with no --window) instead of XSendEvent (mousemove --window ... click).
+# Measured live, slot 2, 2026-10-26, L6: this form registered the charselect-to-login transition 3/3 driven
+# from inside this script's own process (goto_login_screen_via_memory below), where the XSendEvent form above
+# had failed 2/2 in L5 and 4/4 in L3/ADR 0003. Why XTEST succeeds here and XSendEvent does not is not
+# established (not verified); recorded as the proven candidate per ADR 0004's follow-up list.
+click_charselect_back_xtest() {
+    local geometry
+    geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || return 1
+    eval "$geometry"
+    xdotool windowactivate --sync "$WINDOW" || return 1
+    xdotool mousemove --sync $((WIDTH * 943 / 1000)) $((HEIGHT * 967 / 1000)) || return 1
+    xdotool click 1
+}
+
+# Returns 0 once memory confirms the account-login screen, driving the client there in place instead of
+# restarting it. Three starting states, each confirmed by `glue_state` before anything is sent:
+#   - already the login screen (current_screen == "login", in_world == false): nothing else runs.
+#   - character-select (in_world == false, any other current_screen): click_charselect_back_xtest, confirmed
+#     by a bounded poll (CHARSELECT_BACK_WAIT).
+#   - in world (in_world == true): /camp (cmd_chat, the same call ADR 0004 already proved reliable, 2/2
+#     there and 3/3 in L6 below), confirmed by a bounded poll for character-select (CAMP_WAIT), then the
+#     same character-select click as above.
+# Any step that does not confirm within its bound returns 1, and the caller (cmd_login) falls back to
+# restart_client, unchanged from ADR 0004 -- the client is never left in a state cmd_login cannot account
+# for by this function alone returning 1.
+CHARSELECT_BACK_WAIT="${COA_LAB_CHARSELECT_BACK_WAIT:-10}"
+CAMP_WAIT="${COA_LAB_CAMP_WAIT:-15}"
 goto_login_screen_via_memory() {
     local json screen world
     json=$(glue_state) || return 1
     screen=$(glue_field "$json" current_screen)
     world=$(glue_field "$json" in_world)
-    [[ "$screen" == "login" && "$world" == "false" ]]
+    [[ "$screen" == "login" && "$world" == "false" ]] && return 0
+    if [[ "$world" == "true" ]]; then
+        cmd_chat "/camp"
+        wait_or_sleep glue_check_charselect_ready "$CAMP_WAIT" || return 1
+    elif [[ "$world" == "false" && -n "$screen" && "$screen" != "login" ]]; then
+        : # already at character-select; fall through to the click below
+    else
+        return 1
+    fi
+    click_charselect_back_xtest || return 1
+    wait_or_sleep glue_check_login_ready "$CHARSELECT_BACK_WAIT"
 }
 
 # At character-select, presses Down until `coa-lab-mem glue`'s selection index names the wanted character,

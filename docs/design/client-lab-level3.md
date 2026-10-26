@@ -272,3 +272,26 @@ already-created, in-world characters took 42.9-49.6s end to end across 6 separat
 switches, one fresh start, two shared-account selections by name), each confirmed by a relay probe ping naming
 the expected character -- down from 178-228s measured earlier the same session with the fixed sleeps (and the
 boolean bug) still in place.
+
+## Addendum (L6, 2026-10-26): the in-place recovery click works as XTEST, not XSendEvent
+
+A later session on the same date (user goal: master every login/logout step to restart or switch accounts as
+fast as possible, memory writes authorised but reads preferred; no write was needed) found the in-process click
+unreliability above was specific to how the click was delivered, not the click itself. Two candidates were
+tried at character-select, live, slot 2:
+
+- **Escape**: sends the key, but `current_screen`/`in_world` never change (5 polls over 5s, before and after).
+  A screenshot showed Escape instead opens the client's own Game Menu overlay (Options/Video/Sound/Manage
+  Account/Change Realm/Logout/Exit Game/Close) on top of the current glue screen -- not a glue transition.
+  Dropped.
+- **The same "Back" click, as XTEST fake input** (`xdotool windowactivate --sync "$WINDOW"`, then `mousemove
+  --sync X Y` / `click` with **no** `--window`) instead of XSendEvent (`mousemove --window "$WINDOW" ... click
+  1`, the form that failed in-process 4/4 in L3/ADR 0003 and 2/2 in L5/ADR 0004): reached the login screen
+  **4/4**, driven end to end inside `coa-client-lab login`'s own process -- the exact failure mode the earlier
+  sessions hit. See [ADR 0005](adr/0005-in-place-login-recovery-via-xtest-click.md) for the live table, the
+  1s-resolution phase breakdown, and why this is shipped even though the measured wall-clock times (43.4-46.0s,
+  in-place) landed in the same band as the restart path's own 42.9-49.6s rather than a clear win.
+
+`login` now recovers in place for every state except when the recovery's own bounded polls (`/camp` ->
+character-select, 15s cap; the XTEST click -> login screen, 10s cap) do not confirm their result, or memory is
+unusable at all -- `restart_client` is unchanged as that fallback.

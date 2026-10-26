@@ -1,6 +1,9 @@
 # 0004. `login` is driven by the client's own screen state, read from memory
 
-- Status: accepted
+- Status: accepted; its restart-vs-in-place decision (the "What memory does not do" section and the restart
+  consequence below) is superseded by [0005](0005-in-place-login-recovery-via-xtest-click.md), which found an
+  in-place recovery that works in-process. Everything else in this ADR (the memory reads, the bounded polls,
+  navigation by name) stands.
 - Date: 2026-10-26
 
 ## Context

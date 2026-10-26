@@ -675,20 +675,27 @@ and character-select navigation by name is disabled (next paragraph) — use
 pixel-brightness check of the logo area still always runs too, since memory alone cannot tell a clean login
 screen from a leftover error dialog layered over it. On a fresh client (nothing attempted since `start`) it
 waits (now a bounded poll on memory, capped by `COA_LAB_LOGIN_WAIT`, falling back to the old fixed sleep when
-memory is unusable) and checks directly. On any other state memory can confirm (in world, character-select) —
-or any state at all when memory is unusable — it restarts the lab client on the same slot (same instance and
-profile/resolution, read from the environment this run already has) and then takes that same fresh-client
-path. An in-place recovery (`/camp`, then a click on the character-select Back button) was tried twice, in two
-separate sessions: it failed to reach the login screen when driven inside one `login` process both times (4/4,
-then 2/2 after fixing a real bug in the second attempt — see
-[ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md)), while the exact same click succeeded
-every time it was run as a separate, external command against the same window. The restart path remains the
-one this guide has proven reliable; see
-[ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md) and
-[ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md). `coa-client-lab stop && start N` still
-reaches the same clean state manually, if needed. Measured live, slot 2, 2026-10-26: a restart-based switch
-between two in-world characters now takes 42.9-49.6s (6 separate live runs), down from 178-228s before the
-polls below replaced the old fixed sleeps.
+memory is unusable) and checks directly.
+
+On any other state, `login` now recovers **in place**, without restarting the client: in world, it sends
+`/camp` (confirmed by a bounded poll for character-select, `COA_LAB_CAMP_WAIT`, 15s cap); at character-select,
+it clicks the "Back" button via XTEST fake input (`xdotool windowactivate --sync`, then `mousemove --sync` /
+`click` with no `--window`), confirmed by a bounded poll for the login screen (`COA_LAB_CHARSELECT_BACK_WAIT`,
+10s cap). This is the XTEST form of the click — an earlier XSendEvent form (`xdotool mousemove --window
+"$WINDOW" ... click 1`) was tried twice, in two separate sessions, and failed to reach the login screen when
+driven inside one `login` process both times (4/4, then 2/2 after fixing a real bug in the second attempt —
+see [ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md)), even though the exact same XSendEvent
+click succeeded every time it was run as a separate, external command against the same window. The XTEST form
+reached the login screen 4/4 driven in-process this session (XSendEvent's own exact failure mode) — see
+[ADR 0005](docs/adr/0005-in-place-login-recovery-via-xtest-click.md). `restart_client` (stop then start on the
+same slot, same instance/profile/resolution) is kept as the fallback whenever the in-place recovery does not
+confirm its result within its bound, or memory is unusable at all — unchanged from
+[ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md); `coa-client-lab stop && start N` still
+reaches the same clean state manually, if needed. Measured live, slot 2, 2026-10-26: in-place switches between
+two in-world dedicated accounts took 43.4-46.0s (4 runs, no restart in any of them — same `gamescope` PID
+throughout), in the same band as the restart path's own 42.9-49.6s (ADR 0004) rather than a clear win; see
+[ADR 0005](docs/adr/0005-in-place-login-recovery-via-xtest-click.md) for the phase breakdown and why it is
+shipped anyway. A same-account character switch by name (below) also completed in place, 45.8s.
 
 `login`'s CHARACTER argument (both forms) picks that character on the character-select screen by name when
 `coa-lab-mem glue` is usable: `select_character_via_memory` presses Down and re-reads the highlighted name from
