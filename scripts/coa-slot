@@ -23,7 +23,8 @@ Usage: coa-slot <command> [arguments]
 Coordination (no server is touched):
   list                          every slot: owner, deployed commit, worldserver state, ports
   claim N "<batch> <note>"      take slot N (fails if another agent holds it)
-  release N                     give slot N back and drop its issue claims
+  release N [--keep]            give slot N back, drop its issue claims and stop its containers
+                                (--keep: leave the server running)
   claim-issues N ISSUE...       reserve issue numbers for slot N (all or nothing)
   issues                        list reserved issues
   env N                         print slot N's paths, ports, containers and Ghost env file
@@ -36,8 +37,8 @@ Server (the slot must be claimed first):
   preflight N [ARGS]            coa-preflight.py against slot N (extra ARGS passed through, e.g. --skip-dbc)
   compose N ARGS...             docker compose for slot N (e.g. logs --tail 50 ac-worldserver)
   start N | stop N              start or stop slot N's containers without rebuilding
-  reset-db N                    slots 2-3: drop the database and seed it again from the repack dump
-  destroy N --yes               slots 2-3: remove containers, database, images and ~/CoaServer/slots/sN
+  reset-db N                    slots 2-4: drop the database and seed it again from the repack dump
+  destroy N --yes               slots 2-4: remove containers, database, images and ~/CoaServer/slots/sN
                                 (the build clone is kept)
 EOF
 }
@@ -46,7 +47,7 @@ step() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 load_slot() {
-    [[ "${1:-}" =~ ^[123]$ ]] || die "slot must be 1, 2 or 3"
+    [[ "${1:-}" =~ ^[1234]$ ]] || die "slot must be 1, 2, 3 or 4"
     N="$1"
     SLOT_DIR="$SLOTS_ROOT/s$N"
     CLONE="$HOME/Projects/azerothcore-wotlk-coa-build-s$N"
@@ -192,7 +193,7 @@ seed_db() {
 
 cmd_list() {
     local n owner state world
-    for n in 1 2 3; do
+    for n in 1 2 3 4; do
         load_slot "$n"
         owner="-"; state="-"; world="not created"
         [[ -s "$OWNER" ]] && owner=$(cat "$OWNER")
@@ -220,6 +221,17 @@ cmd_claim() {
 
 cmd_release() {
     load_slot "${1:-}"
+    local keep=0
+    case "${2:-}" in
+        "") ;;
+        --keep) keep=1 ;;
+        *) die "usage: coa-slot release N [--keep]" ;;
+    esac
+    if [[ "$keep" == 0 && -f "$SLOT_DIR/compose.env" && -d "$CLONE/.git" ]]; then
+        step "Stopping slot $N"
+        compose stop -t 60 ac-worldserver ac-authserver ac-database \
+            || echo "warning: could not stop slot $N's containers" >&2
+    fi
     rm -f "$OWNER"
     if [[ -f "$ISSUES" ]]; then
         (
