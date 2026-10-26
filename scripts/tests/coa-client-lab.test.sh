@@ -336,22 +336,20 @@ assert_eq "login's first attempt sends two Returns (submit, enter world), no dis
 assert_contains "login silences the client" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_EnableAllSound 0"
 assert_contains "login zeroes the master volume" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_MasterVolume 0"
 
-# A SECOND login in the same lab session (state/account already exists from the one above) is no longer
-# trusted to be a clean account-login screen at all: the only state coa-client-lab's login now recovers
-# from is a provable in-world one (relay probe ping against a lab descriptor), and this call never made
-# one (no CHARACTER, so no state/lab.json). It refuses instead of blindly sending a dismiss Return onto
-# a screen that might not have anything to dismiss (that blind Return used to corrupt the account field
-# instead; confirmed live, slot 2, 2026-10-26).
+# A SECOND login in the same lab session (state/account already exists from the one above) no longer
+# tries to recover in place (an earlier /camp + character-select Back design, dropped: it failed to
+# reach the login screen 4/4 times driven inside one `login` process, cause never established; see
+# ADR 0003's follow-up decision). It restarts the lab client on the same slot instead, then takes the
+# same fresh-client path, so the second login succeeds rather than refusing.
 : > "$FAKE_LOG"
-if run_lab login labspike secretpw; then
-    fail "login's second attempt in the same session refuses without a provable state"
-else
-    pass "login's second attempt in the same session refuses without a provable state"
-fi
-assert_contains "login's refusal names the missing in-world proof" "$WORK/out" \
-    "no relay probe ping confirmed it is in world"
-assert_not_contains "login's refusal never clicked the account field" "$FAKE_LOG" \
+run_lab login labspike secretpw
+assert_eq "login's second attempt in the same session succeeds via a restart" "$?" "0"
+assert_contains "second login's restart re-reads the slot's env" "$FAKE_LOG" "coa-slot env 3"
+assert_contains "second login's restart re-launches the client" "$FAKE_LOG" 'workspace = "9 silent"'
+assert_contains "second login still clicks the account field after restarting" "$FAKE_LOG" \
     "mousemove --window 4242 640 378 click 1"
+assert_contains "second login still types the password after restarting" "$FAKE_LOG" \
+    "type --window 4242 --delay 60 secretpw"
 
 run_lab stop
 run_lab start 3
@@ -711,16 +709,27 @@ assert_contains "fresh pass for this slot is pass" "$lab_json" '"preflight": "pa
 assert_contains "descriptor records the preflight slot" "$lab_json" '"preflight_slot": 3'
 assert_contains "descriptor records the deploy time" "$lab_json" '"deployed_at": "2026-10-25T23:00:00+01:00"'
 
-# Stale preflight records never become "pass".
+# Stale preflight records never become "pass". Each scenario needs a fresh client first: login no
+# longer recovers in place on a second call in the same session, it restarts (cmd_stop removes
+# state/preflight), which would wipe the hand-written record below before write_descriptor ever read
+# it if the client were left running from the previous scenario.
+run_lab stop
+run_lab start 3
 printf 'pass slot 2 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "pass from another slot is stale" "$lab_json" '"preflight": "stale"'
+run_lab stop
+run_lab start 3
 printf 'pass slot 3 2026-10-25T22:00:00+01:00\n' > "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "pass older than the deploy is stale" "$lab_json" '"preflight": "stale"'
+run_lab stop
+run_lab start 3
 printf 'fail slot 3 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "fail stays fail" "$lab_json" '"preflight": "fail"'
+run_lab stop
+run_lab start 3
 rm -f "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "missing preflight is unknown" "$lab_json" '"preflight": "unknown"'
@@ -950,11 +959,11 @@ assert_not_contains "login does not send Down either" "$FAKE_LOG" "key --window 
 assert_contains "login reports the found index instead of acting on it" "$WORK/out" \
     "Coalabnecro is at character-list index 2"
 
-# A second `login` call in the same session (state/account already written by the one above) is no
-# longer trusted to be a fresh account-login screen: coa-client-lab now only recovers from a provable
-# in-world state (relay probe ping) and otherwise refuses (see cmd_login). These tests are about the
-# index-lookup fallback and the dedicated-account typing, not that gate, so each restarts the fake lab
-# client first to get back to the one state this command trusts unconditionally: a fresh session.
+# A second `login` call in the same session (state/account already written by the one above) now
+# restarts the lab client rather than recovering in place (see cmd_login, ADR 0003's follow-up
+# decision). These tests are about the index-lookup fallback and the dedicated-account typing, not the
+# restart itself, so each restarts the fake lab client explicitly first, to keep FAKE_LOG free of the
+# restart's own launch lines (coa-slot env, hyprctl, gamescope) for the assertions that follow.
 run_lab stop
 run_lab start 3
 

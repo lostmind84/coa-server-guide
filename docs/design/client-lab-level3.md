@@ -207,8 +207,8 @@ numbers and assumptions this file states above rather than new design:
 - `login` no longer assumes the account-login screen; see
   [ADR 0003](../adr/0003-login-trusts-only-provable-screen-state.md). The "Measurements" section's `login`
   timings above are unaffected on a fresh client (same typing path); a second `login` in the same session now
-  behaves differently (recovers from a proven in-world state, or refuses) and was not separately re-measured
-  for a fresh-client timing figure here.
+  behaves differently (originally: recovers from a proven in-world state, or refuses; see the next addendum
+  for why that recovery was replaced) and was not separately re-measured for a fresh-client timing figure here.
 - `relay-setup N` now creates or updates the SOAP account itself (`TestLabSoapAccount` in
   `scripts/lab-character`), at `SEC_ADMINISTRATOR`. Previously it only wrote `worldserver.conf`/`coa.conf` and
   `relay.env`; the account had to exist already in that slot's own auth DB (each slot has one), which is what
@@ -218,3 +218,18 @@ numbers and assumptions this file states above rather than new design:
   non-4:3 `COA_LAB_HEIGHT` does, confirmed live with 800x720); it is still not a complete fix, since the
   character pane's attribute list is a scrollable Blizzard frame that did not fit unscrolled even at 1280x1024
   with a smaller `/console uiScale`.
+
+## Addendum, 2026-10-26 (follow-up session): login's in-world recovery replaced by a restart
+
+The in-world recovery described in the addendum above (`/camp`, wait, click the character-select Back
+button, pixel check) was driven end-to-end inside one `login` process and reproducibly did not reach the
+login screen in 4/4 full runs (up to ~330s each); the same click performed as a separate manual step
+immediately afterward succeeded in under 20s every time (3/3). The cause of the in-process failure was never
+established (not verified) — click coordinates, click form, hover-state, rapid-repeat-click interference and
+raw elapsed time were all ruled out live without explaining it.
+
+`login` now restarts the lab client on the same slot (`restart_client` in `scripts/coa-client-lab`) whenever
+it is not called on a client that is fresh since `start`, then takes the already-proven fresh-client path
+(`LOGIN_WAIT`, pixel check, type). No relay probe ping is required for this any more. `CAMP_WAIT` and
+`recover_to_login_screen` are removed. See [ADR 0003](../adr/0003-login-trusts-only-provable-screen-state.md)
+for the updated decision and consequences.

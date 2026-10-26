@@ -33,34 +33,45 @@ a script with no way to read the screen.
 
 ## Decision
 
-Option 3. `coa-client-lab login`:
+Option 3, as originally accepted above, with one change (2026-10-26, same day, a follow-up session): the
+in-world recovery path (`/camp`, wait, click the character-select Back button, confirm the login screen with
+the pixel check) is replaced by a restart of the lab client on the same slot.
+
+The original `/camp` + Back recovery was driven end-to-end inside one `login` process, with waits from 5s up
+to 90s per attempt and total elapsed time up to ~330s: it reproducibly did **not** reach the login screen in
+4 separate full runs (4/4 failures). The same click, performed as a separate manual step immediately
+afterward, succeeded in under 20s every time it was tried (3/3) — so the recovery logic (coordinates, click
+form, confirm check) was not the problem, but the cause of the in-process failure was never established (not
+verified): click coordinates, click form, hover-state before the click, rapid-repeat-click interference, and
+raw elapsed time up to 330s were all ruled out live without explaining it. Rather than keep an unreliable path
+whose failure mode is not understood, `login` now uses the one path already proven reliable in this
+environment: a fresh client since `start` always reaches the login screen (LOGIN_WAIT, then the pixel check).
+
+`coa-client-lab login` now:
 
 - On a fresh client (`state/account` absent): waits `LOGIN_WAIT`, confirms the login screen via the pixel
   check, types credentials. Dies if the check fails instead of typing blind.
-- Otherwise: requires `state/lab.json` and a successful relay `probe ping`; only then does it recover
-  (`/camp`, wait, click the character-select Back button, confirm the login screen the same way) before
-  typing. If probe ping does not succeed, it refuses and names the reason, with no keystrokes sent.
+- Otherwise (a lab session that already attempted a login, in any state — in world, character-select, a
+  leftover dialog, mid-transition): restarts the lab client on the same slot (read from `state/slot` before
+  the restart clears it; instance and profile/resolution come from the environment the whole script run
+  already has, so the restart necessarily matches them), then takes the same fresh-client path above. No
+  relay probe ping is required for this any more — the previous design's "prove it is in world first" check
+  only ever gated an in-place recovery that is no longer attempted.
 
-This makes `login CHARACTER` the second call in a row (the exact batch 19/20 scenario, once relay-setup and a
-first `login ... CHARACTER` are in place) self-recovering, and makes every other ambiguous state a clean,
-named refusal instead of a silent corruption.
-
-### Known gap
-
-The character-select → account-login transition itself was measured to take much longer in this environment
-than its on-screen content suggests (character-select renders in a screenshot well before the transition
-becomes clickable; recovery needed roughly two minutes of total elapsed time across repeated attempts in one
-run, live, slot 2, 2026-10-26, for reasons this guide's tooling does not explain — not a click-mechanism or a
-hover-state issue, both ruled out live). `CAMP_WAIT` and the retry loop in `recover_to_login_screen` are set
-with a wide, evidenced-but-unexplained margin rather than a measured minimum.
+This makes `login CHARACTER` (or `login ACCOUNT PASSWORD`) reliable the second and every later time in a row,
+not just self-recovering when a relay descriptor happened to be available to prove in-world state.
 
 ## Consequences
 
-- Typing credentials onto an unknown screen (the batch 19/20 defect) cannot happen any more: every path either
-  proves the screen first or refuses.
-- A second `login` with no CHARACTER argument (no relay descriptor to prove anything by) now always refuses in
-  a lab session that already attempted a login, where it previously guessed. `coa-client-lab stop && start N`
-  gets back to the one state this command trusts unconditionally.
-- Recovery is slower than the old blind dismiss (CAMP_WAIT plus a multi-attempt retry loop) and its margin is
-  empirical, not derived from a known cause; a future session with headroom to investigate the transition delay
-  itself could likely tighten it.
+- Typing credentials onto an unknown screen (the batch 19/20 defect) still cannot happen: every path either
+  proves the screen first (after a restart if needed) or refuses.
+- A second (or later) `login` no longer needs a relay descriptor or a successful probe ping to succeed: it
+  restarts unconditionally instead of trying to prove in-world state first. The in-place in-world recovery
+  this ADR originally described, and the gap it left open (character-select → account-login transition slower
+  than explained), no longer apply — there is no in-place recovery any more.
+- Every non-fresh `login` now pays a full restart's cost (`stop` then `start N`, roughly the time `start`
+  itself takes) instead of the faster path when in-place recovery happened to work. This trades a cost that
+  was always paid (`stop && start N`) only on refusal for one paid on every repeat login, in exchange for not
+  depending on an unexplained, unreliable transition.
+- `CAMP_WAIT` and `recover_to_login_screen` are removed; `/camp` and the character-select Back button are no
+  longer used by `login`.

@@ -670,13 +670,16 @@ refuse, once that account holds 2+ characters, since `login CHARACTER` can only 
 and character-select navigation by name is disabled (next paragraph) — use
 `login ACCOUNT PASSWORD CHARACTER` and verify the right one loaded.
 
-`login` only ever types credentials onto a screen it has just confirmed: a fresh client (nothing attempted
-since `start`), or a state it recovered to from a relay-proven in-world character (`/camp`, then the
-character-select Back button, then a pixel check of the login screen's logo area). Any other state — a second
-`login` in the same session with no prior `CHARACTER` argument to prove anything by, a leftover dialog, a
-mid-transition screen — is refused by name instead of guessed; see
-[ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md). `coa-client-lab stop && start N` always
-gets back to the one state `login` trusts unconditionally.
+`login` only ever types credentials onto a screen it has just confirmed is the account-login screen (a pixel
+check of its logo area). On a fresh client (nothing attempted since `start`) it waits and checks directly. On
+any other state — in world, character-select, a leftover dialog, mid-transition — it no longer tries to
+recover in place: it restarts the lab client on the same slot (same instance and profile/resolution, read
+from the environment this run already has) and then takes that same fresh-client path. An earlier in-world
+recovery (`/camp`, then the character-select Back button) was tried and dropped: driven inside one `login`
+process it failed to reach the login screen 4/4 times for a cause that was never established, while the
+restart path is the one this guide has proven reliable; see
+[ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md). `coa-client-lab stop && start N` still
+reaches the same clean state manually, if needed.
 
 `login`'s CHARACTER argument (both forms) also looks up that character on the character-select screen
 (CHAR_SEL_ENUM order) to report its index, but navigation itself is disabled: live on slot 2 the list wraps
