@@ -20,7 +20,8 @@ the client's code or memory:
 - **Instances.** `COA_LAB_INSTANCE=1..9` selects a reflinked copy of the lab client and prefix with its own state
   directory, so several lab clients can run side by side against one slot with different accounts.
 - **New probes.** `frame <GlobalName>` (type, shown, visible, text) and `errors` (Lua errors seen by the addon's own
-  error handler, chained to the previous handler).
+  error handler, chained to the previous handler). On this client the handler is replaced after login, so `errors`
+  stays empty; error text is not captured (see "Lua errors" below).
 
 Out of scope, by decision of 2026-10-25: injected or proxy DLLs, reading or writing client memory, lifting
 protected Lua functions, anti-cheat or Warden changes, and building a client from decompiled sources. The relay

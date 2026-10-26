@@ -628,6 +628,64 @@ else
 fi
 run_lab stop
 assert_absent "stop removes the descriptor" "$lab_json"
+assert_absent "stop clears the preflight record" "$COA_LAB_ROOT/state/preflight"
+
+# Routing: only the relay's read-only commands go through the relay once lab.json exists.
+export COA_LAB_RELAY="$WORK/bin/fake-relay"
+run_lab preflight 3
+run_lab start 3
+run_lab login coalab1 secretpw Coalabone
+for command in "eval 1" "pksend 1617 u32:1" "pkwatch 1618" "evwatch X"; do
+    : > "$FAKE_LOG"
+    # shellcheck disable=SC2086
+    run_lab probe $command
+    assert_not_contains "probe $command does not use the relay" "$FAKE_LOG" "relay --descriptor"
+    assert_contains "probe $command keeps the /reload path" "$FAKE_LOG" "/reload"
+done
+for command in ping "frame GameTooltip" errors "auras target"; do
+    : > "$FAKE_LOG"
+    # shellcheck disable=SC2086
+    run_lab probe $command
+    assert_contains "probe $command uses the relay" "$FAKE_LOG" "relay --descriptor $lab_json probe $command"
+    assert_not_contains "probe $command does not reload" "$FAKE_LOG" "/reload"
+done
+assert_contains "fresh pass for this slot is pass" "$lab_json" '"preflight": "pass"'
+assert_contains "descriptor records the preflight slot" "$lab_json" '"preflight_slot": 3'
+assert_contains "descriptor records the deploy time" "$lab_json" '"deployed_at": "2026-10-25T23:00:00+01:00"'
+
+# Stale preflight records never become "pass".
+printf 'pass slot 2 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "pass from another slot is stale" "$lab_json" '"preflight": "stale"'
+printf 'pass slot 3 2026-10-25T22:00:00+01:00\n' > "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "pass older than the deploy is stale" "$lab_json" '"preflight": "stale"'
+printf 'fail slot 3 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "fail stays fail" "$lab_json" '"preflight": "fail"'
+rm -f "$COA_LAB_ROOT/state/preflight"
+run_lab login coalab1 secretpw Coalabone
+assert_contains "missing preflight is unknown" "$lab_json" '"preflight": "unknown"'
+run_lab stop
+
+# start drops a preflight recorded for another slot.
+printf 'pass slot 2 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
+run_lab start 3
+assert_absent "start drops a preflight of another slot" "$COA_LAB_ROOT/state/preflight"
+run_lab stop
+
+# relay.env set up for another slot: no descriptor that mixes two slots.
+sed -i 's/^SLOT=3$/SLOT=2/' "$COA_LAB_ROOT/relay.env"
+run_lab start 3
+if run_lab login coalab1 secretpw Coalabone; then
+    fail "login refuses a relay.env of another slot"
+else
+    pass "login refuses a relay.env of another slot"
+fi
+assert_contains "relay.env slot mismatch message" "$WORK/out" "relay.env is set up for slot 2"
+assert_absent "no descriptor for a slot mismatch" "$lab_json"
+run_lab stop
+sed -i 's/^SLOT=2$/SLOT=3/' "$COA_LAB_ROOT/relay.env"
 unset COA_LAB_RELAY
 
 # Instances: separate client, prefix, state, lock and pid per COA_LAB_INSTANCE; the silent sink stays while any

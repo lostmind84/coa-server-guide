@@ -672,7 +672,8 @@ coa-client-lab preflight 2                  # also records pass/fail for the lab
 COA_LAB_PROFILE=minimal coa-client-lab start 2               # 800x600, low-cost settings, gamescope headless
 coa-client-lab login COALAB1 <password> Coalabone            # CHARACTER writes state/lab.json
 coa-client-lab probe spell 501281           # now goes through the relay: no /reload, the target is kept
-coa-lab-relay probe frame GameTooltip       # the same, directly; also `errors`
+coa-lab-relay probe frame GameTooltip       # the same, directly; `errors` reports the addon's handler only:
+                                            #   this client replaces it after login, so read Lua errors from `probe log`
 coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this lab client and its wineserver
 ```
 

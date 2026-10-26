@@ -35,7 +35,7 @@ function Relay.chunks(text, size)
     return parts
 end
 
--- `|` starts an escape sequence in WoW chat strings; | keeps the JSON identical once decoded.
+-- `|` starts an escape sequence in WoW chat strings; \u007c keeps the JSON identical once decoded.
 local function wireJson(answer)
     return (CoaProbe.Json.encode(answer):gsub("|", "\\u007c"))
 end

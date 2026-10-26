@@ -68,7 +68,8 @@ class RelayTest(unittest.TestCase):
         self.descriptor = {
             "instance": "", "slot": 2, "soap_url": self.soap.url, "soap_account": "COALABSOAP",
             "soap_password_file": str(self.password_file), "account": "COALAB1", "character": "Coalabone",
-            "deployed_commit": "abc", "preflight": "pass",
+            "deployed_commit": "abc", "deployed_at": "2026-10-26T00:32:54+01:00", "preflight": "pass",
+            "preflight_slot": 2, "preflight_time": "2026-10-26T00:36:21+01:00",
         }
 
     def tearDown(self):

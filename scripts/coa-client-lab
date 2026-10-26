@@ -35,6 +35,8 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ADDON_SRC="$SCRIPT_DIR/../addons/CoaProbe"
 PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
 RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
+# Commands the server relay and the addon accept over addon whispers; everything else keeps the /reload path.
+RELAY_COMMANDS=" ping spell item auras spellbook known log state ca frame errors "
 PROFILE="${COA_LAB_PROFILE:-readable}"
 FPS="${COA_LAB_FPS:-10}"
 if [[ "$PROFILE" == minimal ]]; then
@@ -89,7 +91,8 @@ Running (one lab client per instance):
                            server relay (coa-lab-relay, no /reload); COA_LAB_TRANSPORT=reload forces /reload
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window
-  preflight N              coa-slot preflight N against the lab client's data; records pass/fail for lab.json
+  preflight N              coa-slot preflight N against the lab client's data; records pass/fail, slot and time
+                           for lab.json (a pass counts only for that slot and after its last deploy; stop clears it)
 
 Server relay:
   relay-setup N --soap-account NAME --soap-password-file PATH
@@ -304,6 +307,9 @@ cmd_start() {
     rm -f "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/gamescope.starttime"
     touch "$STATE_DIR/started"
     echo "$n" > "$STATE_DIR/slot"
+    if [[ "$(awk 'NR == 1 { print $3 }' "$STATE_DIR/preflight" 2>/dev/null)" != "$n" ]]; then
+        rm -f "$STATE_DIR/preflight"
+    fi
 
     apply_profile
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
@@ -452,8 +458,10 @@ cmd_login() {
 }
 
 # The lab descriptor tells coa-lab-relay (and the server repo's client_lab check) where to send relay probes.
+# `preflight` is "pass" only for a pass recorded for this slot after the slot's last deploy; an older or foreign
+# pass is "stale". The recorded slot and times are copied too, so the server check can apply the same rule.
 write_descriptor() {
-    local account="$1" character="$2" slot deployed state_file preflight
+    local account="$1" character="$2" slot state_file
     [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
     if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
         echo "no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): no lab descriptor written"
@@ -461,32 +469,63 @@ write_descriptor() {
     fi
     slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
     state_file=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^STATE_FILE=//p') || state_file=""
-    deployed=$(awk 'NR == 1 { print $2 }' "$state_file" 2>/dev/null) || deployed=""
-    preflight=$(awk 'NR == 1 { print $1 }' "$STATE_DIR/preflight" 2>/dev/null) || preflight=""
     ( umask 077
       python3 - "$LAB_ROOT/relay.env" "$STATE_DIR/lab.json" "${COA_LAB_INSTANCE:-}" "$slot" "$account" \
-          "$character" "${deployed:-unknown}" "${preflight:-unknown}" <<'PYEOF'
+          "$character" "${state_file:-/nonexistent}" "$STATE_DIR/preflight" <<'PYEOF'
 import json
 import sys
+from datetime import datetime
 
-env_path, out, instance, slot, account, character, deployed, preflight = sys.argv[1:]
+env_path, out, instance, slot, account, character, state_path, preflight_path = sys.argv[1:]
+
+
+def first_line(path):
+    try:
+        with open(path) as handle:
+            return handle.readline().split()
+    except OSError:
+        return []
+
+
+def when(text):
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 env = {}
 for line in open(env_path):
     key, sep, value = line.strip().partition("=")
     if sep:
         env[key] = value
+if env.get("SLOT") != slot:
+    sys.exit(f"relay.env is set up for slot {env.get('SLOT')}, the lab client runs on slot {slot}: "
+             f"run coa-client-lab relay-setup {slot} ...")
+deploy = first_line(state_path)
+deployed_commit = deploy[1] if len(deploy) > 1 else "unknown"
+deployed_at = deploy[2] if len(deploy) > 2 else "unknown"
+record = first_line(preflight_path)
+result = record[0] if record else "unknown"
+preflight_slot = record[2] if len(record) > 2 and record[1] == "slot" else "unknown"
+preflight_time = record[3] if len(record) > 3 else "unknown"
+checked, deployed = when(preflight_time), when(deployed_at)
+if result == "pass" and not (preflight_slot == slot and checked and deployed and checked >= deployed):
+    result = "stale"
 descriptor = {
     "instance": instance, "slot": int(slot) if slot.isdigit() else slot,
     "soap_url": env["SOAP_URL"], "soap_account": env["SOAP_ACCOUNT"],
     "soap_password_file": env["SOAP_PASSWORD_FILE"], "account": account.upper(), "character": character,
-    "deployed_commit": deployed, "preflight": preflight,
+    "deployed_commit": deployed_commit, "deployed_at": deployed_at, "preflight": result,
+    "preflight_slot": int(preflight_slot) if preflight_slot.isdigit() else preflight_slot,
+    "preflight_time": preflight_time,
 }
 with open(out, "w") as handle:
     json.dump(descriptor, handle, indent=2, sort_keys=True)
     handle.write("\n")
 PYEOF
-    )
-    echo "lab descriptor: $STATE_DIR/lab.json"
+    ) || die "no lab descriptor written"
+    echo "lab descriptor: $STATE_DIR/lab.json (preflight: $(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["preflight"])' "$STATE_DIR/lab.json"))"
 }
 
 # Hold a key down: walking, turning and any other continuous input the client reads as "key still pressed".
@@ -512,7 +551,7 @@ cmd_probe() {
     [[ $# -ge 1 ]] || die "usage: coa-client-lab probe COMMAND [ARGS...]"
     [[ "$*" != *'|'* ]] || die "probe arguments cannot contain | (the chat edit box doubles it)"
     require_running
-    if [[ -f "$STATE_DIR/lab.json" && "${COA_LAB_TRANSPORT:-relay}" != reload ]]; then
+    if [[ -f "$STATE_DIR/lab.json" && "${COA_LAB_TRANSPORT:-relay}" != reload && "$RELAY_COMMANDS" == *" $1 "* ]]; then
         "$RELAY" --descriptor "$STATE_DIR/lab.json" probe "$@"
         return
     fi
@@ -581,7 +620,8 @@ cmd_stop() {
         done < <(pactl list short modules | awk -v name="sink_name=$SILENT_SINK" '$0 ~ name { print $1 }')
     fi
     rm -f "$LOCK" "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/started" \
-        "$STATE_DIR/gamescope.starttime" "$STATE_DIR/account" "$STATE_DIR/lab.json" "$STATE_DIR/slot"
+        "$STATE_DIR/gamescope.starttime" "$STATE_DIR/account" "$STATE_DIR/lab.json" "$STATE_DIR/slot" \
+        "$STATE_DIR/preflight"
     echo "lab client stopped"
 }
 
