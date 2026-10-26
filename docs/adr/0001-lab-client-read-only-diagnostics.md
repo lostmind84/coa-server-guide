@@ -62,7 +62,7 @@ after that work (`client-lab-memory-diagnostics` plan, `design.md`):
 2. **`scripts/coa-lab-mem`**: a read-only external reader, Python 3 standard library, `process_vm_readv` only
    (never a write syscall, never a `ptrace` attach, never injected code). Before any read it refuses unless:
    - the target process's executable is under `~/CoaServer/client-lab` (never the user's own client);
-   - the lab lock names a slot other than 1;
+   - the lab lock names a slot other than 1 (lifted by [ADR 0002](0002-slot-one-is-a-dev-slot.md));
    - that slot's `worldserver.conf` has `Warden.Enabled = 0`.
 
    Every value the tool reports carries its own `"validated": true|false`: `true` only once this diagnostic

@@ -8,6 +8,7 @@ import importlib.util
 import struct
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "coa-lab-mem"
@@ -484,18 +485,28 @@ class GuardsTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.addCleanup(self.tmp.cleanup)
 
-    def test_slot_not_one_rejects_slot_one(self):
+    def test_lab_slot_accepts_slot_one(self):
         state_dir = self.root / "state"
         state_dir.mkdir()
         (state_dir / "lock").write_text("slot 1 since 2026-10-26T00:00:00+00:00\n")
-        with self.assertRaises(mem.GuardError):
-            mem.check_slot_not_one(state_dir)
+        self.assertEqual(mem.check_lab_slot(state_dir), 1)
 
-    def test_slot_not_one_accepts_other_slots(self):
+    def test_lab_slot_reads_the_lock(self):
         state_dir = self.root / "state"
         state_dir.mkdir()
         (state_dir / "lock").write_text("slot 2 since 2026-10-26T00:00:00+00:00\n")
-        self.assertEqual(mem.check_slot_not_one(state_dir), 2)
+        self.assertEqual(mem.check_lab_slot(state_dir), 2)
+
+    def test_slot_worldserver_conf_uses_coa_slot_etc(self):
+        completed = mem.subprocess.CompletedProcess([], 0, stdout="SLOT=1\nETC=/srv/coa/etc\nLOGS=/srv/coa/logs\n")
+        with unittest.mock.patch.object(mem.subprocess, "run", return_value=completed):
+            self.assertEqual(mem.slot_worldserver_conf(1), Path("/srv/coa/etc/worldserver.conf"))
+
+    def test_slot_worldserver_conf_without_etc_is_refused(self):
+        completed = mem.subprocess.CompletedProcess([], 0, stdout="SLOT=9\n")
+        with unittest.mock.patch.object(mem.subprocess, "run", return_value=completed):
+            with self.assertRaises(mem.GuardError):
+                mem.slot_worldserver_conf(9)
 
     def test_pid_is_lab_client_rejects_user_client(self):
         proc_root = self.root / "proc"

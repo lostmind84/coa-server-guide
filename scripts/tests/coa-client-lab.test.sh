@@ -811,12 +811,8 @@ rm -rf "$COA_LAB_PREFIX-1"
 
 # --- character: argument validation, slot-1 refusal, class refusal, the generated request ---
 
-if run_lab character --slot 1 --account A --character C --race 1 --class 23; then
-    fail "character refuses slot 1"
-else
-    pass "character refuses slot 1"
-fi
-assert_contains "character slot-1 refusal message" "$WORK/out" "slot 1 is the user's own"
+run_lab character --slot 1 --account A --character C --race 1 --class 99 || true
+assert_contains "character accepts slot 1 past the slot check" "$WORK/out" "CoA class id 12-32"
 
 run_lab character --slot 4 --account A --character C --race 1 --class 99 || true
 assert_contains "character accepts slot 4 past the slot check" "$WORK/out" "CoA class id 12-32"
