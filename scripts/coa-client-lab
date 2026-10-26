@@ -31,6 +31,14 @@ RELOAD_WAIT="${COA_LAB_RELOAD_WAIT:-10}"
 LOGIN_WAIT="${COA_LAB_LOGIN_WAIT:-20}"
 REALM_WAIT="${COA_LAB_REALM_WAIT:-25}"
 WORLD_WAIT="${COA_LAB_WORLD_WAIT:-45}"
+# Time for /camp to log a character out to the character-select screen, AND for that screen (or the
+# Back button on it) to start accepting clicks that actually transition it. Confirmed live (slot 2,
+# 2026-10-26): the character-select list renders in a screenshot well before this, but repeated Back
+# clicks with waits up to 20s each did not transition the screen until total elapsed time since /camp
+# passed roughly 130s (several same-position clicks, none individually distinguishable as "the" one
+# that worked) — not explained by anything this script reads (no load-screen /reload, no visible retry
+# count), so treated as an unexplained delay and given a wide margin rather than a precise number.
+CAMP_WAIT="${COA_LAB_CAMP_WAIT:-60}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ADDON_SRC="$SCRIPT_DIR/../addons/CoaProbe"
 PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
@@ -43,10 +51,18 @@ GHOST_REPO="${COA_GHOST_REPO:-$HOME/Projects/ConquestOfAzerothGhost}"
 LAB_CHARACTER_DIR="$SCRIPT_DIR/lab-character"
 PROFILE="${COA_LAB_PROFILE:-readable}"
 FPS="${COA_LAB_FPS:-10}"
+# 800x600 cuts the character pane's Ranged block off the bottom of the window (confirmed live, slot 2,
+# 2026-10-26, level 20 character, C key). 1024x768 (still 4:3: a non-4:3 height such as 800x720
+# letterboxes, confirmed live, and the game renders its glue/world scenes into the letterboxed area only)
+# shows more of it but the Ranged block's last rows can still clip; the attributes list is a scrollable
+# Blizzard frame (mouse wheel reaches the rest at any resolution, confirmed live) and no resolution tried
+# up to 1280x1024, with or without a smaller /console uiScale, made the whole thing fit unscrolled. 1024x768
+# is kept as the default for being a real, evidenced improvement over 800x600, not a confirmed full fix;
+# COA_LAB_WIDTH/HEIGHT already override it, and a non-4:3 pair should be avoided (see above).
 if [[ "$PROFILE" == minimal ]]; then
     DISPLAY_MODE="${COA_LAB_DISPLAY:-headless}"
-    WIDTH="${COA_LAB_WIDTH:-800}"
-    HEIGHT="${COA_LAB_HEIGHT:-600}"
+    WIDTH="${COA_LAB_WIDTH:-1024}"
+    HEIGHT="${COA_LAB_HEIGHT:-768}"
 else
     DISPLAY_MODE="${COA_LAB_DISPLAY:-nested}"
     WIDTH="${COA_LAB_WIDTH:-1920}"
@@ -633,6 +649,67 @@ select_character() {
         "implemented yet (see comment above); using the default highlighted character" >&2
 }
 
+# Samples one pixel (top-center, where the account-login screen's bright logo/sky sits) and returns
+# its R+G+B sum. Measured live (slot 2, 2026-10-26, 800x600): account-login srgb(176,155,148) (sum
+# 479); character-select srgb(0,56,56) (sum 112, the same point over the character-select scene's dark
+# background). LOGIN_SCREEN_BRIGHTNESS sits well between the two.
+LOGIN_SCREEN_BRIGHTNESS=300
+screen_brightness() {
+    local path px r g b
+    path="$STATE_DIR/screen-check.png"
+    magick import -window "$WINDOW" "$path" 2> /dev/null || return 1
+    px=$(magick "$path" -format "%[pixel:p{$((WIDTH / 2)),$((HEIGHT / 30))}]" info: 2> /dev/null) || return 1
+    IFS=',' read -r r g b _ <<< "${px#*(}"
+    r=${r//[^0-9]/}; g=${g//[^0-9]/}; b=${b//[^0-9]/}
+    [[ "$r" =~ ^[0-9]+$ && "$g" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ ]] || return 1
+    echo $((r + g + b))
+}
+
+# True only once the sampled pixel is bright enough to be the account-login screen, not a guess from
+# any other signal.
+is_login_screen() {
+    local sum
+    sum=$(screen_brightness) || return 1
+    [[ -n "$sum" ]] && ((sum > LOGIN_SCREEN_BRIGHTNESS))
+}
+
+# Drives the client from a confirmed in-world state back to a clean account-login screen, so
+# `cmd_login` never has to type credentials into an unknown screen. /camp always logs the current
+# character out to character-select (confirmed live, slot 2, 2026-10-26: a screenshot after /camp +
+# CAMP_WAIT showed the character-select list, nothing else). The character-select "Back" button sits
+# at x = 753/800, y = 580/600 of the window (found the same way); on this server (one realm) it lands
+# directly on the account-login screen, with no realm-list step in between (confirmed by screenshot:
+# the Username/Password fields and Login button, Username pre-filled with the just-camped account).
+# Caller's responsibility: only call this once a relay probe ping has proven the client is actually
+# in world (see cmd_login) — /camp typed as chat when the client is NOT in world would go nowhere
+# useful, or into the account/password field like any other blind keystroke.
+recover_to_login_screen() {
+    step "recovering to the account-login screen from world (/camp)"
+    cmd_chat "/camp"
+    "$SLEEP" "$CAMP_WAIT"
+    local back_x back_y attempt
+    back_x=$((WIDTH * 753 / 800))
+    back_y=$((HEIGHT * 580 / 600))
+    # Repeated same-spot clicks a fixed few seconds apart reproducibly did NOT transition the screen
+    # here even over several minutes total (slot 2, 2026-10-26: 3+ full runs of up to 6 retries, several
+    # hundred seconds of elapsed time, screen still character-select every time); a single isolated click
+    # left alone for a long wait (no further clicks queued behind it) reliably did, every time it was
+    # tried (3/3). The mechanism is not established (not verified: could be the game's own click/double
+    # click handling coalescing a tight run of same-position clicks into something that never fires the
+    # button's action) — only the "one click, then leave it alone" pattern is confirmed to work, so each
+    # attempt below waits out its full quiet period before trying again, and moves off the button first
+    # so a repeat is not at the exact same coordinates either.
+    for ((attempt = 1; attempt <= 3; attempt++)); do
+        xdotool mousemove --window "$WINDOW" "$back_x" "$back_y" click 1
+        "$SLEEP" 90
+        is_login_screen && return 0
+        xdotool mousemove --window "$WINDOW" $((WIDTH / 2)) $((HEIGHT / 2))
+        "$SLEEP" 2
+    done
+    die "recovery did not reach the account-login screen (pixel check failed after /camp + Back x$attempt);" \
+        "see $STATE_DIR/screen-check.png. Refusing to type credentials: coa-client-lab stop && start N."
+}
+
 # Sequence and delays from the spike findings (Q2). The account field sits at x = width / 2,
 # y = 315 / 600 of the height; `Return` on the character list works only once the list is loaded.
 cmd_login() {
@@ -654,25 +731,39 @@ cmd_login() {
         die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER] | login CHARACTER (dedicated account made by 'character' without --account)"
     fi
     require_running
-    # A dismiss Return is only sent when THIS lab session already attempted a login (state/account exists
-    # from a previous cmd_login call since the last `start`): only then can a leftover "disconnected" or
-    # "invalid account" dialog exist. Confirmed live (slot 2, 2026-10-26): sending it unconditionally on a
-    # fresh client, with no dialog open and nothing typed yet, corrupted the account field instead (the
-    # client's own default-focused control is not the account field on an untouched login screen) and the
-    # character never reached the world. Spike findings Q2 only evidences Return dismissing that dialog
-    # after a login attempt, never on a screen nothing has touched yet.
-    local had_prior_attempt=0
-    [[ -f "$STATE_DIR/account" ]] && had_prior_attempt=1
+    # Credentials are only ever typed onto a screen this command has just confirmed is the clean
+    # account-login screen. On a fresh client since the last `start` (no state/account file yet),
+    # nothing has touched the glue screens and the client's own default state is the account-login
+    # screen (confirmed live, slot 2, 2026-10-26: sending a blind dismiss Return here, unconditionally,
+    # instead corrupted the account field, since the client's default-focused control on an untouched
+    # login screen is not that field). Once this lab session has attempted a login before, the only
+    # state this command trusts is "currently in world", proven by a relay probe ping against the lab
+    # descriptor's character (an unreachable/offline character cannot answer it); every other state
+    # (character-select, a leftover error dialog, mid-transition) looks the same from here without
+    # reading the screen, so typing into it is refused rather than guessed.
+    if [[ -f "$STATE_DIR/account" ]]; then
+        if [[ -f "$STATE_DIR/lab.json" ]] \
+            && "$RELAY" --descriptor "$STATE_DIR/lab.json" probe ping --timeout "$PROBE_TIMEOUT" > /dev/null 2>&1; then
+            recover_to_login_screen
+        else
+            die "lab client state is not provably known (no relay probe ping confirmed it is in world):" \
+                "refusing to type credentials. Either coa-client-lab stop && start N for a known-clean" \
+                "account-login screen, or make sure relay-setup and a prior 'login ... CHARACTER' are" \
+                "in place so the next login can confirm in-world state before recovering."
+        fi
+    else
+        # A fresh client has not finished loading the glue screen yet: give it LOGIN_WAIT before the
+        # pixel check, same as the rest of this command always did before typing anything.
+        "$SLEEP" "$LOGIN_WAIT"
+        is_login_screen \
+            || die "fresh client, but the account-login screen is not confirmed (pixel check failed);" \
+                   "see $STATE_DIR/screen-check.png. Refusing to type credentials."
+    fi
     echo "$account" > "$STATE_DIR/account"
     local backspaces geometry
     backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
     eval "$geometry"
-    "$SLEEP" "$LOGIN_WAIT"
-    if [[ "$had_prior_attempt" == 1 ]]; then
-        xdotool key --window "$WINDOW" Return
-        "$SLEEP" 0.5
-    fi
     xdotool mousemove --window "$WINDOW" $((WIDTH / 2)) $((HEIGHT * 315 / 600)) click 1
     "$SLEEP" 0.5
     # shellcheck disable=SC2086
@@ -910,6 +1001,17 @@ cmd_relay_setup() {
     set_conf "$etc/worldserver.conf" SOAP.Enabled 1
     set_conf "$etc/worldserver.conf" SOAP.IP '"0.0.0.0"'
     set_conf "$etc/modules/coa.conf" CoA.ProbeRelay.Enable 1
+
+    # Each slot has its own auth DB: a SOAP account created on another slot does not exist here, and the
+    # relay answers 401 until one does, at SEC_ADMINISTRATOR (TestLabSoapAccount's comment explains why).
+    local ghost_env status=0
+    ghost_env=$(coa-slot env "$n" | sed -n 's/^GHOST_ENV=//p')
+    [[ -n "$ghost_env" && -f "$ghost_env" ]] || die "coa-slot env $n gave no readable GHOST_ENV (coa-slot create $n first?)"
+    ( set -a; source "$ghost_env"; set +a
+      export COA_LAB_SOAP_ACCOUNT="$account" COA_LAB_SOAP_PASSWORD="$(cat "$password_file")"
+      run_lab_character -run '^TestLabSoapAccount$' . ) || status=$?
+    [[ "$status" == 0 ]] || die "could not create/update the SOAP account $account on slot $n (go test output above)"
+
     mkdir -p "$LAB_ROOT"
     ( umask 077
       printf 'SLOT=%s\nSOAP_URL=http://127.0.0.1:%s/\nSOAP_ACCOUNT=%s\nSOAP_PASSWORD_FILE=%s\n' \

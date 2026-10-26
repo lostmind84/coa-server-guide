@@ -670,6 +670,14 @@ refuse, once that account holds 2+ characters, since `login CHARACTER` can only 
 and character-select navigation by name is disabled (next paragraph) — use
 `login ACCOUNT PASSWORD CHARACTER` and verify the right one loaded.
 
+`login` only ever types credentials onto a screen it has just confirmed: a fresh client (nothing attempted
+since `start`), or a state it recovered to from a relay-proven in-world character (`/camp`, then the
+character-select Back button, then a pixel check of the login screen's logo area). Any other state — a second
+`login` in the same session with no prior `CHARACTER` argument to prove anything by, a leftover dialog, a
+mid-transition screen — is refused by name instead of guessed; see
+[ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md). `coa-client-lab stop && start N` always
+gets back to the one state `login` trusts unconditionally.
+
 `login`'s CHARACTER argument (both forms) also looks up that character on the character-select screen
 (CHAR_SEL_ENUM order) to report its index, but navigation itself is disabled: live on slot 2 the list wraps
 circularly instead of clamping at the top, so a fixed Up-then-Down sequence is not reliable (see the comment
@@ -691,14 +699,18 @@ including a 10-second wait so the reloaded interface accepts input again). Tests
 The lab can also run without a window and answer probes in a quarter of a second, through the server instead of
 `/reload`. The slot must run a server with the CoA probe relay (`CoA.ProbeRelay.Enable`, in the server repository's
 `src/server/coa/CoAProbeRelay*`) and an admin account for SOAP, here `COALABSOAP`, whose password sits in a mode-600
-file. Lab accounts must start with `COALAB`.
+file. Lab accounts must start with `COALAB`. `relay-setup` creates or updates that account itself (each slot has its
+own auth DB, so an account made on one slot does not exist on another): it drives the same
+[`scripts/lab-character`](scripts/lab-character) Go module `character` uses, at `SEC_ADMINISTRATOR`
+(`src/common/Common.h:60` in the server repo; `CoAProbeRelay.cpp` registers `.labprobe`'s `send`/`result` at that
+level), with no character created — SOAP only checks the account's username, password and GM level.
 
 ```bash
 coa-client-lab relay-setup 2 --soap-account COALABSOAP --soap-password-file ~/CoaServer/client-lab/secrets/coalabsoap.password
 coa-slot compose 2 restart ac-worldserver   # SOAP and the relay are read at startup
 coa-lab-relay soap ".server info"           # checks SOAP before any login
 coa-client-lab preflight 2                  # also records pass/fail for the lab descriptor
-COA_LAB_PROFILE=minimal coa-client-lab start 2               # 800x600, low-cost settings, gamescope headless
+COA_LAB_PROFILE=minimal coa-client-lab start 2               # 1024x768, low-cost settings, gamescope headless
 coa-client-lab login COALAB1 <password> Coalabone            # CHARACTER writes state/lab.json
 coa-client-lab probe spell 501281           # now goes through the relay: no /reload, the target is kept
 coa-lab-relay probe frame GameTooltip       # the same, directly
@@ -712,7 +724,13 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
 - `COA_LAB_PROFILE=minimal` writes `gxResolution` and low-cost CVars (`maxFPS`, `farclip`, `baseMip`, ...) before
   every start and defaults to `COA_LAB_DISPLAY=headless` (gamescope `--backend headless`: no Hyprland window;
   `screenshot` and keyboard input still work). `COA_LAB_DISPLAY=nested` shows it on the workspace again.
-  `COA_LAB_WIDTH`/`COA_LAB_HEIGHT` change the size (640x480 was accepted).
+  `COA_LAB_WIDTH`/`COA_LAB_HEIGHT` change the size (640x480 was accepted). The default is 1024x768, not 800x600:
+  at 800x600 the character pane's Ranged block runs off the bottom of the window (confirmed live, slot 2,
+  2026-10-26, level 20 character, `C` key); 1024x768 shows more of it, though the attribute list is a scrollable
+  Blizzard frame and even 1280x1024 with a smaller `/console uiScale` did not fit all of it unscrolled (a mouse
+  wheel reaches the rest at any resolution). Keep `COA_LAB_WIDTH`/`COA_LAB_HEIGHT` at the same 4:3 ratio: a
+  taller-than-4:3 pair (800x720 was tried) letterboxes the whole client, including the login-screen pixel check
+  `login` now does (next paragraph).
 - Only read-only commands go through the relay (`ping spell item auras spellbook known log state ca frame errors`);
   `eval`, `pksend` and the watches keep the `/reload` path (`COA_LAB_TRANSPORT=reload` forces it for any command).
   Every relay answer carries `loadId` (changes on each UI load) and the answering `character`.

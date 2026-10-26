@@ -198,3 +198,23 @@ not necessarily the lab character — filter with `--guid` using a GUID obtained
 - `coa-lab-packets` proves what the server sent in one logged session, not what the client did with it.
 - An addon's own `seterrorhandler` callback is still dead on this client; only the passive read of
   `ERROR_HANDLER_DATABASE` works.
+
+## Addendum, 2026-10-26 (later session): login, relay-setup and the minimal profile's resolution
+
+Three follow-ups from the batch 19/20 reports, fixed in `scripts/coa-client-lab`, kept here because they touch
+numbers and assumptions this file states above rather than new design:
+
+- `login` no longer assumes the account-login screen; see
+  [ADR 0003](../adr/0003-login-trusts-only-provable-screen-state.md). The "Measurements" section's `login`
+  timings above are unaffected on a fresh client (same typing path); a second `login` in the same session now
+  behaves differently (recovers from a proven in-world state, or refuses) and was not separately re-measured
+  for a fresh-client timing figure here.
+- `relay-setup N` now creates or updates the SOAP account itself (`TestLabSoapAccount` in
+  `scripts/lab-character`), at `SEC_ADMINISTRATOR`. Previously it only wrote `worldserver.conf`/`coa.conf` and
+  `relay.env`; the account had to exist already in that slot's own auth DB (each slot has one), which is what
+  left slot 4 answering 401 on `.labprobe` until an agent created `COALABSOAP` by hand.
+- The minimal profile's default resolution is 1024x768, not 800x600 (above): at 800x600 the character pane's
+  Ranged block runs off the bottom of the window. 1024x768 shows more without letterboxing (which a
+  non-4:3 `COA_LAB_HEIGHT` does, confirmed live with 800x720); it is still not a complete fix, since the
+  character pane's attribute list is a scrollable Blizzard frame that did not fit unscrolled even at 1280x1024
+  with a smaller `/console uiScale`.

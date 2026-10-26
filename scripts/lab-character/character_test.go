@@ -367,3 +367,34 @@ func dedicatedAccountConflict(authDB, charDB *sql.DB, account, character string)
 	}
 	return "", nil
 }
+
+// SoapAdministratorLevel mirrors SEC_ADMINISTRATOR (src/common/Common.h:60 in the server repo),
+// the security level CoAProbeRelay's `.labprobe` command table requires (src/server/coa/CoAProbeRelay.cpp,
+// "send"/"result" children registered at SEC_ADMINISTRATOR): the SOAP account relay-setup prepares must
+// hold this GM level on the slot's own auth DB, or the relay answers 401/403.
+const SoapAdministratorLevel = 3
+
+// TestLabSoapAccount creates or updates the SOAP account relay-setup uses, with SoapAdministratorLevel,
+// reusing EnsureAccount/SetGM (the same account-creation path TestLabCharacterApply uses for lab
+// characters) instead of raw SQL. No character is created: SOAP authentication only checks the
+// account's username, password and GM level, never a character.
+func TestLabSoapAccount(t *testing.T) {
+	account := os.Getenv("COA_LAB_SOAP_ACCOUNT")
+	password := os.Getenv("COA_LAB_SOAP_PASSWORD")
+	if account == "" || password == "" {
+		t.Fatalf("COA_LAB_SOAP_ACCOUNT and COA_LAB_SOAP_PASSWORD are required")
+	}
+
+	authDB, err := e2eharness.OpenAuthDB()
+	if err != nil {
+		t.Fatalf("auth db: %v", err)
+	}
+	defer authDB.Close()
+
+	if err := e2eharness.EnsureAccount(authDB, account, password); err != nil {
+		t.Fatalf("ensure account: %v", err)
+	}
+	if err := e2eharness.SetGM(authDB, account, SoapAdministratorLevel); err != nil {
+		t.Fatalf("set gm: %v", err)
+	}
+}

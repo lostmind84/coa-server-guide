@@ -107,6 +107,17 @@ EOF
     cat > "$WORK/bin/magick" <<'EOF'
 #!/usr/bin/env bash
 printf 'magick DISPLAY=%s %s\n' "$DISPLAY" "$*" >> "$FAKE_LOG"
+# is_login_screen (coa-client-lab) samples one pixel via `-format "...p{X,Y}..." info:`. Answer with a
+# bright (account-login-like) pixel by default, srgb(0,0,0) (character-select-like, LOGIN_SCREEN_BRIGHTNESS
+# or darker) when FAKE_SCREEN_DARK=1, so tests can exercise both the happy path and the refusal path.
+if [[ "$*" == *-format* && "$*" == *pixel:p* ]]; then
+    if [[ "${FAKE_SCREEN_DARK:-}" == 1 ]]; then
+        echo 'srgb(0,0,0)'
+    else
+        echo 'srgb(200,200,200)'
+    fi
+    exit 0
+fi
 touch "${@: -1}"
 EOF
     cat > "$WORK/bin/coa-slot" <<'EOF'
@@ -325,19 +336,25 @@ assert_eq "login's first attempt sends two Returns (submit, enter world), no dis
 assert_contains "login silences the client" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_EnableAllSound 0"
 assert_contains "login zeroes the master volume" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_MasterVolume 0"
 
-# A SECOND login in the same lab session (state/account already exists from the one above) does send the
-# dismiss Return, before the account field is clicked: only now could a leftover dialog exist.
+# A SECOND login in the same lab session (state/account already exists from the one above) is no longer
+# trusted to be a clean account-login screen at all: the only state coa-client-lab's login now recovers
+# from is a provable in-world one (relay probe ping against a lab descriptor), and this call never made
+# one (no CHARACTER, so no state/lab.json). It refuses instead of blindly sending a dismiss Return onto
+# a screen that might not have anything to dismiss (that blind Return used to corrupt the account field
+# instead; confirmed live, slot 2, 2026-10-26).
 : > "$FAKE_LOG"
-run_lab login labspike secretpw
-assert_eq "login's second attempt sends three Returns (dismiss, submit, enter world)" \
-    "$(awk '/--delay 40 \/console/ { print n - 1; found = 1; exit } /key --window 4242 Return$/ { n++ } END { if (!found) print n + 0 }' "$FAKE_LOG")" "3"
-dismiss_line=$(awk '/key --window 4242 Return$/ { print NR; exit }' "$FAKE_LOG")
-click_line=$(awk '/mousemove --window 4242 640 378 click 1/ { print NR; exit }' "$FAKE_LOG")
-if [[ -n "$dismiss_line" && -n "$click_line" && "$dismiss_line" -lt "$click_line" ]]; then
-    pass "login's modal-dismiss Return happens before the account field click"
+if run_lab login labspike secretpw; then
+    fail "login's second attempt in the same session refuses without a provable state"
 else
-    fail "login's modal-dismiss Return happens before the account field click: dismiss=$dismiss_line click=$click_line"
+    pass "login's second attempt in the same session refuses without a provable state"
 fi
+assert_contains "login's refusal names the missing in-world proof" "$WORK/out" \
+    "no relay probe ping confirmed it is in world"
+assert_not_contains "login's refusal never clicked the account field" "$FAKE_LOG" \
+    "mousemove --window 4242 640 378 click 1"
+
+run_lab stop
+run_lab start 3
 
 run_lab screenshot "$WORK/shot.png"
 assert_eq "screenshot prints path" "$(cat "$WORK/out")" "$WORK/shot.png"
@@ -562,16 +579,16 @@ config="$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf"
 : > "$FAKE_LOG"
 COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=nested run_lab start 3
 assert_eq "minimal start exits 0" "$?" "0"
-assert_contains "minimal resolution" "$config" 'SET gxResolution "800x600"'
+assert_contains "minimal resolution" "$config" 'SET gxResolution "1024x768"'
 for setting in 'maxFPS "10"' 'maxFPSBk "5"' 'farclip "177"' 'groundEffectDensity "16"' 'environmentDetail "0.5"' \
     'particleDensity "0.1"' 'weatherDensity "0"' 'spellEffectLevel "0"' 'specular "0"' 'projectedTextures "0"' \
     'textureFilteringMode "0"' 'baseMip "1"' 'ffxGlow "0"' 'ffxDeath "0"' 'showfootprints "0"'; do
     assert_contains "minimal sets $setting" "$config" "SET $setting"
 done
-assert_contains "minimal gamescope size" "$FAKE_LOG" "gamescope -W 800 -H 600 -w 800 -h 600"
+assert_contains "minimal gamescope size" "$FAKE_LOG" "gamescope -W 1024 -H 768 -w 1024 -h 768"
 run_lab stop
 COA_LAB_PROFILE=minimal run_lab start 3
-assert_contains "minimal defaults to headless" "$FAKE_LOG" "gamescope-argv --backend headless -W 800 -H 600"
+assert_contains "minimal defaults to headless" "$FAKE_LOG" "gamescope-argv --backend headless -W 1024 -H 768"
 run_lab stop
 assert_eq "minimal settings not duplicated" "$(grep -c '^SET maxFPS ' "$config")" "1"
 assert_eq "minimal resolution not duplicated" "$(grep -c '^SET gxResolution ' "$config")" "1"
@@ -588,7 +605,7 @@ run_lab stop
 COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=headless run_lab start 3
 assert_eq "headless start exits 0" "$?" "0"
 assert_contains "headless backend" "$FAKE_LOG" \
-    "gamescope-argv --backend headless -W 800 -H 600 -w 800 -h 600 -r 10 -- umu-run Ascension.exe"
+    "gamescope-argv --backend headless -W 1024 -H 768 -w 1024 -h 768 -r 10 -- umu-run Ascension.exe"
 assert_not_contains "headless does not use hyprctl" "$FAKE_LOG" "hyprctl"
 run_lab status
 assert_contains "headless status shows the window" "$WORK/out" "window: 4242"
@@ -933,11 +950,22 @@ assert_not_contains "login does not send Down either" "$FAKE_LOG" "key --window 
 assert_contains "login reports the found index instead of acting on it" "$WORK/out" \
     "Coalabnecro is at character-list index 2"
 
+# A second `login` call in the same session (state/account already written by the one above) is no
+# longer trusted to be a fresh account-login screen: coa-client-lab now only recovers from a provable
+# in-world state (relay probe ping) and otherwise refuses (see cmd_login). These tests are about the
+# index-lookup fallback and the dedicated-account typing, not that gate, so each restarts the fake lab
+# client first to get back to the one state this command trusts unconditionally: a fresh session.
+run_lab stop
+run_lab start 3
+
 : > "$FAKE_LOG"
 FAKE_GO_INDEX_FAIL=1 run_lab login coalab1 secretpw Coalabnecro
 assert_eq "login still exits 0 when the index lookup fails" "$?" "0"
 assert_contains "login warns and falls back to the default highlight" "$WORK/out" \
     "could not find Coalabnecro in coalab1's character list"
+
+run_lab stop
+run_lab start 3
 
 : > "$FAKE_LOG"
 run_lab login coalab1 secretpw
@@ -945,6 +973,9 @@ assert_not_contains "login without CHARACTER never looks up or navigates" "$FAKE
 
 # --- login CHARACTER: the dedicated-account form, resolving account and password the same way
 #     `character` derived and stored them (password1/pwfile from the character tests above) ---
+
+run_lab stop
+run_lab start 3
 
 : > "$FAKE_LOG"
 run_lab login Dedibot
