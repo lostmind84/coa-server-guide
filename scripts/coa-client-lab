@@ -290,7 +290,7 @@ require_running() {
 
 cmd_start() {
     local n="${1:-}" auth pid display window waited
-    [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab start N (slot 1, 2 or 3)"
+    [[ "$n" =~ ^[1234]$ ]] || die "usage: coa-client-lab start N (slot 1, 2, 3 or 4)"
     [[ "$PROFILE" == readable || "$PROFILE" == minimal ]] || die "COA_LAB_PROFILE must be readable or minimal"
     [[ "$DISPLAY_MODE" == nested || "$DISPLAY_MODE" == headless ]] || die "COA_LAB_DISPLAY must be nested or headless"
     [[ "$WIDTH$HEIGHT$FPS" =~ ^[0-9]+$ ]] || die "COA_LAB_WIDTH, COA_LAB_HEIGHT and COA_LAB_FPS must be numbers"
@@ -627,7 +627,7 @@ cmd_stop() {
 
 cmd_preflight() {
     local n="${1:-}" status=0
-    [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab preflight N"
+    [[ "$n" =~ ^[1234]$ ]] || die "usage: coa-client-lab preflight N"
     shift
     mkdir -p "$STATE_DIR"
     coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@" || status=$?
@@ -641,7 +641,7 @@ cmd_preflight() {
 
 cmd_relay_setup() {
     local n="${1:-}" account="" password_file="" etc
-    [[ "$n" =~ ^[123]$ ]] || die "usage: coa-client-lab relay-setup N --soap-account NAME --soap-password-file PATH"
+    [[ "$n" =~ ^[1234]$ ]] || die "usage: coa-client-lab relay-setup N --soap-account NAME --soap-password-file PATH"
     shift
     while [[ $# -gt 0 ]]; do
         case "$1" in

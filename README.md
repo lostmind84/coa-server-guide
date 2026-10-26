@@ -575,7 +575,7 @@ coa-slot preflight 2                          # coa-preflight.py against slot 2 
 set -a; . ~/CoaServer/slots/s2/ghost.env; set +a
 go test -tags=e2e -p 1 ./e2e/coa/summonspets -count=1 -v
 coa-slot compose 2 logs --tail 50 ac-worldserver
-coa-slot stop 2 && coa-slot release 2         # batch done
+coa-slot release 2                            # batch done: stops the slot's containers (--keep leaves them running)
 ```
 
 - `create` copies `/srv/coa/etc` once (Ghost tests edit `worldserver.conf`), seeds slots 2 and 3 from the repack
