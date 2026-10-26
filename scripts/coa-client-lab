@@ -681,8 +681,13 @@ restart_client() {
         "(state/slot missing); coa-client-lab stop && start N"
     [[ "$slot" =~ ^[1-9][0-9]*$ ]] || die "cannot restart the lab client: state/slot is not a slot number: $slot"
     step "restarting the lab client on slot $slot for a clean login (same instance/profile/resolution)"
+    # A client restart changes neither the slot's server nor the lab's client files, so the preflight
+    # recorded for this slot still describes them: keep it across cmd_stop, which deletes it.
+    local preflight=""
+    preflight=$(cat "$STATE_DIR/preflight" 2>/dev/null) || preflight=""
     cmd_stop
     cmd_start "$slot"
+    [[ -z "$preflight" ]] || printf '%s\n' "$preflight" > "$STATE_DIR/preflight"
 }
 
 # Sequence and delays from the spike findings (Q2). The account field sits at x = width / 2,

@@ -708,6 +708,8 @@ done
 assert_contains "fresh pass for this slot is pass" "$lab_json" '"preflight": "pass"'
 assert_contains "descriptor records the preflight slot" "$lab_json" '"preflight_slot": 3'
 assert_contains "descriptor records the deploy time" "$lab_json" '"deployed_at": "2026-10-25T23:00:00+01:00"'
+run_lab login coalab1 secretpw Coalabone
+assert_contains "a login that restarts the client keeps the slot's preflight" "$lab_json" '"preflight": "pass"'
 
 # Stale preflight records never become "pass". Each scenario needs a fresh client first: login no
 # longer recovers in place on a second call in the same session, it restarts (cmd_stop removes
