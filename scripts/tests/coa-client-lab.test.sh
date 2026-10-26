@@ -861,6 +861,59 @@ else
 fi
 assert_contains "character failure message" "$WORK/out" "character setup failed"
 
+# --- character without --account: derives a dedicated account, generates and reuses a password,
+#     passes it and dedicated=true through the request, and warns only on the --account path ---
+
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "COALABDEDIBOT", "character": "Dedibot", "class": 23, "created": true, "account_characters": ["Dedibot"]}' \
+    run_lab character --slot 2 --character Dedibot --race 5 --class 23
+assert_eq "character without --account exits 0" "$?" "0"
+assert_contains "derived account: prefix + upper-cased name" "$FAKE_LOG" '"account": "COALABDEDIBOT"'
+assert_contains "derived account request is marked dedicated" "$FAKE_LOG" '"dedicated": true'
+assert_not_contains "character without --account does not warn (account_characters has 1 entry)" \
+    "$WORK/out" "coa-client-lab login cannot"
+pwfile="$COA_LAB_ROOT/secrets/coalabdedibot.password"
+assert_file "dedicated account password file created" "$pwfile"
+assert_eq "dedicated account password file is mode 600" "$(stat -c %a "$pwfile")" "600"
+password1=$(cat "$pwfile")
+[[ -n "$password1" ]] && pass "dedicated account password file is non-empty" || fail "dedicated account password file is empty"
+assert_contains "generated password sent in the request" "$FAKE_LOG" "\"password\": \"$password1\""
+
+# Truncation: LabAccountPrefix (3) + the character name, upper-cased, cut to MaxAccountLen (17):
+# see DeriveAccount in scripts/lab-character/character_test.go (MAX_ACCOUNT_STR,
+# src/server/game/Accounts/AccountMgr.h:34).
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "COALABSUPERCALIFR", "character": "Supercalifragilisticexpialidocious", "class": 23, "created": true, "account_characters": ["Supercalifragilisticexpialidocious"]}' \
+    run_lab character --slot 2 --character Supercalifragilisticexpialidocious --race 5 --class 23
+assert_eq "character with a long name exits 0" "$?" "0"
+assert_contains "derived account is truncated to 17 characters" "$FAKE_LOG" '"account": "COALABSUPERCALIFR"'
+
+# A second call for the same character reuses the same password instead of generating a new one.
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "COALABDEDIBOT", "character": "Dedibot", "class": 23, "created": false, "account_characters": ["Dedibot"]}' \
+    run_lab character --slot 2 --character Dedibot --race 5 --class 23 --level 5
+assert_eq "second call for the same character exits 0" "$?" "0"
+assert_eq "dedicated account password file is reused, not regenerated" "$(cat "$pwfile")" "$password1"
+assert_contains "second call sends the same reused password" "$FAKE_LOG" "\"password\": \"$password1\""
+
+# With an explicit --account, today's behavior is kept: empty password (e2eharness.DefaultPassword
+# applies), dedicated=false, and a warning once the account's final character count is 2+ (the Go
+# module reports this; the fake stands in for its account_characters field).
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "Second", "class": 23, "created": true, "account_characters": ["First", "Second"]}' \
+    run_lab character --slot 2 --account shared1 --character Second --race 5 --class 23
+assert_eq "character with explicit --account exits 0" "$?" "0"
+assert_contains "explicit --account request has no password override" "$FAKE_LOG" '"password": ""'
+assert_contains "explicit --account request is not dedicated" "$FAKE_LOG" '"dedicated": false'
+assert_contains "explicit --account warns once the account holds 2+ characters" "$WORK/out" \
+    "account shared1 now holds 2 characters"
+assert_absent "explicit --account does not create a secrets file" "$COA_LAB_ROOT/secrets/shared1.password"
+
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "First", "class": 23, "created": true, "account_characters": ["First"]}' \
+    run_lab character --slot 2 --account shared1 --character First --race 5 --class 23
+assert_not_contains "explicit --account with 1 character does not warn" "$WORK/out" "coa-client-lab login cannot"
+
 # --- login: character-select lookup (navigation itself is disabled; see select_character's comment:
 #     live on slot 2 the character list wraps circularly instead of clamping at the top, so a fixed
 #     Up-then-Down sequence is not reliable and was found live to pick the WRONG character once) ---
@@ -884,6 +937,34 @@ assert_contains "login warns and falls back to the default highlight" "$WORK/out
 : > "$FAKE_LOG"
 run_lab login coalab1 secretpw
 assert_not_contains "login without CHARACTER never looks up or navigates" "$FAKE_LOG" "key --window 4242 Up"
+
+# --- login CHARACTER: the dedicated-account form, resolving account and password the same way
+#     `character` derived and stored them (password1/pwfile from the character tests above) ---
+
+: > "$FAKE_LOG"
+run_lab login Dedibot
+assert_eq "login CHARACTER (dedicated account) exits 0" "$?" "0"
+assert_contains "login CHARACTER types the derived account" "$FAKE_LOG" "type --window 4242 --delay 60 COALABDEDIBOT"
+assert_contains "login CHARACTER types the stored password" "$FAKE_LOG" "type --window 4242 --delay 60 $password1"
+
+if run_lab login Nodedicatedaccount; then
+    fail "login CHARACTER refuses when no dedicated account exists"
+else
+    pass "login CHARACTER refuses when no dedicated account exists"
+fi
+assert_contains "login CHARACTER refusal names the missing account" "$WORK/out" "no dedicated lab account for Nodedicatedaccount"
+
+if run_lab login 'Bad Name'; then
+    fail "login CHARACTER refuses a non-letters name"
+else
+    pass "login CHARACTER refuses a non-letters name"
+fi
+
+if run_lab login one two three four; then
+    fail "login refuses more than 3 arguments"
+else
+    pass "login refuses more than 3 arguments"
+fi
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

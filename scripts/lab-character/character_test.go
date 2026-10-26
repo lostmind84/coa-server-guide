@@ -26,6 +26,37 @@ const (
 	ClassMax uint8 = 32
 )
 
+// MaxAccountLen mirrors MAX_ACCOUNT_STR (src/server/game/Accounts/AccountMgr.h:34): the length
+// AccountMgr::CreateAccount/ChangeUsername refuse past. LabAccountPrefix must match the server
+// repo's CoA.ProbeRelay.AccountPrefix default ("COALAB", src/server/coa/CoAProbeRelay.cpp:28-63 in
+// the client-lab worktree): only an account starting with it can be probed through the relay
+// (docs/design/client-lab-level3.md "Only accounts whose name starts with COALAB can be probed").
+// A derived account marks itself as this tool's own (one character each), distinct from a
+// user-chosen --account that may deliberately be shared across characters (bank, account-bound
+// items, char-select screen).
+const (
+	MaxAccountLen    = 17
+	LabAccountPrefix = "COALAB"
+)
+
+// DeriveAccount returns the dedicated lab account name for one character: LabAccountPrefix plus
+// the upper-cased character name, truncated to MaxAccountLen. Unlike Ghost's own
+// ScenarioOpts.Prefix + a random 10-char suffix (which exists so concurrent bots never collide on
+// a name neither side chose), this name is deterministic and chosen by the caller, so a long
+// character name can truncate into another one's derived account; TestLabCharacterApply's
+// dedicated-account refusal (a derived account may hold only one character) catches that collision
+// instead of silently reusing the wrong account.
+func DeriveAccount(character string) (string, error) {
+	if character == "" {
+		return "", fmt.Errorf("character name is empty")
+	}
+	account := LabAccountPrefix + strings.ToUpper(character)
+	if len(account) > MaxAccountLen {
+		account = account[:MaxAccountLen]
+	}
+	return account, nil
+}
+
 // Spec is one coa-client-lab character request.
 type Spec struct {
 	Account   string   `json:"account"`
@@ -37,6 +68,14 @@ type Spec struct {
 	GM        int      `json:"gm"`
 	Learn     []uint32 `json:"learn"`
 	Items     []uint32 `json:"items"`
+	// Password overrides e2eharness.DefaultPassword when set: coa-client-lab's --account path
+	// (today's behavior) leaves this empty; the dedicated-account path sets it from a generated,
+	// persisted password file so `login CHARACTER` can read the same password back.
+	Password string `json:"password,omitempty"`
+	// Dedicated marks the account as one meant to hold exactly this one character: set when
+	// coa-client-lab derived the account itself (--account was not given). A second, differently
+	// named character already on the account is then a refusal, not a warning.
+	Dedicated bool `json:"dedicated,omitempty"`
 }
 
 // Result is written to COA_LAB_CHARACTER_OUT on success.
@@ -52,6 +91,11 @@ type Result struct {
 	Learned   []uint32 `json:"learned,omitempty"`
 	Equipped  []uint32 `json:"equipped,omitempty"`
 	Created   bool     `json:"created"`
+	// AccountCharacters lists every active character on the account after this call, in glue
+	// display order. coa-client-lab warns when this has 2+ entries on an explicit (non-dedicated)
+	// --account, since `login CHARACTER` alone cannot resolve which account to use and
+	// character-select navigation by name is disabled (see select_character).
+	AccountCharacters []string `json:"account_characters,omitempty"`
 }
 
 // ValidateClass refuses any class outside the CoA range (12-32). Kept standalone (no *testing.T,
@@ -136,11 +180,31 @@ func TestLabCharacterApply(t *testing.T) {
 	}
 	defer charDB.Close()
 
-	if err := e2eharness.EnsureAccount(authDB, spec.Account, e2eharness.DefaultPassword); err != nil {
+	password := spec.Password
+	if password == "" {
+		password = e2eharness.DefaultPassword
+	}
+	if err := e2eharness.EnsureAccount(authDB, spec.Account, password); err != nil {
 		t.Fatalf("ensure account: %v", err)
 	}
 	if err := e2eharness.SetGM(authDB, spec.Account, gm); err != nil {
 		t.Fatalf("set gm: %v", err)
+	}
+
+	if spec.Dedicated {
+		// A dedicated account (derived by coa-client-lab, not given via --account) holds exactly
+		// one character, so `login CHARACTER` alone never has to pick from a character list. A
+		// different name already there means either a real second character or a name collision
+		// from DeriveAccount's truncation; either way this is a refusal, not a silent reuse.
+		conflict, err := dedicatedAccountConflict(authDB, charDB, spec.Account, spec.Character)
+		if err != nil {
+			t.Fatalf("dedicated account character listing: %v", err)
+		}
+		if conflict != "" {
+			t.Fatalf("dedicated lab account %s already holds a different character %q; a dedicated"+
+				" account holds exactly one character (pass --account to share an account across"+
+				" characters, or pick a different character name)", spec.Account, conflict)
+		}
 	}
 
 	existingClass, existingGUID, exists, err := existingCharacterClass(authDB, charDB, spec.Account, spec.Character)
@@ -154,7 +218,7 @@ func TestLabCharacterApply(t *testing.T) {
 	}
 
 	sess, err := e2eharness.LoginBot(t, e2eharness.LoginOptions{
-		User: spec.Account, Password: e2eharness.DefaultPassword,
+		User: spec.Account, Password: password,
 		CharName: spec.Character, Race: spec.Race, Class: spec.Class,
 	})
 	if err != nil {
@@ -191,10 +255,16 @@ func TestLabCharacterApply(t *testing.T) {
 	}
 	bot.Save(t)
 
+	accountCharacters, _, err := CharacterListOrder(authDB, charDB, spec.Account, spec.Character)
+	if err != nil {
+		t.Fatalf("account character listing: %v", err)
+	}
+
 	writeResult(t, Result{
 		Account: strings.ToUpper(spec.Account), Character: sess.Name, GUID: sess.GUID,
 		Race: spec.Race, Class: spec.Class, Level: spec.Level, Spec: spec.Spec, GM: gm,
 		Learned: spec.Learn, Equipped: spec.Items, Created: !exists,
+		AccountCharacters: accountCharacters,
 	})
 }
 
@@ -278,4 +348,22 @@ func CharacterListOrder(authDB, charDB *sql.DB, account, target string) (names [
 		names = append(names, name)
 	}
 	return names, index, rows.Err()
+}
+
+// dedicatedAccountConflict returns the name of a character on account other than character
+// itself, or "" if account holds no character yet or only character. Used to refuse a dedicated
+// lab account (one coa-client-lab derived, meant to hold exactly one character) that already
+// holds a different one. No *testing.T: covered by an offline test against the same fake
+// sql.DB driver as CharacterListOrder.
+func dedicatedAccountConflict(authDB, charDB *sql.DB, account, character string) (string, error) {
+	names, _, err := CharacterListOrder(authDB, charDB, account, character)
+	if err != nil {
+		return "", err
+	}
+	for _, name := range names {
+		if !strings.EqualFold(name, character) {
+			return name, nil
+		}
+	}
+	return "", nil
 }

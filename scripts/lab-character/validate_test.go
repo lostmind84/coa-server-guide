@@ -35,6 +35,40 @@ func TestValidateClass(t *testing.T) {
 	}
 }
 
+// TestDeriveAccount is pure (no DB) and runs offline: go test -run '^TestDeriveAccount$'
+func TestDeriveAccount(t *testing.T) {
+	cases := []struct {
+		character string
+		want      string
+		wantErr   bool
+	}{
+		{"Dedibot", "COALABDEDIBOT", false}, // 6 + 7 = 13, under MaxAccountLen: not truncated
+		{"Ab", "COALABAB", false},
+		// 6 + 35 letters, truncated to MaxAccountLen (17): "COALAB" + first 11 letters, upper-cased.
+		{"Supercalifragilisticexpialidocious", "COALABSUPERCALIFR", false},
+		{"", "", true},
+	}
+	for _, c := range cases {
+		got, err := DeriveAccount(c.character)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("DeriveAccount(%q): want error, got %q", c.character, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("DeriveAccount(%q): unexpected error: %v", c.character, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("DeriveAccount(%q) = %q, want %q", c.character, got, c.want)
+		}
+		if len(got) > MaxAccountLen {
+			t.Errorf("DeriveAccount(%q) = %q, exceeds MaxAccountLen %d", c.character, got, MaxAccountLen)
+		}
+	}
+}
+
 // --- fake sql/driver for CharacterListOrder, no network/DB needed ---
 
 type fakeDriver struct{ rows map[string][][]driver.Value }
@@ -131,5 +165,52 @@ func TestCharacterListOrder(t *testing.T) {
 	}
 	if missing != -1 {
 		t.Errorf("index for absent character = %d, want -1", missing)
+	}
+}
+
+// TestDedicatedAccountConflict covers the refusal coa-client-lab character applies to a dedicated
+// (derived, not --account) account: empty or single-matching-name accounts are fine, a different
+// name is a conflict. Same fake driver technique as TestCharacterListOrder, distinct registered
+// names so both can run in the same `go test` process.
+func TestDedicatedAccountConflict(t *testing.T) {
+	const accountQuery = `SELECT id FROM account WHERE username=?`
+	const charsQuery = `SELECT c.name FROM characters AS c LEFT JOIN character_ascension_state AS cas ON cas.guid = c.guid WHERE c.account = ? AND c.deleteInfos_Name IS NULL AND (cas.active IS NULL OR cas.active <> 0) ORDER BY COALESCE(c.order, c.guid)`
+
+	cases := []struct {
+		name      string
+		rows      [][]driver.Value
+		character string
+		want      string
+	}{
+		{"empty account: no conflict", nil, "Coalabdedi", ""},
+		{"only the same character (case-insensitive): no conflict",
+			[][]driver.Value{{"Coalabdedi"}}, "coalabdedi", ""},
+		{"a different character already there: conflict",
+			[][]driver.Value{{"Coalabdedi"}, {"Someoneelse"}}, "Coalabdedi", "Someoneelse"},
+	}
+	for i, c := range cases {
+		authName := fmt.Sprintf("labcharacter-fake-conflict-auth-%d", i)
+		charName := fmt.Sprintf("labcharacter-fake-conflict-char-%d", i)
+		sql.Register(authName, fakeDriver{rows: map[string][][]driver.Value{accountQuery: {{int64(9)}}}})
+		sql.Register(charName, fakeDriver{rows: map[string][][]driver.Value{charsQuery: c.rows}})
+
+		authDB, err := sql.Open(authName, "")
+		if err != nil {
+			t.Fatalf("%s: open auth: %v", c.name, err)
+		}
+		charDB, err := sql.Open(charName, "")
+		if err != nil {
+			t.Fatalf("%s: open char: %v", c.name, err)
+		}
+
+		got, err := dedicatedAccountConflict(authDB, charDB, "LABCOALABDEDI", c.character)
+		if err != nil {
+			t.Fatalf("%s: dedicatedAccountConflict: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s: dedicatedAccountConflict = %q, want %q", c.name, got, c.want)
+		}
+		authDB.Close()
+		charDB.Close()
 	}
 }

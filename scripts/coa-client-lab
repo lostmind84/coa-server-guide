@@ -84,11 +84,22 @@ Running (one lab client per instance):
                            CHARACTER, navigates the character list to it before entering the world (falls
                            back to the default highlighted character if the lookup fails) and, on a
                            relay-setup slot, writes the lab descriptor state/lab.json used by relay probes
-  character --slot 2|3 --account A --character C --race R --class K [--level N] [--spec ID] [--gm N]
+  login CHARACTER         same, for a character made by `character` without --account: resolves the
+                           dedicated account and its generated password itself, so there is never a
+                           character list to navigate
+  character --slot 2|3 [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N]
             [--learn ID,ID,...] [--items ID,ID,...]
                            create or update one lab test character through the Ghost e2e harness (slot 1,
                            the user's own server, is refused); an existing character of a different class
-                           is refused, never deleted; class must be a CoA class id (12-32); prints JSON
+                           is refused, never deleted; class must be a CoA class id (12-32); prints JSON.
+                           Without --account, uses a dedicated account for this character alone (COALAB +
+                           the character name, see derive_account), with a generated password saved under
+                           secrets/ and reused on later calls; refuses if that account already holds a
+                           different character. With --account, keeps a shared account as before (bank,
+                           account-bound items, collections, char-select screen) but warns once the
+                           account holds 2+ characters, since `login CHARACTER` alone and character-select
+                           navigation by name cannot pick among them (character-select navigation is
+                           currently disabled; see select_character)
   type TEXT                type text into the client
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
@@ -448,6 +459,45 @@ run_lab_character() {
     return "$status"
 }
 
+# Mirrors DeriveAccount in scripts/lab-character (character_test.go): a dedicated lab account for
+# one character, so `login CHARACTER` never has to pick from a character list. MAX_ACCOUNT_LEN=17
+# is MAX_ACCOUNT_STR (src/server/game/Accounts/AccountMgr.h:34), the length
+# AccountMgr::CreateAccount/ChangeUsername refuse past. LAB_ACCOUNT_PREFIX must match the server
+# repo's CoA.ProbeRelay.AccountPrefix default ("COALAB"; src/server/coa/CoAProbeRelay.cpp), since
+# only an account starting with it can be probed through the relay (docs/design/client-lab-level3.md).
+# Character names are already validated as letters-only (`^[A-Za-z]+$` below), so the derived
+# account is letters-only too.
+LAB_ACCOUNT_PREFIX="COALAB"
+MAX_ACCOUNT_LEN=17
+derive_account() {
+    local character="$1" upper derived
+    upper=$(tr '[:lower:]' '[:upper:]' <<<"$character")
+    derived="${LAB_ACCOUNT_PREFIX}${upper}"
+    echo "${derived:0:$MAX_ACCOUNT_LEN}"
+}
+
+# Path of the generated password for a dedicated lab account (lower-cased, as asked). Never printed;
+# callers read its content directly.
+lab_password_file() {
+    local account="$1" lower
+    lower=$(tr '[:upper:]' '[:lower:]' <<<"$account")
+    echo "$LAB_ROOT/secrets/${lower}.password"
+}
+
+# Generates a random password for a dedicated lab account on first use and reuses it afterwards, so
+# a later `character` or `login` call for the same character gets back the same password. mode 600,
+# never echoed by this function; alnum only (hex) so it types cleanly through xdotool.
+ensure_lab_password() {
+    local account="$1" file
+    file=$(lab_password_file "$account")
+    mkdir -p "$(dirname "$file")"
+    if [[ ! -f "$file" ]]; then
+        ( umask 077 && openssl rand -hex 16 > "$file" )
+    fi
+    chmod 600 "$file"
+    cat "$file"
+}
+
 cmd_character() {
     local slot="" account="" character="" race="" class="" level="0" spec="0" gm="0" learn="" items=""
     while [[ $# -gt 0 ]]; do
@@ -466,9 +516,9 @@ cmd_character() {
         esac
     done
     [[ "$slot" =~ ^[23]$ ]] \
-        || die "usage: coa-client-lab character --slot 2|3 --account A --character C --race R --class K [--level N] [--spec ID] [--gm N] [--learn ID,ID,...] [--items ID,ID,...] (slot 1 is the user's own client/server; refused)"
-    [[ -n "$account" && -n "$character" && -n "$race" && -n "$class" ]] \
-        || die "character needs --account --character --race --class"
+        || die "usage: coa-client-lab character --slot 2|3 [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N] [--learn ID,ID,...] [--items ID,ID,...] (slot 1 is the user's own client/server; refused)"
+    [[ -n "$character" && -n "$race" && -n "$class" ]] \
+        || die "character needs --character --race --class (and --account for a shared account)"
     [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
     [[ "$class" =~ ^[0-9]+$ ]] && ((class >= 12 && class <= 32)) \
         || die "class must be a CoA class id 12-32 (CLASS_BARBARIAN..CLASS_SPIRIT_MAGE), got: $class"
@@ -477,6 +527,19 @@ cmd_character() {
     [[ "$spec" =~ ^[0-9]+$ ]] || die "spec must be a number, got: $spec"
     [[ "$gm" =~ ^[0-9]+$ ]] || die "gm must be a number, got: $gm"
 
+    # Without --account, this character gets its own dedicated account (derive_account), with a
+    # generated, reused password (ensure_lab_password): `login CHARACTER` alone can then resolve
+    # both without ever picking from a character list. With --account, today's behavior is kept
+    # unchanged (DefaultPassword "test" via an empty Password in the request; shared accounts stay
+    # possible for account-wide issues), except that TestLabCharacterApply now reports the account's
+    # full character list so this command can warn when it holds 2+ characters.
+    local dedicated=0 password=""
+    if [[ -z "$account" ]]; then
+        account=$(derive_account "$character")
+        password=$(ensure_lab_password "$account")
+        dedicated=1
+    fi
+
     local ghost_env
     ghost_env=$(coa-slot env "$slot" | sed -n 's/^GHOST_ENV=//p')
     [[ -n "$ghost_env" && -f "$ghost_env" ]] || die "coa-slot env $slot gave no readable GHOST_ENV (coa-slot create $slot first?)"
@@ -484,14 +547,16 @@ cmd_character() {
     local spec_json
     spec_json=$(python3 -c '
 import json, sys
-account, character, race, klass, level, spec, gm, learn, items = sys.argv[1:10]
+account, character, race, klass, level, spec, gm, learn, items, password, dedicated = sys.argv[1:12]
 def ids(s):
     return [int(x) for x in s.split(",") if x.strip()]
 print(json.dumps({
     "account": account, "character": character, "race": int(race), "class": int(klass),
     "level": int(level), "spec": int(spec), "gm": int(gm), "learn": ids(learn), "items": ids(items),
+    "password": password, "dedicated": dedicated == "1",
 }))
-' "$account" "$character" "$race" "$class" "$level" "$spec" "$gm" "$learn" "$items") || die "could not build the character request"
+' "$account" "$character" "$race" "$class" "$level" "$spec" "$gm" "$learn" "$items" "$password" "$dedicated") \
+        || die "could not build the character request"
 
     local out status=0
     out=$(mktemp)
@@ -503,6 +568,21 @@ print(json.dumps({
         die "character setup failed (go test output above)"
     fi
     cat "$out"
+    if [[ "$dedicated" == 0 ]]; then
+        local others
+        others=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(len(d.get("account_characters", [])))
+' "$out" 2>/dev/null) || others=0
+        if [[ "${others:-0}" -ge 2 ]]; then
+            echo "WARN: account $account now holds $others characters; coa-client-lab login cannot" \
+                "pick among them by name (character-select navigation by name is disabled), so" \
+                "\`login $account PASSWORD\` lands on whichever one the client already has" \
+                "highlighted. Give $character its own dedicated account (omit --account) if it" \
+                "needs to be logged into by name." >&2
+        fi
+    fi
     rm -f "$out"
 }
 
@@ -557,7 +637,23 @@ select_character() {
 # Sequence and delays from the spike findings (Q2). The account field sits at x = width / 2,
 # y = 315 / 600 of the height; `Return` on the character list works only once the list is loaded.
 cmd_login() {
-    [[ $# -eq 2 || $# -eq 3 ]] || die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER]"
+    local account="" password="" character=""
+    if [[ $# -eq 1 ]]; then
+        # Dedicated-account form: resolve the account and its generated password the same way
+        # `character` derived and stored them, so this character never needs a character list.
+        character="$1"
+        [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
+        account=$(derive_account "$character")
+        local pwfile
+        pwfile=$(lab_password_file "$account")
+        [[ -f "$pwfile" ]] \
+            || die "no dedicated lab account for $character (run: coa-client-lab character --character $character --race R --class K ... without --account first)"
+        password=$(cat "$pwfile")
+    elif [[ $# -eq 2 || $# -eq 3 ]]; then
+        account="$1"; password="$2"; character="${3:-}"
+    else
+        die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER] | login CHARACTER (dedicated account made by 'character' without --account)"
+    fi
     require_running
     # A dismiss Return is only sent when THIS lab session already attempted a login (state/account exists
     # from a previous cmd_login call since the last `start`): only then can a leftover "disconnected" or
@@ -568,8 +664,8 @@ cmd_login() {
     # after a login attempt, never on a screen nothing has touched yet.
     local had_prior_attempt=0
     [[ -f "$STATE_DIR/account" ]] && had_prior_attempt=1
-    echo "$1" > "$STATE_DIR/account"
-    local account="$1" password="$2" character="${3:-}" backspaces geometry
+    echo "$account" > "$STATE_DIR/account"
+    local backspaces geometry
     backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
     eval "$geometry"

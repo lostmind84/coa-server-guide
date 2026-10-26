@@ -67,10 +67,12 @@ spell itself, checking both the server's aura list and the one the client receiv
 client is slower, blind and fails silently: use it only for a last tweak.
 
 For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
-`coa-client-lab character --slot N --account A --character C --race R --class K [--level N] [--spec ID]
+`coa-client-lab character --slot N --character C --race R --class K [--level N] [--spec ID]
 [--learn ID,ID,...] [--items ID,ID,...]` (guide README, "Client lab for agents"). It refuses slot 1 and refuses
-to silently change an existing character's class; then log in with `coa-client-lab login <account> <password>
-<character>`, which also selects that character on the character-select screen.
+to silently change an existing character's class; by default it makes a dedicated account for C alone, so
+`coa-client-lab login C` logs straight into it. Pass `--account A` instead only when the check is itself about
+a shared account (bank, account-bound items, char-select screen) or needs a second character alongside it on
+the same account.
 
 Split the work:
 
@@ -89,10 +91,11 @@ folder.
 
 ## 4. Observe
 
-1. `coa-client-lab start N`, then `coa-client-lab login <account> <password>` (about 90 s). On a slot prepared with
-   `coa-client-lab relay-setup N` (guide README, "Headless lab with relay probes"), prefer
-   `COA_LAB_PROFILE=minimal coa-client-lab start N` and `coa-client-lab login <account> <password> <character>`:
-   read-only probes then go through the server relay in a fraction of a second, without `/reload`.
+1. `coa-client-lab start N`, then `coa-client-lab login <character>` (about 90 s) for a character made with
+   `character`'s default dedicated account, or `coa-client-lab login <account> <password> [<character>]` for a
+   shared one. On a slot prepared with `coa-client-lab relay-setup N` (guide README, "Headless lab with relay
+   probes"), prefer `COA_LAB_PROFILE=minimal coa-client-lab start N`: with CHARACTER given either way, read-only
+   probes then go through the server relay in a fraction of a second, without `/reload`.
 2. Drive the client with `chat` (slash and GM commands), `key`, `hold KEY MS` (walk with `w`/`s`, turn with
    `Left`/`Right`) and `screenshot`. Typed text must not contain `|`.
 3. **Read what the screen forgets.** `coa-client-lab probe log [n]` returns the addon's capture of UI errors
