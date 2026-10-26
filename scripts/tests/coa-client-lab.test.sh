@@ -818,6 +818,15 @@ else
 fi
 assert_contains "character slot-1 refusal message" "$WORK/out" "slot 1 is the user's own"
 
+run_lab character --slot 4 --account A --character C --race 1 --class 99 || true
+assert_contains "character accepts slot 4 past the slot check" "$WORK/out" "CoA class id 12-32"
+if run_lab character --slot x --account A --character C --race 1 --class 23; then
+    fail "character refuses a non-numeric slot"
+else
+    pass "character refuses a non-numeric slot"
+fi
+assert_contains "character non-numeric slot message" "$WORK/out" "character --slot N"
+
 for bad_class in 0 1 11 33 999; do
     if run_lab character --slot 2 --account A --character C --race 1 --class "$bad_class"; then
         fail "character refuses class $bad_class"

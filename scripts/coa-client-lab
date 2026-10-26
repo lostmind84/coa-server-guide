@@ -87,7 +87,7 @@ Running (one lab client per instance):
   login CHARACTER         same, for a character made by `character` without --account: resolves the
                            dedicated account and its generated password itself, so there is never a
                            character list to navigate
-  character --slot 2|3 [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N]
+  character --slot N [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N]
             [--learn ID,ID,...] [--items ID,ID,...]
                            create or update one lab test character through the Ghost e2e harness (slot 1,
                            the user's own server, is refused); an existing character of a different class
@@ -313,7 +313,7 @@ require_running() {
 
 cmd_start() {
     local n="${1:-}" auth pid display window waited
-    [[ "$n" =~ ^[1234]$ ]] || die "usage: coa-client-lab start N (slot 1, 2, 3 or 4)"
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab start N (a coa-slot slot number)"
     [[ "$PROFILE" == readable || "$PROFILE" == minimal ]] || die "COA_LAB_PROFILE must be readable or minimal"
     [[ "$DISPLAY_MODE" == nested || "$DISPLAY_MODE" == headless ]] || die "COA_LAB_DISPLAY must be nested or headless"
     [[ "$WIDTH$HEIGHT$FPS" =~ ^[0-9]+$ ]] || die "COA_LAB_WIDTH, COA_LAB_HEIGHT and COA_LAB_FPS must be numbers"
@@ -515,8 +515,8 @@ cmd_character() {
             *) die "unknown character argument: $1" ;;
         esac
     done
-    [[ "$slot" =~ ^[23]$ ]] \
-        || die "usage: coa-client-lab character --slot 2|3 [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N] [--learn ID,ID,...] [--items ID,ID,...] (slot 1 is the user's own client/server; refused)"
+    [[ "$slot" =~ ^[1-9][0-9]*$ && "$slot" != 1 ]] \
+        || die "usage: coa-client-lab character --slot N [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N] [--learn ID,ID,...] [--items ID,ID,...] (slot 1 is the user's own client/server; refused)"
     [[ -n "$character" && -n "$race" && -n "$class" ]] \
         || die "character needs --character --race --class (and --account for a shared account)"
     [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
@@ -879,7 +879,7 @@ cmd_stop() {
 
 cmd_preflight() {
     local n="${1:-}" status=0
-    [[ "$n" =~ ^[1234]$ ]] || die "usage: coa-client-lab preflight N"
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab preflight N"
     shift
     mkdir -p "$STATE_DIR"
     coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@" || status=$?
@@ -893,7 +893,7 @@ cmd_preflight() {
 
 cmd_relay_setup() {
     local n="${1:-}" account="" password_file="" etc
-    [[ "$n" =~ ^[1234]$ ]] || die "usage: coa-client-lab relay-setup N --soap-account NAME --soap-password-file PATH"
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab relay-setup N --soap-account NAME --soap-password-file PATH"
     shift
     while [[ $# -gt 0 ]]; do
         case "$1" in
