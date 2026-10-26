@@ -413,6 +413,7 @@ check("relay ping target", sent[1].target, "Coalabone")
 check("relay ping req", decodeField(joined(sent), "req"), "q1")
 contains("relay ping pong", joined(sent), '"pong":true')
 check("relay ping loadId", decodeField(joined(sent), "loadId"), "load-1")
+check("relay ping names the character", decodeField(joined(sent), "character"), "Coalabone")
 
 sent = {}
 local longApi = relayApi(sent)
@@ -543,11 +544,12 @@ local installedHandler
 geterrorhandler = function() return installedHandler end
 seterrorhandler = function(h) installedHandler = h end
 time = function() return 4242 end
+GetTime = function() return 1234.5678 end
 SlashCmdList = {}
 dofile(root .. "/CoaProbe.lua")
 check("addon registers CHAT_MSG_ADDON", events.CHAT_MSG_ADDON, true)
 check("addon installs error capture", installedHandler, Errors.handler)
-contains("addon load id uses time", CoaProbe.loadId, "4242-")
+contains("addon load id uses time", CoaProbe.loadId, "4242-1234567-")
 local routed
 local originalOnAddon = Relay.onAddonMessage
 Relay.onAddonMessage = function(api, ...) routed = { ... } end

@@ -60,10 +60,11 @@ function Relay.onAddonMessage(api, prefix, message, channel, sender)
         answer = { req = req, command = command, error = "not read-only over the relay" }
     end
     answer.loadId = CoaProbe.loadId
+    answer.character = me
     local parts = Relay.chunks(wireJson(answer), Relay.CHUNK)
     if #parts > Relay.MAX_CHUNKS then
         parts = Relay.chunks(wireJson({ req = req, command = command, error = "answer too large",
-            loadId = CoaProbe.loadId }), Relay.CHUNK)
+            loadId = CoaProbe.loadId, character = me }), Relay.CHUNK)
     end
     for index, part in ipairs(parts) do
         api.SendAddonMessage(Relay.PREFIX, "R:" .. req .. ":" .. index .. ":" .. #parts .. ":" .. part, "WHISPER", me)

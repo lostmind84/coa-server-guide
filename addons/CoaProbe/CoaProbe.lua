@@ -3,8 +3,13 @@
 -- Relay requests (addon whispers from the server, Relay.lua) answer without /reload.
 CoaProbe = CoaProbe or {}
 
--- Changes on every UI load: answers carrying the same loadId prove no /reload happened between them.
-CoaProbe.loadId = tostring(type(time) == "function" and time() or 0) .. "-" .. tostring(math.random(100000, 999999))
+-- Changes on every UI load: answers carrying the same loadId prove no /reload happened between them. math.random
+-- repeats across client processes (seen live), so the millisecond clock of GetTime() keeps instances apart.
+CoaProbe.loadId = table.concat({
+    tostring(type(time) == "function" and time() or 0),
+    tostring(type(GetTime) == "function" and math.floor(GetTime() * 1000) or 0),
+    tostring(math.random(100000, 999999)),
+}, "-")
 
 local MAX_ANSWERS = 50
 
