@@ -28,6 +28,10 @@ export COA_LAB_SLEEP=true
 export FAKE_LOG="$WORK/fake.log"
 export FAKE_ETC="$WORK/etc"
 export FAKE_SLOT_STATE="$WORK/slot-state"
+export FAKE_GHOST_ENV="$WORK/ghost.env"
+export COA_GHOST_REPO="$WORK/fake-ghost-repo"
+mkdir -p "$COA_GHOST_REPO"
+: > "$COA_GHOST_REPO/go.mod"
 
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
@@ -108,8 +112,29 @@ EOF
     cat > "$WORK/bin/coa-slot" <<'EOF'
 #!/usr/bin/env bash
 printf 'coa-slot %s\n' "$*" >> "$FAKE_LOG"
-[[ "$1" == env ]] && printf 'SLOT=%s\nAUTH_ADDR=127.0.0.1:3924\nETC=%s\nSTATE_FILE=%s\n' "$2" "$FAKE_ETC" "$FAKE_SLOT_STATE"
+[[ "$1" == env ]] && printf 'SLOT=%s\nAUTH_ADDR=127.0.0.1:3924\nETC=%s\nSTATE_FILE=%s\nGHOST_ENV=%s\n' \
+    "$2" "$FAKE_ETC" "$FAKE_SLOT_STATE" "$FAKE_GHOST_ENV"
 [[ "$1" == preflight && "${FAKE_PREFLIGHT_FAIL:-}" == 1 ]] && exit 1
+exit 0
+EOF
+    : > "$FAKE_GHOST_ENV"
+    # Fake `go`, standing in for the Ghost-harness-backed lab-character Go module: logs the full
+    # invocation (so tests can assert the generated `go test -run ... .` command line) and answers
+    # TestLabCharacterApply/TestLabCharacterIndex from FAKE_GO_* controls instead of touching a DB.
+    cat > "$WORK/bin/go" <<'EOF'
+#!/usr/bin/env bash
+printf 'go %s SPEC=%s ACCOUNT=%s NAME=%s\n' "$*" "${COA_LAB_CHARACTER_SPEC:-}" \
+    "${COA_LAB_CHARACTER_ACCOUNT:-}" "${COA_LAB_CHARACTER_NAME:-}" >> "$FAKE_LOG"
+case "$*" in
+    *TestLabCharacterApply*)
+        [[ "${FAKE_GO_APPLY_FAIL:-}" == 1 ]] && { echo "fake go: apply refused" >&2; exit 1; }
+        printf '%s\n' "${FAKE_GO_APPLY_OUT:-{\}}" > "$COA_LAB_CHARACTER_OUT"
+        ;;
+    *TestLabCharacterIndex*)
+        [[ "${FAKE_GO_INDEX_FAIL:-}" == 1 ]] && { echo "fake go: index lookup failed" >&2; exit 1; }
+        printf '%s\n' "${FAKE_GO_INDEX_OUT:-{\"found\": false\}}" > "$COA_LAB_CHARACTER_OUT"
+        ;;
+esac
 exit 0
 EOF
     # Answers `list sink-inputs` with two sink inputs: #50 carries the pid of the fake lab client's own
@@ -289,15 +314,30 @@ run_lab login labspike secretpw
 assert_contains "login clicks the account field" "$FAKE_LOG" "mousemove --window 4242 640 378 click 1"
 assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 60 labspike"
 assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 60 secretpw"
-# Two Returns reach the world (submit the password, then enter the world); the sound CVars typed afterwards add
-# their own Returns, so count only what happens before the first /console line.
-# Two Returns reach the world (submit the password, then enter the world). The sound CVars typed afterwards each
-# open the chat with a Return of their own, so stop counting at the first /console line and drop the Return that
-# opened it.
-assert_eq "login enters world twice Return" \
+# Two Returns reach the world (submit the password, then enter the world) on the FIRST login of a lab
+# session: no dismiss Return yet, since nothing can have left a leftover dialog before any login was
+# attempted (confirmed live on slot 2, 2026-10-26: an unconditional dismiss Return on an untouched login
+# screen corrupted the account field instead of closing a dialog that was never there). The sound CVars
+# typed afterwards each open the chat with a Return of their own, so stop counting at the first /console
+# line and drop the Return that opened it.
+assert_eq "login's first attempt sends two Returns (submit, enter world), no dismiss yet" \
     "$(awk '/--delay 40 \/console/ { print n - 1; found = 1; exit } /key --window 4242 Return$/ { n++ } END { if (!found) print n + 0 }' "$FAKE_LOG")" "2"
 assert_contains "login silences the client" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_EnableAllSound 0"
 assert_contains "login zeroes the master volume" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_MasterVolume 0"
+
+# A SECOND login in the same lab session (state/account already exists from the one above) does send the
+# dismiss Return, before the account field is clicked: only now could a leftover dialog exist.
+: > "$FAKE_LOG"
+run_lab login labspike secretpw
+assert_eq "login's second attempt sends three Returns (dismiss, submit, enter world)" \
+    "$(awk '/--delay 40 \/console/ { print n - 1; found = 1; exit } /key --window 4242 Return$/ { n++ } END { if (!found) print n + 0 }' "$FAKE_LOG")" "3"
+dismiss_line=$(awk '/key --window 4242 Return$/ { print NR; exit }' "$FAKE_LOG")
+click_line=$(awk '/mousemove --window 4242 640 378 click 1/ { print NR; exit }' "$FAKE_LOG")
+if [[ -n "$dismiss_line" && -n "$click_line" && "$dismiss_line" -lt "$click_line" ]]; then
+    pass "login's modal-dismiss Return happens before the account field click"
+else
+    fail "login's modal-dismiss Return happens before the account field click: dismiss=$dismiss_line click=$click_line"
+fi
 
 run_lab screenshot "$WORK/shot.png"
 assert_eq "screenshot prints path" "$(cat "$WORK/out")" "$WORK/shot.png"
@@ -609,7 +649,8 @@ assert_file "descriptor written" "$lab_json"
 assert_eq "descriptor mode 600" "$(stat -c %a "$lab_json")" "600"
 for key in '"instance": ""' '"slot": 3' '"soap_url": "http://127.0.0.1:8078/"' '"soap_account": "COALABSOAP"' \
     "\"soap_password_file\": \"$WORK/soap.password\"" '"account": "COALAB1"' '"character": "Coalabone"' \
-    '"deployed_commit": "0123456789abcdef"' '"preflight": "pass"'; do
+    '"deployed_commit": "0123456789abcdef"' '"preflight": "pass"' \
+    "\"client_dir\": \"$COA_LAB_ROOT/ascension-lab\"" "\"worldserver_conf\": \"$FAKE_ETC/worldserver.conf\""; do
     assert_contains "descriptor has $key" "$lab_json" "$key"
 done
 : > "$FAKE_LOG"
@@ -767,6 +808,172 @@ fi
 assert_contains "instance alias message" "$WORK/out" "aliases the user's path"
 assert_file "aliased user prefix untouched" "$COA_LAB_PREFIX-1/user-data"
 rm -rf "$COA_LAB_PREFIX-1"
+
+# --- character: argument validation, slot-1 refusal, class refusal, the generated request ---
+
+if run_lab character --slot 1 --account A --character C --race 1 --class 23; then
+    fail "character refuses slot 1"
+else
+    pass "character refuses slot 1"
+fi
+assert_contains "character slot-1 refusal message" "$WORK/out" "slot 1 is the user's own"
+
+run_lab character --slot 4 --account A --character C --race 1 --class 99 || true
+assert_contains "character accepts slot 4 past the slot check" "$WORK/out" "CoA class id 12-32"
+if run_lab character --slot x --account A --character C --race 1 --class 23; then
+    fail "character refuses a non-numeric slot"
+else
+    pass "character refuses a non-numeric slot"
+fi
+assert_contains "character non-numeric slot message" "$WORK/out" "character --slot N"
+
+for bad_class in 0 1 11 33 999; do
+    if run_lab character --slot 2 --account A --character C --race 1 --class "$bad_class"; then
+        fail "character refuses class $bad_class"
+    else
+        pass "character refuses class $bad_class"
+    fi
+    assert_contains "character class $bad_class refusal message" "$WORK/out" "CoA class id 12-32"
+done
+
+if run_lab character --slot 2 --account A --class 23; then
+    fail "character requires --character"
+else
+    pass "character requires --character"
+fi
+
+if run_lab character --slot 2 --account A --character 'Bad Name' --race 1 --class 23; then
+    fail "character refuses a non-letters name"
+else
+    pass "character refuses a non-letters name"
+fi
+
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "COALAB1", "character": "Coalabnecro", "class": 23, "created": true}' \
+    run_lab character --slot 2 --account coalab1 --character Coalabnecro --race 5 --class 23 \
+        --level 20 --learn 704723,704724 --items 9701803
+assert_eq "character (valid request) exits 0" "$?" "0"
+assert_contains "character runs go test for TestLabCharacterApply" "$FAKE_LOG" "go test -run ^TestLabCharacterApply\$ -v ."
+assert_contains "character request has the account" "$FAKE_LOG" '"account": "coalab1"'
+assert_contains "character request has the character name" "$FAKE_LOG" '"character": "Coalabnecro"'
+assert_contains "character request has the class" "$FAKE_LOG" '"class": 23'
+assert_contains "character request has the level" "$FAKE_LOG" '"level": 20'
+assert_contains "character request has the learn list" "$FAKE_LOG" '"learn": [704723, 704724]'
+assert_contains "character request has the items list" "$FAKE_LOG" '"items": [9701803]'
+assert_contains "character prints the Go module's JSON result" "$WORK/out" '"created": true'
+
+: > "$FAKE_LOG"
+if FAKE_GO_APPLY_FAIL=1 run_lab character --slot 2 --account coalab1 --character Coalabnecro --race 5 --class 24; then
+    fail "character surfaces a refused class change"
+else
+    pass "character surfaces a refused class change"
+fi
+assert_contains "character failure message" "$WORK/out" "character setup failed"
+
+# --- character without --account: derives a dedicated account, generates and reuses a password,
+#     passes it and dedicated=true through the request, and warns only on the --account path ---
+
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "COALABDEDIBOT", "character": "Dedibot", "class": 23, "created": true, "account_characters": ["Dedibot"]}' \
+    run_lab character --slot 2 --character Dedibot --race 5 --class 23
+assert_eq "character without --account exits 0" "$?" "0"
+assert_contains "derived account: prefix + upper-cased name" "$FAKE_LOG" '"account": "COALABDEDIBOT"'
+assert_contains "derived account request is marked dedicated" "$FAKE_LOG" '"dedicated": true'
+assert_not_contains "character without --account does not warn (account_characters has 1 entry)" \
+    "$WORK/out" "coa-client-lab login cannot"
+pwfile="$COA_LAB_ROOT/secrets/coalabdedibot.password"
+assert_file "dedicated account password file created" "$pwfile"
+assert_eq "dedicated account password file is mode 600" "$(stat -c %a "$pwfile")" "600"
+password1=$(cat "$pwfile")
+[[ -n "$password1" ]] && pass "dedicated account password file is non-empty" || fail "dedicated account password file is empty"
+assert_contains "generated password sent in the request" "$FAKE_LOG" "\"password\": \"$password1\""
+
+# Truncation: LabAccountPrefix (3) + the character name, upper-cased, cut to MaxAccountLen (17):
+# see DeriveAccount in scripts/lab-character/character_test.go (MAX_ACCOUNT_STR,
+# src/server/game/Accounts/AccountMgr.h:34).
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "COALABSUPERCALIFR", "character": "Supercalifragilisticexpialidocious", "class": 23, "created": true, "account_characters": ["Supercalifragilisticexpialidocious"]}' \
+    run_lab character --slot 2 --character Supercalifragilisticexpialidocious --race 5 --class 23
+assert_eq "character with a long name exits 0" "$?" "0"
+assert_contains "derived account is truncated to 17 characters" "$FAKE_LOG" '"account": "COALABSUPERCALIFR"'
+
+# A second call for the same character reuses the same password instead of generating a new one.
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "COALABDEDIBOT", "character": "Dedibot", "class": 23, "created": false, "account_characters": ["Dedibot"]}' \
+    run_lab character --slot 2 --character Dedibot --race 5 --class 23 --level 5
+assert_eq "second call for the same character exits 0" "$?" "0"
+assert_eq "dedicated account password file is reused, not regenerated" "$(cat "$pwfile")" "$password1"
+assert_contains "second call sends the same reused password" "$FAKE_LOG" "\"password\": \"$password1\""
+
+# With an explicit --account, today's behavior is kept: empty password (e2eharness.DefaultPassword
+# applies), dedicated=false, and a warning once the account's final character count is 2+ (the Go
+# module reports this; the fake stands in for its account_characters field).
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "Second", "class": 23, "created": true, "account_characters": ["First", "Second"]}' \
+    run_lab character --slot 2 --account shared1 --character Second --race 5 --class 23
+assert_eq "character with explicit --account exits 0" "$?" "0"
+assert_contains "explicit --account request has no password override" "$FAKE_LOG" '"password": ""'
+assert_contains "explicit --account request is not dedicated" "$FAKE_LOG" '"dedicated": false'
+assert_contains "explicit --account warns once the account holds 2+ characters" "$WORK/out" \
+    "account shared1 now holds 2 characters"
+assert_absent "explicit --account does not create a secrets file" "$COA_LAB_ROOT/secrets/shared1.password"
+
+: > "$FAKE_LOG"
+FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "First", "class": 23, "created": true, "account_characters": ["First"]}' \
+    run_lab character --slot 2 --account shared1 --character First --race 5 --class 23
+assert_not_contains "explicit --account with 1 character does not warn" "$WORK/out" "coa-client-lab login cannot"
+
+# --- login: character-select lookup (navigation itself is disabled; see select_character's comment:
+#     live on slot 2 the character list wraps circularly instead of clamping at the top, so a fixed
+#     Up-then-Down sequence is not reliable and was found live to pick the WRONG character once) ---
+
+run_lab start 3
+
+: > "$FAKE_LOG"
+FAKE_GO_INDEX_OUT='{"found": true, "index": 2}' run_lab login coalab1 secretpw Coalabnecro
+assert_eq "login with a found character exits 0" "$?" "0"
+assert_not_contains "login does not navigate (disabled: wraps on the real client)" "$FAKE_LOG" "key --window 4242 Up"
+assert_not_contains "login does not send Down either" "$FAKE_LOG" "key --window 4242 Down"
+assert_contains "login reports the found index instead of acting on it" "$WORK/out" \
+    "Coalabnecro is at character-list index 2"
+
+: > "$FAKE_LOG"
+FAKE_GO_INDEX_FAIL=1 run_lab login coalab1 secretpw Coalabnecro
+assert_eq "login still exits 0 when the index lookup fails" "$?" "0"
+assert_contains "login warns and falls back to the default highlight" "$WORK/out" \
+    "could not find Coalabnecro in coalab1's character list"
+
+: > "$FAKE_LOG"
+run_lab login coalab1 secretpw
+assert_not_contains "login without CHARACTER never looks up or navigates" "$FAKE_LOG" "key --window 4242 Up"
+
+# --- login CHARACTER: the dedicated-account form, resolving account and password the same way
+#     `character` derived and stored them (password1/pwfile from the character tests above) ---
+
+: > "$FAKE_LOG"
+run_lab login Dedibot
+assert_eq "login CHARACTER (dedicated account) exits 0" "$?" "0"
+assert_contains "login CHARACTER types the derived account" "$FAKE_LOG" "type --window 4242 --delay 60 COALABDEDIBOT"
+assert_contains "login CHARACTER types the stored password" "$FAKE_LOG" "type --window 4242 --delay 60 $password1"
+
+if run_lab login Nodedicatedaccount; then
+    fail "login CHARACTER refuses when no dedicated account exists"
+else
+    pass "login CHARACTER refuses when no dedicated account exists"
+fi
+assert_contains "login CHARACTER refusal names the missing account" "$WORK/out" "no dedicated lab account for Nodedicatedaccount"
+
+if run_lab login 'Bad Name'; then
+    fail "login CHARACTER refuses a non-letters name"
+else
+    pass "login CHARACTER refuses a non-letters name"
+fi
+
+if run_lab login one two three four; then
+    fail "login refuses more than 3 arguments"
+else
+    pass "login refuses more than 3 arguments"
+fi
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

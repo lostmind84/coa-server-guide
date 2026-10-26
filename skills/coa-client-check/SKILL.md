@@ -51,10 +51,12 @@ what will be observed, with which probe, and which result means the issue is rep
 If the issue cannot be turned into an expectation (no spell id, no reproduction path, a symptom nobody can see
 twice), ask the question in the issue and stop with **inconclusive**.
 
-What the tools cannot observe today: Lua error text (the client's own error reporter keeps the handler; a Lua
-error shows only as the system line `UI Error: an interface error occured` in `probe log`), action-bar contents,
-3D models, animations, anything purely visual. That is different from the red on-screen UI errors, which
-`probe log` does capture (section 4 below). Pure visuals are judged from screenshots and marked "visual, needs
+`probe errors [N] [previous] [locals]` reads the client's own `ERROR_HANDLER_DATABASE` directly (no handler
+install) and returns the Lua error text and stack, not just the system line `probe log` already captures; a
+`/reload` empties the table, so read `previous` for the errors seen just before the last world entry. Still
+cannot observe: action-bar contents, 3D models, animations, anything purely visual. That is different from
+the red on-screen UI errors, which `probe log` does capture (section 4 below). Pure visuals are judged from
+screenshots and marked "visual, needs
 user confirmation"; the rest is **inconclusive** with the missing capability named.
 
 ## 3. Setup and action: Ghost first
@@ -63,6 +65,14 @@ The Ghost e2e harness builds a character in seconds (race and class at login, `S
 through `.localspec`, `Learn`, `AddItem`/`EquipEntry`, `Teleport`, `Spawn` for a fixture target) and can cast the
 spell itself, checking both the server's aura list and the one the client receives. Typing GM commands into the lab
 client is slower, blind and fails silently: use it only for a last tweak.
+
+For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
+`coa-client-lab character --slot N --character C --race R --class K [--level N] [--spec ID]
+[--learn ID,ID,...] [--items ID,ID,...]` (guide README, "Client lab for agents"). It refuses slot 1 and refuses
+to silently change an existing character's class; by default it makes a dedicated account for C alone, so
+`coa-client-lab login C` logs straight into it. Pass `--account A` instead only when the check is itself about
+a shared account (bank, account-bound items, char-select screen) or needs a second character alongside it on
+the same account.
 
 Split the work:
 
@@ -81,10 +91,11 @@ folder.
 
 ## 4. Observe
 
-1. `coa-client-lab start N`, then `coa-client-lab login <account> <password>` (about 90 s). On a slot prepared with
-   `coa-client-lab relay-setup N` (guide README, "Headless lab with relay probes"), prefer
-   `COA_LAB_PROFILE=minimal coa-client-lab start N` and `coa-client-lab login <account> <password> <character>`:
-   read-only probes then go through the server relay in a fraction of a second, without `/reload`.
+1. `coa-client-lab start N`, then `coa-client-lab login <character>` (about 90 s) for a character made with
+   `character`'s default dedicated account, or `coa-client-lab login <account> <password> [<character>]` for a
+   shared one. On a slot prepared with `coa-client-lab relay-setup N` (guide README, "Headless lab with relay
+   probes"), prefer `COA_LAB_PROFILE=minimal coa-client-lab start N`: with CHARACTER given either way, read-only
+   probes then go through the server relay in a fraction of a second, without `/reload`.
 2. Drive the client with `chat` (slash and GM commands), `key`, `hold KEY MS` (walk with `w`/`s`, turn with
    `Left`/`Right`) and `screenshot`. Typed text must not contain `|`.
 3. **Read what the screen forgets.** `coa-client-lab probe log [n]` returns the addon's capture of UI errors
@@ -102,6 +113,13 @@ folder.
    reports mana, rage, focus, energy and runic power); `.gps` prints the position into the captured system
    messages; `.go xyz X Y Z MAP O` takes the facing as its fifth number, which answers "Target needs to be in
    front of you".
+7. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
+   (guide, part 2) reads the lab client's own process memory (object manager, unit/aura data, loaded
+   `Spell.dbc` row) independently of the addon API, so it can show that the engine disagrees with
+   `probe state`/`probe auras` themselves. `scripts/coa-lab-packets` reads the worldserver's packet log to
+   show what the server actually sent. Both are read-only, lab-only, and need a slot with
+   `Warden.Enabled = 0`; neither substitutes for a Ghost scenario or for `probe state`/`probe auras`, and
+   both are a last resort when the display and the Lua view already disagree and the cause matters.
 
 ## Getting the state you need, shortest route first
 

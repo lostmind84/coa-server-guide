@@ -1,0 +1,779 @@
+#!/usr/bin/env python3
+"""Read-only external memory reader for the lab Ascension.exe client: object manager, unit/player state and
+auras, as the client holds them in its own process memory, to compare against the Lua view (`coa-client-lab
+probe state/auras`) and the server database. Python 3 standard library only, `process_vm_readv` (or a
+read-only `/proc/<pid>/mem` open) for every read; no write syscall, no ptrace attach, no injection.
+
+    coa-lab-mem check                        guards, build identity, object manager, active player GUID
+    coa-lab-mem player                       active player: guid, name, health, powers, target, auras
+    coa-lab-mem unit player|target|0x<guid>  one object by role or raw GUID
+    coa-lab-mem objects                      guid, type, entry, name for every object in the object manager
+    coa-lab-mem spell-db                     g_spellDB summary: record count, min/max spell id
+    coa-lab-mem spell ID                     the client's loaded Spell.dbc row for ID, or "not loaded"
+
+Global options: --pid (override discovery, still guarded), --instance (or COA_LAB_INSTANCE; state directory
+layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
+
+Guards enforced before any read (refused with a plain error otherwise):
+  1. the target pid maps an `Ascension.exe` under `$COA_LAB_ROOT` (never the user's own client);
+  2. the lab lock names a slot, and that slot is not 1;
+  3. that slot's `~/CoaServer/slots/s<N>/etc/worldserver.conf` has `Warden.Enabled = 0`.
+
+Offsets come from `research/wowdecomp-offsets.md` (wowdecomp decompilation, no license: addresses and
+layouts only, no copied code) and from this tool's own empirical calibration against the live lab process
+(image base, TLS index/slot, object manager, unit/aura/name-cache layout). Every field in the JSON output
+carries `"validated": true|false`: `true` means this session matched it against an independent known value
+(server database GUID, `probe state`/`probe auras` health/powers/aura ids, a `/target` GUID, a creature-cache
+name); `false` means the offset is from the decompilation or from structural inference only, never confirmed
+live, and the value should be treated as a hypothesis.
+
+`g_spellDB` (client Spell.dbc, `WowClientDB_RLE<SpellRec>`) layout: `research/wowdecomp-offsets.md` §5 gives
+the base-class field order (`m_numRecords`/`m_maxID`/`m_minID`/`m_strings` at +0x08/+0x0C/+0x10/+0x14,
+`m_recordsById` at +0x20) and names three consecutive decoded string pointers on `SpellRec`
+(`m_name`@0x220, `m_nameSubtext`@0x224, `m_description`@0x228), but does not state the lookup-index
+convention or a tooltip field. Calibrated live this session against the server's own `Spell.dbc` (read
+directly, independent of the DBC inspector) and `coa-client-lab probe spell`:
+  - `m_recordsById[id - m_minID]` is the correct lookup (not `m_recordsById[id]`): with `m_minID == 1`,
+    looking up id 1459 at a plain `id` index returned the record for spell **1460** (name "Arcane
+    Intellect" / rank "Rank 2"); at `id - m_minID` it correctly returned 1459's own record (rank "Rank 1"),
+    confirmed again on 501281 and 501220. `rec+0x00` (`SpellRec::m_id`) then reads back the requested id.
+  - Every raw numeric field that precedes the first string in the **file** layout (file offset < 544, e.g.
+    `SpellIconID`@532, `DurationIndex`@160, `PowerType`@164, `ManaCost`@168, `RangeIndex`@184) sits at the
+    *same* byte offset in the decoded in-memory record, since nothing of different size precedes it in
+    either layout. Verified live: icon/duration/power type/mana cost/range index all matched the file for
+    1459, 501281 and 501220 at their unchanged file offsets.
+  - A field that follows the strings in the file layout does not keep its file offset in memory, because
+    the decoded record shrinks each string field from 16 locale copies + a flag (17 x 4 = 68 bytes) down to
+    one resolved pointer (4 bytes): 4 string fields x (68 - 4) = 256 bytes saved. `SchoolMask` (file offset
+    900) was found at the predicted `900 - 256 = 644` (`0x284`) by scanning for the one offset whose u32
+    value matched `SchoolMask` for all three calibration spells at once; no other offset in the scanned
+    range matched for all three.
+  - `m_description` is followed immediately by a 4th pointer, `m_tooltip`, at `+0x22C` (not named in the
+    decompilation excerpt, but 4 bytes after `m_description` by the same one-pointer-per-string-field
+    pattern as `m_name`->`m_nameSubtext`->`m_description`). Live `m_tooltip` text matched the file's
+    `ToolTip[enUS]` exactly for 1459 (non-empty) and was correctly empty for 501281/501220 (whose file
+    tooltip column is also empty; their `probe spell` tooltip body is instead the resolved `Description`).
+Every `spell`/`spell-db` numeric/string field is marked `"validated": true` only for the fields and offsets
+listed above; untouched columns (the other ~225 of 234) are not read.
+"""
+import argparse
+import ctypes
+import json
+import os
+import re
+import struct
+import sys
+from pathlib import Path
+
+LIBC = ctypes.CDLL("libc.so.6", use_errno=True)
+
+IMAGE_BASE = 0x00400000
+BUILD_STRING = b"WoW [Release] Build 12340"
+BUILD_SCAN_END = 0x00E00000
+BUILD_SCAN_CHUNK = 0x00100000
+
+TLS_S_CURMGR_RVA = 0x00DD2008
+S_SAVED_OBJMGR = 0x00B4B014
+
+TYPE_ID_NAMES = {0: "object", 1: "item", 2: "container", 3: "unit", 4: "player", 5: "gameobject",
+                 6: "dynamicobject", 7: "corpse"}
+
+OBJ_PLAYER_GUID_OFF = 0xC0        # ObjectMgr::m_playerGuid -- validated (matches the DB guid of Coalabone)
+OBJ_TYPE_OFF = 0xC8                # ObjectMgr::m_type -- not independently validated
+OBJ_MAPID_OFF = 0xCC               # ObjectMgr::m_mapId -- validated (1 == Kalimdor, Coalabone's own zone)
+OBJ_FULLLIST_OFF = 0x04            # TSHashTable::m_fulllist -- validated (flat iteration over 126-130 objects)
+
+CGOBJECT_MOBJ_OFF = 0x08           # CGObject::m_obj -- validated (guid/type/entry all matched through it)
+CGOBJECT_TYPEID_OFF = 0x14         # CGObject::m_typeId -- validated (4 == player, 3 == the training dummy)
+CGOBJECTDATA_GUID_OFF = 0x00       # validated
+CGOBJECTDATA_TYPE_OFF = 0x08       # validated (0x19 == object|unit|player on the live player)
+CGOBJECTDATA_ENTRY_OFF = 0x0C      # validated (32666 on the training dummy)
+
+CGUNIT_MUNIT_OFF = 0xD0            # CGUnit::m_unit -- validated (found by health/maxhealth match, both units)
+CGUNITDATA_TARGET_OFF = 0x30       # validated (0 with no target, the dummy's guid after /target)
+CGUNITDATA_HEALTH_OFF = 0x48       # validated
+CGUNITDATA_MAXHEALTH_OFF = 0x68    # validated
+CGUNITDATA_POWER_OFF = 0x4C        # validated (power[3] == energy == 100)
+
+CREATURE_CACHE_OFF = 0x964         # CGUnit_C::m_creatureCacheEntry -- validated
+CREATURE_NAME_OFF = 0x5C           # CreatureStats::m_name[0] -- validated ("Training Dummy")
+
+AURAS_OFF = 0xC50                  # validated (inline and dynamic, see below)
+AURA_ENTRY_SIZE = 0x18
+AURA_COUNT_OFF = 0x180             # TSCGrowableArray::m_count -- validated while inline (<= 16 auras);
+                                    # once dynamic it reads as a stale 0xFFFFFFFF, not the true count (see below)
+AURA_AC_ALLOC_OFF = 0x00
+AURA_AC_COUNT_OFF = 0x04           # TSGrowableArray::m_count once dynamic -- validated (17 auras, >16 case)
+AURA_AC_DATA_OFF = 0x08            # validated
+
+NAME_CACHE = 0x00C5D938            # g_nameDBCache -- validated for the active player's own name
+NAME_CACHE_HT_OFF = 0x08
+NAME_CACHE_LIST_OFF = 0x04         # offset of m_fulllist within the embedded TSHashTable
+NAME_CACHE_GUID_LOW_OFF = 0x18     # calibrated live against guid 1 (wowdecomp's own +0x138 guess did not match
+NAME_CACHE_GUID_HIGH_OFF = 0x1C    # a full-list node directly; GetRecord() likely returns an adjusted pointer)
+NAME_CACHE_NAME_OFF = 0x20
+NAME_CACHE_NAME_MAXLEN = 48
+
+G_SPELLDB = 0x00AD49D0             # WowClientDB_RLE<SpellRec> g_spellDB -- validated
+SPELLDB_NUMRECORDS_OFF = 0x08      # validated (209510, matches the server/client Spell.dbc record count exactly)
+SPELLDB_MAXID_OFF = 0x0C           # validated (13977920, matches the file's own max row id exactly)
+SPELLDB_MINID_OFF = 0x10           # validated (1, matches the file's own min row id exactly)
+SPELLDB_RECORDSBYID_OFF = 0x20     # validated -- SpellRec**, indexed by (id - m_minID), not by id directly
+
+SPELLREC_ID_OFF = 0x00                   # validated
+SPELLREC_ICON_OFF = 0x214                # validated (== file offset 532, precedes the string block)
+SPELLREC_DURATION_INDEX_OFF = 0xA0       # validated (== file offset 160)
+SPELLREC_POWER_TYPE_OFF = 0xA4           # validated (== file offset 164)
+SPELLREC_MANA_COST_OFF = 0xA8            # validated (== file offset 168)
+SPELLREC_RANGE_INDEX_OFF = 0xB8          # validated (== file offset 184)
+SPELLREC_NAME_PTR_OFF = 0x220            # validated
+SPELLREC_RANK_PTR_OFF = 0x224            # validated
+SPELLREC_DESCRIPTION_PTR_OFF = 0x228     # validated
+SPELLREC_TOOLTIP_PTR_OFF = 0x22C         # validated (not in the decompilation excerpt; found by pattern + file match)
+SPELLREC_SCHOOL_MASK_OFF = 0x284         # validated (file offset 900, shifted by the 256-byte string shrink)
+SPELLREC_STRING_MAXLEN = 1024
+
+USER_CLIENT_DEFAULT = Path.home() / "CoaServer/client/ascension-live"
+
+
+class GuardError(Exception):
+    pass
+
+
+class MemoryError_(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# process_vm_readv primitives
+# ---------------------------------------------------------------------------
+
+class _IOVec(ctypes.Structure):
+    _fields_ = [("iov_base", ctypes.c_void_p), ("iov_len", ctypes.c_size_t)]
+
+
+def read_bytes(pid: int, addr: int, size: int) -> bytes:
+    if addr <= 0 or size <= 0:
+        raise MemoryError_(f"bad read request: addr={addr:#x} size={size}")
+    buf = ctypes.create_string_buffer(size)
+    local = _IOVec(ctypes.cast(buf, ctypes.c_void_p), size)
+    remote = _IOVec(ctypes.c_void_p(addr), size)
+    n = LIBC.process_vm_readv(pid, ctypes.byref(local), 1, ctypes.byref(remote), 1, 0)
+    if n < 0:
+        err = ctypes.get_errno()
+        raise MemoryError_(f"process_vm_readv({pid}, {addr:#x}, {size}) failed: {os.strerror(err)}")
+    if n != size:
+        raise MemoryError_(f"process_vm_readv({pid}, {addr:#x}, {size}) short read: {n} bytes")
+    return buf.raw
+
+
+def read_u8(pid: int, addr: int) -> int:
+    return read_bytes(pid, addr, 1)[0]
+
+
+def read_u32(pid: int, addr: int) -> int:
+    return struct.unpack("<I", read_bytes(pid, addr, 4))[0]
+
+
+def read_i32(pid: int, addr: int) -> int:
+    return struct.unpack("<i", read_bytes(pid, addr, 4))[0]
+
+
+def read_u64(pid: int, addr: int) -> int:
+    return struct.unpack("<Q", read_bytes(pid, addr, 8))[0]
+
+
+def read_cstring(pid: int, addr: int, maxlen: int) -> str:
+    if addr == 0:
+        return ""
+    data = read_bytes(pid, addr, maxlen)
+    end = data.find(b"\x00")
+    return data[: end if end >= 0 else maxlen].decode("latin1", "replace")
+
+
+# ---------------------------------------------------------------------------
+# Guards
+# ---------------------------------------------------------------------------
+
+def _lab_root() -> Path:
+    return Path(os.environ.get("COA_LAB_ROOT", Path.home() / "CoaServer/client-lab"))
+
+
+def _state_dir(lab_root: Path, instance: str) -> Path:
+    return lab_root / "state" / instance if instance else lab_root / "state"
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text()
+    except OSError as error:
+        raise GuardError(f"cannot read {path}: {error.strerror}") from None
+
+
+def _slot_from_lock(state_dir: Path) -> int:
+    lock = state_dir / "lock"
+    text = _read_text(lock)
+    match = re.match(r"slot (\d+)", text.strip())
+    if not match:
+        raise GuardError(f"lock file {lock} does not name a slot: {text!r}")
+    return int(match.group(1))
+
+
+def _exe_path_for_pid(pid: int, proc_root: Path = Path("/proc")) -> Path:
+    try:
+        maps_text = (proc_root / str(pid) / "maps").read_text()
+    except OSError as error:
+        raise GuardError(f"cannot read {proc_root}/{pid}/maps: {error.strerror}") from None
+    for line in maps_text.splitlines():
+        parts = line.split(maxsplit=5)
+        if len(parts) == 6 and parts[5].endswith("Ascension.exe"):
+            return Path(parts[5])
+    raise GuardError(f"pid {pid} has no Ascension.exe mapping")
+
+
+def check_pid_is_lab_client(pid: int, lab_root: Path, proc_root: Path = Path("/proc")) -> Path:
+    exe_path = _exe_path_for_pid(pid, proc_root)
+    lab_root_real = lab_root.resolve()
+    exe_real = exe_path.resolve()
+    user_client = Path(os.environ.get("COA_USER_CLIENT", USER_CLIENT_DEFAULT)).resolve()
+    if not str(exe_real).startswith(str(lab_root_real) + os.sep) and exe_real != lab_root_real:
+        raise GuardError(f"pid {pid} runs {exe_real}, not under the lab root {lab_root_real}")
+    if str(exe_real).startswith(str(user_client) + os.sep) or exe_real == user_client:
+        raise GuardError(f"pid {pid} runs the user's own client ({exe_real}), refusing")
+    return exe_real
+
+
+def check_slot_not_one(state_dir: Path) -> int:
+    slot = _slot_from_lock(state_dir)
+    if slot == 1:
+        raise GuardError("the lab lock names slot 1; refusing to read a non-lab slot")
+    return slot
+
+
+def check_warden_disabled(slot: int) -> None:
+    conf = Path.home() / f"CoaServer/slots/s{slot}/etc/worldserver.conf"
+    text = _read_text(conf)
+    match = re.search(r"^\s*Warden\.Enabled\s*=\s*(\S+)", text, re.MULTILINE)
+    if not match or match.group(1).strip('"') != "0":
+        raise GuardError(f"{conf} does not have Warden.Enabled = 0; refusing to read this slot's client")
+
+
+def find_lab_pid(lab_root: Path, state_dir: Path, proc_root: Path = Path("/proc")) -> int:
+    gamescope_pid_file = state_dir / "gamescope.pid"
+    try:
+        root_pid = int(_read_text(gamescope_pid_file).strip())
+    except (GuardError, ValueError):
+        raise GuardError(f"no gamescope pid at {gamescope_pid_file}: is the lab client running?") from None
+    pending, seen = [root_pid], set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            (proc_root / str(pid) / "maps").read_text()
+        except OSError:
+            continue
+        try:
+            _exe_path_for_pid(pid, proc_root)
+            return pid
+        except GuardError:
+            pass
+        try:
+            for entry in proc_root.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                stat = (entry / "stat").read_text()
+                ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+                if ppid == pid:
+                    pending.append(int(entry.name))
+        except OSError:
+            continue
+    raise GuardError(f"no Ascension.exe process found under gamescope pid {root_pid}")
+
+
+def run_guards(pid_override, lab_root: Path, instance: str) -> dict:
+    checks = []
+    state_dir = _state_dir(lab_root, instance)
+    try:
+        slot = check_slot_not_one(state_dir)
+        checks.append({"name": "slot_not_1", "ok": True, "detail": f"slot {slot}"})
+    except GuardError as error:
+        checks.append({"name": "slot_not_1", "ok": False, "detail": str(error)})
+        raise GuardError(str(error)) from None
+
+    try:
+        check_warden_disabled(slot)
+        checks.append({"name": "warden_disabled", "ok": True, "detail": f"slot {slot} Warden.Enabled = 0"})
+    except GuardError as error:
+        checks.append({"name": "warden_disabled", "ok": False, "detail": str(error)})
+        raise GuardError(str(error)) from None
+
+    pid = pid_override
+    if pid is None:
+        try:
+            pid = find_lab_pid(lab_root, state_dir)
+        except GuardError as error:
+            checks.append({"name": "lab_pid_found", "ok": False, "detail": str(error)})
+            raise GuardError(str(error)) from None
+        checks.append({"name": "lab_pid_found", "ok": True, "detail": f"pid {pid}"})
+
+    try:
+        exe_path = check_pid_is_lab_client(pid, lab_root)
+        checks.append({"name": "pid_is_lab_client", "ok": True, "detail": str(exe_path)})
+    except GuardError as error:
+        checks.append({"name": "pid_is_lab_client", "ok": False, "detail": str(error)})
+        raise GuardError(str(error)) from None
+
+    return {"pid": pid, "slot": slot, "exe_path": str(exe_path), "checks": checks}
+
+
+# ---------------------------------------------------------------------------
+# Build identity
+# ---------------------------------------------------------------------------
+
+def check_build_identity(pid: int) -> dict:
+    header = read_bytes(pid, IMAGE_BASE, 4)
+    is_mz = header[:2] == b"MZ"
+    found_at = None
+    base = IMAGE_BASE
+    while base < BUILD_SCAN_END:
+        try:
+            chunk = read_bytes(pid, base, BUILD_SCAN_CHUNK)
+        except MemoryError_:
+            base += BUILD_SCAN_CHUNK
+            continue
+        idx = chunk.find(BUILD_STRING)
+        if idx >= 0:
+            found_at = base + idx
+            break
+        base += BUILD_SCAN_CHUNK
+    return {
+        "image_base": IMAGE_BASE,
+        "mz_header": is_mz,
+        "build_string": BUILD_STRING.decode(),
+        "build_string_found_at": found_at,
+        "validated": is_mz and found_at is not None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# PE / TLS parsing (to resolve s_curMgr's thread_local slot)
+# ---------------------------------------------------------------------------
+
+def parse_tls_directory(pid: int, image_base: int = IMAGE_BASE) -> dict:
+    dos = read_bytes(pid, image_base, 64)
+    e_lfanew = struct.unpack_from("<I", dos, 0x3C)[0]
+    nt = read_bytes(pid, image_base + e_lfanew, 24)
+    if nt[:4] != b"PE\x00\x00":
+        raise MemoryError_("no PE signature at the expected NT header offset")
+    _, _, _, _, _, opt_size, _ = struct.unpack_from("<HHIIIHH", nt, 4)
+    opt = read_bytes(pid, image_base + e_lfanew + 24, opt_size)
+    tls_rva, tls_size = struct.unpack_from("<II", opt, 96 + 9 * 8)
+    if tls_rva == 0:
+        raise MemoryError_("no TLS directory in this image")
+    tls_dir = read_bytes(pid, image_base + tls_rva, 24)
+    start_rva, end_rva, index_addr, callbacks_addr, _, _ = struct.unpack("<IIIIII", tls_dir)
+    index = read_u32(pid, index_addr)
+    if not (start_rva <= TLS_S_CURMGR_RVA < end_rva):
+        raise MemoryError_(f"s_curMgr RVA {TLS_S_CURMGR_RVA:#x} is outside the TLS block "
+                            f"[{start_rva:#x}, {end_rva:#x})")
+    return {
+        "tls_directory_rva": tls_rva, "tls_directory_size": tls_size,
+        "start_rva": start_rva, "end_rva": end_rva, "index_addr": index_addr,
+        "callbacks_addr": callbacks_addr, "tls_index": index,
+        "s_curmgr_delta": TLS_S_CURMGR_RVA - start_rva,
+        "validated": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# TEB discovery (new WoW64: a 64-bit TEB plus a 32-bit TEB at +0x2000)
+# ---------------------------------------------------------------------------
+
+def _rw_anon_regions(pid: int):
+    regions = []
+    with open(f"/proc/{pid}/maps") as handle:
+        for line in handle:
+            parts = line.split(maxsplit=5)
+            addr_range, perms = parts[0], parts[1]
+            name = parts[5] if len(parts) == 6 else ""
+            if not perms.startswith("rw") or name:
+                continue
+            start_s, end_s = addr_range.split("-")
+            regions.append((int(start_s, 16), int(end_s, 16)))
+    return regions
+
+
+PAGE = 0x1000
+
+
+def find_teb64_candidates(pid: int, regions=None) -> list:
+    found = []
+    for start, end in (regions if regions is not None else _rw_anon_regions(pid)):
+        addr = start
+        while addr < end:
+            try:
+                data = read_bytes(pid, addr, 0x38)
+            except MemoryError_:
+                addr += PAGE
+                continue
+            if struct.unpack_from("<Q", data, 0x30)[0] == addr:
+                found.append(addr)
+            addr += PAGE
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Object manager resolution
+# ---------------------------------------------------------------------------
+
+def resolve_object_manager(pid: int, tls: dict) -> dict:
+    tls_index, delta = tls["tls_index"], tls["s_curmgr_delta"]
+    for teb64 in find_teb64_candidates(pid):
+        teb32 = teb64 + 0x2000
+        try:
+            teb32_data = read_bytes(pid, teb32, 0x30)
+        except MemoryError_:
+            continue
+        if struct.unpack_from("<I", teb32_data, 0x18)[0] != (teb32 & 0xFFFFFFFF):
+            continue
+        tls_array = struct.unpack_from("<I", teb32_data, 0x2C)[0]
+        if tls_array == 0:
+            continue
+        try:
+            tls_slot = read_u32(pid, tls_array + tls_index * 4)
+        except MemoryError_:
+            continue
+        if tls_slot == 0:
+            continue
+        try:
+            mgr = read_u32(pid, tls_slot + delta)
+        except MemoryError_:
+            continue
+        if mgr == 0:
+            continue
+        return {"address": mgr, "via": "tls", "teb64": teb64, "teb32": teb32,
+                "tls_array": tls_array, "tls_slot": tls_slot, "validated": True}
+    try:
+        saved = read_u32(pid, S_SAVED_OBJMGR)
+    except MemoryError_:
+        saved = 0
+    if saved:
+        return {"address": saved, "via": "s_savedObjMgr", "validated": False}
+    raise MemoryError_("could not resolve the object manager (no thread's TLS slot held a non-null "
+                        "s_curMgr, and the s_savedObjMgr backup is null)")
+
+
+def object_manager_summary(pid: int, mgr: int) -> dict:
+    player_guid = read_u64(pid, mgr + OBJ_PLAYER_GUID_OFF)
+    m_type = read_u32(pid, mgr + OBJ_TYPE_OFF)
+    map_id = read_u32(pid, mgr + OBJ_MAPID_OFF)
+    return {
+        "address": mgr,
+        "active_player_guid": player_guid,
+        "m_type": m_type,
+        "map_id": map_id,
+        "validated": {"active_player_guid": True, "m_type": False, "map_id": True},
+    }
+
+
+def walk_objects(pid: int, mgr: int, limit: int = 4096) -> list:
+    list_base = mgr + OBJ_FULLLIST_OFF
+    link_offset = read_u32(pid, list_base)
+    terminator_addr = list_base + 4
+    raw_first = read_u32(pid, terminator_addr + 4)
+    current = raw_first & ~1
+    nodes, seen = [], set()
+    while current != terminator_addr and current != 0 and current not in seen and len(nodes) < limit:
+        seen.add(current)
+        nodes.append(current)
+        try:
+            raw_next = read_u32(pid, current + link_offset + 4)
+        except MemoryError_:
+            break
+        current = raw_next & ~1
+    return nodes
+
+
+def read_cgobject(pid: int, node: int) -> dict:
+    m_obj = read_u32(pid, node + CGOBJECT_MOBJ_OFF)
+    type_id = read_u32(pid, node + CGOBJECT_TYPEID_OFF)
+    guid = read_u64(pid, m_obj + CGOBJECTDATA_GUID_OFF)
+    type_mask = read_u32(pid, m_obj + CGOBJECTDATA_TYPE_OFF)
+    entry = read_u32(pid, m_obj + CGOBJECTDATA_ENTRY_OFF)
+    return {
+        "node": node, "guid": guid, "type_id": type_id,
+        "type_id_name": TYPE_ID_NAMES.get(type_id, "unknown"),
+        "type_mask": type_mask, "entry": entry,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unit state: CGUnitData, auras, names
+# ---------------------------------------------------------------------------
+
+POWER_NAMES = ["mana", "rage", "focus", "energy", "happiness", "rune", "runic_power"]
+
+
+def read_unit_data(pid: int, node: int) -> dict:
+    cgd = read_u32(pid, node + CGUNIT_MUNIT_OFF)
+    target = read_u64(pid, cgd + CGUNITDATA_TARGET_OFF)
+    health = read_u32(pid, cgd + CGUNITDATA_HEALTH_OFF)
+    max_health = read_u32(pid, cgd + CGUNITDATA_MAXHEALTH_OFF)
+    powers = {POWER_NAMES[i]: read_u32(pid, cgd + CGUNITDATA_POWER_OFF + 4 * i) for i in range(7)}
+    return {"cgunitdata": cgd, "target_guid": target, "health": health, "max_health": max_health,
+            "powers": powers, "validated": True}
+
+
+def read_auras(pid: int, node: int) -> dict:
+    base = node + AURAS_OFF
+    outer_count = read_u32(pid, base + AURA_COUNT_OFF)
+    if 0 <= outer_count <= 16:
+        count, entry_base, mode = outer_count, base, "inline"
+    else:
+        alloc = read_u32(pid, base + AURA_AC_ALLOC_OFF)
+        inner_count = read_u32(pid, base + AURA_AC_COUNT_OFF)
+        data_ptr = read_u32(pid, base + AURA_AC_DATA_OFF)
+        count, entry_base, mode = min(inner_count, alloc), data_ptr, "dynamic"
+    entries = []
+    for index in range(count):
+        entry = entry_base + index * AURA_ENTRY_SIZE
+        caster = read_u64(pid, entry + 0x00)
+        spell_id = read_i32(pid, entry + 0x08)
+        flags = read_u8(pid, entry + 0x0C)
+        level = read_u8(pid, entry + 0x0D)
+        stacks = read_u8(pid, entry + 0x0E)
+        duration = read_i32(pid, entry + 0x10)
+        end_time = read_i32(pid, entry + 0x14)
+        entries.append({"slot": index, "spell_id": spell_id, "flags": flags, "level": level, "stacks": stacks,
+                        "duration": duration, "end_time": end_time, "caster": caster})
+    # A removed aura keeps its slot record with spell id 0 (as SMSG_AURA_UPDATE clears a slot): those slots
+    # are not auras. Validated live: 19 slots, 2 with a spell id, `probe auras player` listed exactly those 2.
+    active = [entry for entry in entries if entry["spell_id"] != 0]
+    return {"slots": count, "mode": mode, "entries": active, "empty_slots": count - len(active),
+            "validated": True}
+
+
+def read_creature_name(pid: int, node: int) -> str:
+    cache = read_u32(pid, node + CREATURE_CACHE_OFF)
+    if cache == 0:
+        return ""
+    name_ptr = read_u32(pid, cache + CREATURE_NAME_OFF)
+    return read_cstring(pid, name_ptr, 64)
+
+
+def read_player_name(pid: int, guid: int) -> str:
+    list_base = NAME_CACHE + NAME_CACHE_HT_OFF + NAME_CACHE_LIST_OFF
+    link_offset = read_u32(pid, list_base)
+    terminator_addr = list_base + 4
+    raw_current = read_u32(pid, terminator_addr + 4)
+    current = raw_current & ~1
+    seen = set()
+    while current != terminator_addr and current != 0 and current not in seen:
+        seen.add(current)
+        low = read_u32(pid, current + NAME_CACHE_GUID_LOW_OFF)
+        high = read_u32(pid, current + NAME_CACHE_GUID_HIGH_OFF)
+        if (low | (high << 32)) == guid:
+            return read_cstring(pid, current + NAME_CACHE_NAME_OFF, NAME_CACHE_NAME_MAXLEN)
+        try:
+            raw_next = read_u32(pid, current + link_offset + 4)
+        except MemoryError_:
+            break
+        current = raw_next & ~1
+    return ""
+
+
+def read_name(pid: int, node: int, obj: dict) -> str:
+    if obj["type_id"] == 4:  # player
+        return read_player_name(pid, obj["guid"])
+    if obj["type_id"] == 3:  # unit / creature
+        return read_creature_name(pid, node)
+    return ""
+
+
+def read_full_unit(pid: int, node: int) -> dict:
+    obj = read_cgobject(pid, node)
+    result = {"object": obj, "name": read_name(pid, node, obj)}
+    if obj["type_id"] in (3, 4):
+        unit = read_unit_data(pid, node)
+        auras = read_auras(pid, node)
+        result.update({
+            "health": unit["health"], "max_health": unit["max_health"], "powers": unit["powers"],
+            "target_guid": unit["target_guid"], "auras": auras["entries"], "aura_count": len(auras["entries"]),
+            "aura_slots": auras["slots"], "aura_mode": auras["mode"],
+        })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Client Spell.dbc (g_spellDB)
+# ---------------------------------------------------------------------------
+
+def read_spell_db(pid: int) -> dict:
+    num_records = read_u32(pid, G_SPELLDB + SPELLDB_NUMRECORDS_OFF)
+    max_id = read_u32(pid, G_SPELLDB + SPELLDB_MAXID_OFF)
+    min_id = read_u32(pid, G_SPELLDB + SPELLDB_MINID_OFF)
+    records_by_id = read_u32(pid, G_SPELLDB + SPELLDB_RECORDSBYID_OFF)
+    return {
+        "address": G_SPELLDB, "num_records": num_records, "min_id": min_id, "max_id": max_id,
+        "records_by_id": records_by_id,
+        "validated": {"num_records": True, "min_id": True, "max_id": True},
+    }
+
+
+def _read_spell_string(pid: int, rec_ptr: int, ptr_off: int) -> str:
+    ptr = read_u32(pid, rec_ptr + ptr_off)
+    return read_cstring(pid, ptr, SPELLREC_STRING_MAXLEN)
+
+
+def read_spell_record(pid: int, spell_id: int, db: dict = None) -> dict:
+    if db is None:
+        db = read_spell_db(pid)
+    if spell_id < db["min_id"] or spell_id > db["max_id"]:
+        return {"id": spell_id, "loaded": False, "reason": "id outside g_spellDB's [min_id, max_id] range"}
+    index = spell_id - db["min_id"]
+    rec_ptr = read_u32(pid, db["records_by_id"] + index * 4)
+    if rec_ptr == 0:
+        return {"id": spell_id, "loaded": False, "reason": "g_spellDB.m_recordsById[id - min_id] is null"}
+    record_id = read_u32(pid, rec_ptr + SPELLREC_ID_OFF)
+    return {
+        "id": spell_id,
+        "loaded": True,
+        "record_address": rec_ptr,
+        "record_id": record_id,
+        "name": _read_spell_string(pid, rec_ptr, SPELLREC_NAME_PTR_OFF),
+        "rank": _read_spell_string(pid, rec_ptr, SPELLREC_RANK_PTR_OFF),
+        "description": _read_spell_string(pid, rec_ptr, SPELLREC_DESCRIPTION_PTR_OFF),
+        "tooltip": _read_spell_string(pid, rec_ptr, SPELLREC_TOOLTIP_PTR_OFF),
+        "school_mask": read_u32(pid, rec_ptr + SPELLREC_SCHOOL_MASK_OFF),
+        "duration_index": read_u32(pid, rec_ptr + SPELLREC_DURATION_INDEX_OFF),
+        "power_type": read_u32(pid, rec_ptr + SPELLREC_POWER_TYPE_OFF),
+        "mana_cost": read_u32(pid, rec_ptr + SPELLREC_MANA_COST_OFF),
+        "spell_icon_id": read_u32(pid, rec_ptr + SPELLREC_ICON_OFF),
+        "range_index": read_u32(pid, rec_ptr + SPELLREC_RANGE_INDEX_OFF),
+        "validated": {
+            "record_id": True, "name": True, "rank": True, "description": True, "tooltip": True,
+            "school_mask": True, "duration_index": True, "power_type": True, "mana_cost": True,
+            "spell_icon_id": True, "range_index": True,
+        },
+        "id_matches_record_id": record_id == spell_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def find_node_by_guid(pid: int, mgr: int, guid: int) -> int:
+    for node in walk_objects(pid, mgr):
+        try:
+            obj = read_cgobject(pid, node)
+        except MemoryError_:
+            continue
+        if obj["guid"] == guid:
+            return node
+    raise MemoryError_(f"no object with guid {guid:#x} in the object manager")
+
+
+def cmd_check(pid: int, guards: dict) -> dict:
+    build = check_build_identity(pid)
+    tls = parse_tls_directory(pid)
+    mgr = resolve_object_manager(pid, tls)
+    summary = object_manager_summary(pid, mgr["address"])
+    return {"guards": guards, "build": build, "tls": tls, "object_manager": {**mgr, **summary}}
+
+
+def cmd_player(pid: int, mgr_addr: int) -> dict:
+    summary = object_manager_summary(pid, mgr_addr)
+    guid = summary["active_player_guid"]
+    node = find_node_by_guid(pid, mgr_addr, guid)
+    return read_full_unit(pid, node)
+
+
+def cmd_unit(pid: int, mgr_addr: int, selector: str) -> dict:
+    if selector == "player":
+        summary = object_manager_summary(pid, mgr_addr)
+        node = find_node_by_guid(pid, mgr_addr, summary["active_player_guid"])
+    elif selector == "target":
+        summary = object_manager_summary(pid, mgr_addr)
+        player_node = find_node_by_guid(pid, mgr_addr, summary["active_player_guid"])
+        target_guid = read_unit_data(pid, player_node)["target_guid"]
+        if target_guid == 0:
+            raise MemoryError_("the active player has no target")
+        node = find_node_by_guid(pid, mgr_addr, target_guid)
+    else:
+        guid = int(selector, 16) if selector.lower().startswith("0x") else int(selector)
+        node = find_node_by_guid(pid, mgr_addr, guid)
+    return read_full_unit(pid, node)
+
+
+def cmd_objects(pid: int, mgr_addr: int) -> dict:
+    objects = []
+    for node in walk_objects(pid, mgr_addr):
+        try:
+            obj = read_cgobject(pid, node)
+        except MemoryError_:
+            continue
+        name = ""
+        try:
+            name = read_name(pid, node, obj)
+        except MemoryError_:
+            pass
+        objects.append({**obj, "name": name})
+    return {"count": len(objects), "objects": objects}
+
+
+def cmd_spell_db(pid: int) -> dict:
+    return read_spell_db(pid)
+
+
+def cmd_spell(pid: int, spell_id: int) -> dict:
+    return read_spell_record(pid, spell_id)
+
+
+def main(argv=None) -> int:
+    lab_root = _lab_root()
+    instance_default = os.environ.get("COA_LAB_INSTANCE", "")
+    parser = argparse.ArgumentParser(prog="coa-lab-mem")
+    parser.add_argument("--pid", type=int, default=None, help="override pid discovery (still guarded)")
+    parser.add_argument("--instance", default=instance_default)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("check")
+    sub.add_parser("player")
+    unit_parser = sub.add_parser("unit")
+    unit_parser.add_argument("selector", help="player | target | 0x<guid>")
+    sub.add_parser("objects")
+    sub.add_parser("spell-db")
+    spell_parser = sub.add_parser("spell")
+    spell_parser.add_argument("spell_id", type=int)
+    args = parser.parse_args(argv)
+
+    try:
+        guards = run_guards(args.pid, lab_root, args.instance)
+        pid = guards["pid"]
+        if args.command == "check":
+            result = cmd_check(pid, guards)
+        elif args.command == "spell-db":
+            result = cmd_spell_db(pid)
+        elif args.command == "spell":
+            result = cmd_spell(pid, args.spell_id)
+        else:
+            tls = parse_tls_directory(pid)
+            mgr = resolve_object_manager(pid, tls)
+            if args.command == "player":
+                result = cmd_player(pid, mgr["address"])
+            elif args.command == "unit":
+                result = cmd_unit(pid, mgr["address"], args.selector)
+            else:
+                result = cmd_objects(pid, mgr["address"])
+    except (GuardError, MemoryError_) as error:
+        print(f"coa-lab-mem: {error}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -137,3 +137,64 @@ across client processes (`176494` also appeared in two separate loads of one cli
 | No GPU | **not met** on this host: the headless backend still renders on the NVIDIA GPU. Software rendering needs `vulkan-swrast` (lavapipe) or `xorg-server-xvfb`, neither installed, by decision |
 | Ready in game in less than 60 s | **met with shorter login sleeps**: 45.0 s (10/12/0) and 36.9-38.8 s (6/8/0: one single run, two runs of three clients); not met with the default sleeps (113 s) |
 | At least 3 instances in parallel | **met** (three headless instances on one slot, simultaneous probes answered correctly) |
+
+## Part 2: reading the lab client's own state
+
+Date: 2026-10-26. Design: `.agents/plans/client-lab-memory-diagnostics/design.md` (server repository). ADR:
+[`0001-lab-client-read-only-diagnostics.md`](../adr/0001-lab-client-read-only-diagnostics.md).
+
+The baseline above left two things unreadable: Lua error text ("Lua errors are therefore detectable (count
+and time), not readable (text)"), and anything the client's own engine holds that the Lua API does not
+expose, such as the raw object manager or a fuller aura record. Three read-only tools close part of that,
+each answering a different question:
+
+| Tool | Reads | Answers |
+|---|---|---|
+| `coa-client-lab probe errors` (relay, CoaProbe `Commands.lua`) | `ERROR_HANDLER_DATABASE.errors.{current,previous}`, a plain Lua global the client's own `ErrorHandler.lua` already fills | what Lua error fired, with its message and stack, not just that one fired |
+| [`scripts/coa-lab-mem`](../../scripts/coa-lab-mem) | the lab client's own process memory (`process_vm_readv`): object manager, unit/aura data, `g_spellDB` | what the client's engine holds, independent of what Lua reports |
+| [`scripts/coa-lab-packets`](../../scripts/coa-lab-packets) | the worldserver's `PacketLogFile` (`.packetlog` over SOAP) | what the server actually sent, before compression and encryption |
+
+None of the three replaces the others: a mismatch between what the server sent, what the client's engine
+holds, and what the Lua API reports is itself the finding these tools exist to surface.
+
+### `probe errors`
+
+Supersedes the baseline's limit above. CoaProbe no longer tries to install its own error handler (dead code
+on this client, since the CoA UI overwrites `seterrorhandler` with a no-op after login — see the ADR). It
+reads the client's own error log directly: `coa-client-lab probe errors [N] [previous] [locals]` (or
+`coa-lab-relay probe errors ...` on a relay-enabled slot) returns the newest `N` entries (default 5, max 20)
+with `message`/`stack` (truncated to the relay's byte budget; `locals` opts in, left out by default). A
+`/reload` empties `errors.current`; `previous` reads the array as it stood just before the last world entry,
+so a reload does not erase the evidence of what happened right before it.
+
+### `coa-lab-mem`
+
+Guards before any read: the target process's executable is under `~/CoaServer/client-lab`; the lab lock
+names a slot other than 1; that slot's `worldserver.conf` has `Warden.Enabled = 0`. `check`, `player`,
+`unit player|target|0x<guid>` and `objects` read the object manager, active player, one unit or every object;
+`spell-db`/`spell ID` read the client's loaded `Spell.dbc` row (record count, min/max id, and per spell: name,
+rank, description, tooltip, school mask, duration index, power type, mana cost, icon, range index). The aura
+list in every command's output holds only *active* slots (spell id != 0, with their own `slot` index), plus
+`slots` (the array's total capacity) and `empty_slots`; a removed aura keeps its slot record internally with
+spell id 0, which the tool filters out rather than reports as an aura. Every field carries its own
+`"validated": true|false` (see the ADR); unvalidated fields are reported as a hypothesis, not a fact.
+
+### `coa-lab-packets`
+
+`on`/`off` toggle `.packetlog <character>` over SOAP; `list` prints one JSON object per packet (index, time,
+direction, opcode name/number, size), filterable by direction, opcode or recency; `auras` decodes
+`SMSG_AURA_UPDATE`/`SMSG_AURA_UPDATE_ALL` records (target GUID, spell id, flags, level, stack/charges, caster
+GUID when not self-cast, duration when carried). Reads only the on-disk `.pkt` file; never types into the
+client or touches the relay. `target_guid` is whatever unit the server sent an update about to this session,
+not necessarily the lab character — filter with `--guid` using a GUID obtained elsewhere (`coa-lab-mem`,
+`probe state`).
+
+### Limits
+
+- Lab only, one slot at a time, `Warden.Enabled = 0` required: this is a phase-1, lab-only diagnostic, not a
+  general anti-cheat bypass (see the ADR for why each guard exists).
+- `coa-lab-mem`'s offsets are specific to the validated client build; a silent field shift from a client
+  update is why every value stays tied to an explicit `validated` flag rather than being reported on trust.
+- `coa-lab-packets` proves what the server sent in one logged session, not what the client did with it.
+- An addon's own `seterrorhandler` callback is still dead on this client; only the passive read of
+  `ERROR_HANDLER_DATABASE` works.

@@ -491,28 +491,78 @@ check("chunks of empty text count", #Relay.chunks("", 200), 1)
 
 -- ERRORS AND FRAME TESTS
 
-dofile(root .. "/Errors.lua")
-local Errors = CoaProbe.Errors
-local errApi = makeApi()
-local previousCalls = 0
-local currentHandler = function() previousCalls = previousCalls + 1 end
-errApi.geterrorhandler = function() return currentHandler end
-errApi.seterrorhandler = function(handler) currentHandler = handler end
-local handler = Errors.install(errApi)
-handler("boom one")
-check("errors records and chains", previousCalls, 1)
-local reported = run(errApi, "e1 errors")
-check("errors installed", reported.result.installed, true)
-check("errors total", reported.result.total, 1)
-check("errors message", reported.result.entries[1].message, "boom one")
-errApi.seterrorhandler(function() end)
-check("errors reports when replaced", run(errApi, "e2 errors").result.installed, false)
-for i = 1, 60 do
-    handler("bulk " .. i)
+-- CoaProbe reads ERROR_HANDLER_DATABASE.errors (SharedXML/ErrorHandler/ErrorHandler.lua:11-16, 290-318), the
+-- client's own error store, instead of installing its own handler (seterrorhandler is a client no-op,
+-- SharedXML/Util/SharedOverwrites.lua:89-95, so the old handler never ran).
+local function errorEntry(i)
+    return { message = "boom " .. i, stack = "stack " .. i, locals = "locals " .. i, time = 1000 + i, counter = i }
 end
-check("errors keeps 50", #Errors.entries, 50)
-check("errors oldest dropped", Errors.entries[1].message, "bulk 11")
-check("errors total counts all", Errors.total, 61)
+
+local function fillErrors(api, count, previousCount)
+    local current, previous = {}, {}
+    for i = 1, count do
+        current[i] = errorEntry(i)
+    end
+    for i = 1, previousCount or 0 do
+        previous[i] = errorEntry(900 + i)
+    end
+    api.ERROR_HANDLER_DATABASE = { errors = { current = current, previous = previous } }
+    return api.ERROR_HANDLER_DATABASE
+end
+
+local errApi = makeApi()
+check("errors without the table errors", run(errApi, "e0 errors").error,
+    "ERROR_HANDLER_DATABASE is not available on this client")
+
+fillErrors(errApi, 7)
+local defaultAnswer = run(errApi, "e1 errors").result
+check("errors default count", #defaultAnswer.entries, 5)
+check("errors newest first", defaultAnswer.entries[1].message, "boom 7")
+check("errors newest first, oldest of the five", defaultAnswer.entries[5].message, "boom 3")
+check("errors total current", defaultAnswer.total_current, 7)
+check("errors total previous", defaultAnswer.total_previous, 0)
+check("errors omits locals by default", defaultAnswer.entries[1].locals, nil)
+check("errors source", defaultAnswer.source, "ERROR_HANDLER_DATABASE")
+check("errors carries counter", defaultAnswer.entries[1].counter, 7)
+check("errors carries time", defaultAnswer.entries[1].time, 1007)
+
+check("errors N argument", #run(errApi, "e2 errors 2").result.entries, 2)
+check("errors N argument newest", run(errApi, "e2b errors 2").result.entries[1].message, "boom 7")
+check("errors N above total still returns what exists", #run(errApi, "e3 errors 100").result.entries, 7)
+
+fillErrors(errApi, 30)
+check("errors N capped at 20", #run(errApi, "e4 errors 100").result.entries, 20)
+check("errors cap keeps newest", run(errApi, "e4b errors 100").result.entries[1].message, "boom 30")
+
+fillErrors(errApi, 7, 2)
+local prevAnswer = run(errApi, "e5 errors 1 previous").result
+check("errors previous reads the previous table", prevAnswer.entries[1].message, "boom 902")
+check("errors previous total", prevAnswer.total_previous, 2)
+check("errors previous does not touch current count", prevAnswer.total_current, 7)
+
+local localsAnswer = run(errApi, "e6 errors 1 locals").result
+check("errors locals opt-in", localsAnswer.entries[1].locals, "locals 7")
+local combinedAnswer = run(errApi, "e7 errors 1 previous locals").result
+check("errors previous and locals together", combinedAnswer.entries[1].message, "boom 902")
+check("errors previous and locals carries locals", combinedAnswer.entries[1].locals, "locals 902")
+
+local longApi = makeApi()
+longApi.ERROR_HANDLER_DATABASE = { errors = { current = {
+    { message = string.rep("m", 600), stack = string.rep("s", 2000), locals = string.rep("l", 2000),
+      time = 1, counter = 1 },
+}, previous = {} } }
+local truncated = run(longApi, "e8 errors 1 locals").result.entries[1]
+check("errors truncates message to 500", #truncated.message, 500)
+check("errors marks message truncated", truncated.messageTruncated, true)
+check("errors truncates stack to 1500", #truncated.stack, 1500)
+check("errors marks stack truncated", truncated.stackTruncated, true)
+check("errors truncates locals to 1500", #truncated.locals, 1500)
+check("errors marks locals truncated", truncated.localsTruncated, true)
+check("errors leaves short fields unmarked", run(errApi, "e9 errors 1").result.entries[1].messageTruncated, false)
+
+local emptyApi = makeApi()
+emptyApi.ERROR_HANDLER_DATABASE = { errors = {} }
+check("errors tolerates a database with no current/previous", #run(emptyApi, "e10 errors").result.entries, 0)
 
 local frameApi = makeApi()
 check("frame missing", run(frameApi, "f1 frame NoSuchFrame").result.exists, false)
@@ -535,20 +585,18 @@ check("frame survives a throwing method", broken.exists, true)
 check("frame throwing method gives nil", broken.type, nil)
 check("frame missing method gives nil", broken.text, nil)
 
--- CoaProbe.lua installs the error capture and routes CHAT_MSG_ADDON to the relay.
+-- CoaProbe.lua routes CHAT_MSG_ADDON to the relay. It no longer installs its own error handler (no
+-- seterrorhandler call anywhere in the addon any more -- `errors` only reads ERROR_HANDLER_DATABASE).
 local scripts, events = {}, {}
 CreateFrame = function()
     return { RegisterEvent = function(_, e) events[e] = true end, SetScript = function(_, _, fn) scripts[1] = fn end }
 end
-local installedHandler
-geterrorhandler = function() return installedHandler end
-seterrorhandler = function(h) installedHandler = h end
 time = function() return 4242 end
 GetTime = function() return 1234.5678 end
 SlashCmdList = {}
 dofile(root .. "/CoaProbe.lua")
 check("addon registers CHAT_MSG_ADDON", events.CHAT_MSG_ADDON, true)
-check("addon installs error capture", installedHandler, Errors.handler)
+check("addon does not register PLAYER_ENTERING_WORLD any more", events.PLAYER_ENTERING_WORLD, nil)
 contains("addon load id uses time", CoaProbe.loadId, "4242-1234567-")
 local routed
 local originalOnAddon = Relay.onAddonMessage
@@ -556,9 +604,29 @@ Relay.onAddonMessage = function(api, ...) routed = { ... } end
 scripts[1](nil, "CHAT_MSG_ADDON", "CoaProbe", "Q:z:ping", "WHISPER", "Me")
 check("addon routes addon messages", routed and routed[2], "Q:z:ping")
 Relay.onAddonMessage = originalOnAddon
-installedHandler = function() end
-scripts[1](nil, "PLAYER_ENTERING_WORLD")
-check("addon reinstalls capture on entering world", installedHandler, Errors.handler)
+
+-- The relay answer for the default `errors` request stays well under the 64 x 200 byte budget, and a
+-- request for the maximum 20 entries at the maximum truncated size does not crash the chunker even though
+-- it no longer fits (Relay.onAddonMessage falls back to its own "answer too large" answer, same as any
+-- other oversized result).
+local sizeSent = {}
+local sizeApi = relayApi(sizeSent)
+fillErrors(sizeApi, 20)
+Relay.onAddonMessage(sizeApi, "CoaProbe", "Q:s1:errors", "WHISPER", "Coalabone")
+check("errors default relay answer fits in one chunk budget", #sizeSent <= Relay.MAX_CHUNKS, true)
+check("errors default relay answer is not an error", decodeField(joined(sizeSent), "error"), nil)
+
+sizeSent = {}
+sizeApi = relayApi(sizeSent)
+local maxEntries = {}
+for i = 1, 20 do
+    maxEntries[i] = { message = string.rep("m", 500), stack = string.rep("s", 1500), time = i, counter = i }
+end
+sizeApi.ERROR_HANDLER_DATABASE = { errors = { current = maxEntries, previous = {} } }
+Relay.onAddonMessage(sizeApi, "CoaProbe", "Q:s2:errors 20", "WHISPER", "Coalabone")
+check("errors worst case 20 entries never exceeds the relay chunk budget", #sizeSent <= Relay.MAX_CHUNKS, true)
+check("errors worst case 20 entries reports answer too large",
+    decodeField(joined(sizeSent), "error"), "answer too large")
 
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)

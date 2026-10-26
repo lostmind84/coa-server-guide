@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""Read the lab worldserver's WowPacketParser PKT 3.1 packet log and toggle `.packetlog` for a lab
+character over SOAP. Python 3 standard library only.
+
+Format reference (azerothcore-wotlk-coa, src/server/game/Server/Protocol/PacketLog.cpp/.h): fixed
+`LogHeader` (signature "PKT", FormatVersion 0x0301, SniffStartUnixtime/SniffStartTicks anchor), then
+repeated `PacketHeader` (Direction tag "CMSG"/"SMSG" as a little-endian uint32, ArrivalTicks relative
+to the same clock as SniffStartTicks, Length = payload size + 4, OptionalData carrying the socket's
+IP:port, Opcode) followed by `Length - 4` bytes of packet payload (pre-compression, pre-encryption,
+both directions, logged by `WorldSocket::ReadDataHandler`/`SendPacket`). Opcode names are resolved
+from the server's `Opcodes.h` `CMSG_*`/`SMSG_*` enumerators; unknown numbers stay numeric. The file is
+read-only; a partially written last packet (the writer does `fflush` per packet, but a reader can
+still catch one mid-write) is reported as truncated instead of raising.
+
+    coa-lab-packets on|off [CHARACTER]
+        `.packetlog <character> on|off` over SOAP (character defaults to the lab descriptor's).
+
+    coa-lab-packets list [--file F] [--since-seconds S | --after-index I]
+                          [--direction s2c|c2s] [--opcode NAME|NUM]... [--opcodes PATH]
+        Prints one JSON object per line, oldest first: index, time (ISO 8601 UTC, derived from the
+        file's SniffStartUnixtime anchor), direction, opcode (number and name), size.
+
+    coa-lab-packets auras [--file F] [--guid 0x...] [--opcodes PATH]
+        Decodes SMSG_AURA_UPDATE and SMSG_AURA_UPDATE_ALL packets: target packed GUID and, per aura
+        slot, spell id, flags (names and raw value), level, stack/charges, caster GUID (when not
+        self-cast), max duration and duration (when carried). One JSON object per line.
+
+File default: the lab descriptor's slot, `~/CoaServer/slots/s<slot>/logs/lab-world.pkt` (or
+`--file`). Opcodes default: `~/Projects/azerothcore-wotlk-coa/src/server/game/Server/Protocol/Opcodes.h`
+(or `--opcodes`).
+"""
+import argparse
+import base64
+import datetime
+import json
+import os
+import re
+import struct
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from xml.etree import ElementTree
+from xml.sax.saxutils import escape
+
+LOG_HEADER_FORMAT = "<3sHBI4s40sIII"
+LOG_HEADER_FIELDS = ("signature", "format_version", "sniffer_id", "build", "locale", "session_key",
+                     "sniff_start_unixtime", "sniff_start_ticks", "optional_data_size")
+LOG_HEADER_SIZE = struct.calcsize(LOG_HEADER_FORMAT)
+
+PACKET_HEADER_FORMAT = "<IIIII16sII"
+PACKET_HEADER_FIELDS = ("direction", "connection_id", "arrival_ticks", "optional_data_size", "length",
+                        "socket_ip", "socket_port", "opcode")
+PACKET_HEADER_SIZE = struct.calcsize(PACKET_HEADER_FORMAT)
+
+DIRECTION_TAG_CLIENT_TO_SERVER = 0x47534D43  # "CMSG" packed little-endian (PacketLog.cpp)
+DIRECTION_TAG_SERVER_TO_CLIENT = 0x47534D53  # "SMSG" packed little-endian (PacketLog.cpp)
+DIRECTION_NAMES = {DIRECTION_TAG_CLIENT_TO_SERVER: "c2s", DIRECTION_TAG_SERVER_TO_CLIENT: "s2c"}
+
+OPCODE_ENUM_RE = re.compile(r"^\s*(CMSG_\w+|SMSG_\w+)\s*=\s*(0[xX][0-9A-Fa-f]+|\d+)\s*,?")
+
+DEFAULT_OPCODES_PATH = (Path.home() / "Projects/azerothcore-wotlk-coa/src/server/game/Server/"
+                         "Protocol/Opcodes.h")
+
+SMSG_AURA_UPDATE_ALL_NAME = "SMSG_AURA_UPDATE_ALL"
+SMSG_AURA_UPDATE_NAME = "SMSG_AURA_UPDATE"
+
+# AuraFlags (SpellAuraDefines.h)
+AFLAG_NONE = 0x00
+AFLAG_EFF_INDEX_0 = 0x01
+AFLAG_EFF_INDEX_1 = 0x02
+AFLAG_EFF_INDEX_2 = 0x04
+AFLAG_CASTER = 0x08
+AFLAG_POSITIVE = 0x10
+AFLAG_DURATION = 0x20
+AFLAG_ANY_EFFECT_AMOUNT_SENT = 0x40
+AFLAG_NEGATIVE = 0x80
+AFLAG_NAMES = (
+    (AFLAG_EFF_INDEX_0, "EFF_INDEX_0"),
+    (AFLAG_EFF_INDEX_1, "EFF_INDEX_1"),
+    (AFLAG_EFF_INDEX_2, "EFF_INDEX_2"),
+    (AFLAG_CASTER, "CASTER"),
+    (AFLAG_POSITIVE, "POSITIVE"),
+    (AFLAG_DURATION, "DURATION"),
+    (AFLAG_ANY_EFFECT_AMOUNT_SENT, "ANY_EFFECT_AMOUNT_SENT"),
+    (AFLAG_NEGATIVE, "NEGATIVE"),
+)
+
+ENVELOPE = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:AC">'
+    "<SOAP-ENV:Body><ns1:executeCommand><command>{command}</command></ns1:executeCommand></SOAP-ENV:Body>"
+    "</SOAP-ENV:Envelope>"
+)
+
+
+class PacketLogError(Exception):
+    pass
+
+
+class SoapFault(Exception):
+    pass
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _find(root, name):
+    for element in root.iter():
+        if _local(element.tag) == name:
+            return element
+    return None
+
+
+def soap_execute(url: str, account: str, password: str, command: str, timeout: float = 10.0) -> str:
+    body = ENVELOPE.format(command=escape(command)).encode("utf-8")
+    request = urllib.request.Request(url, data=body, method="POST")
+    request.add_header("Content-Type", "text/xml; charset=utf-8")
+    token = base64.b64encode(f"{account}:{password}".encode()).decode()
+    request.add_header("Authorization", f"Basic {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as error:
+        payload = error.read()
+        error.close()
+        if not payload or error.code in (401, 403):
+            raise SoapFault(f"HTTP {error.code} from {url}") from None
+    try:
+        root = ElementTree.fromstring(payload)
+    except ElementTree.ParseError as error:
+        raise SoapFault(f"unreadable SOAP reply: {error}: {payload[:200]!r}") from None
+    fault = _find(root, "Fault")
+    if fault is not None:
+        text = _find(fault, "faultstring")
+        raise SoapFault((text.text or "").strip() if text is not None else "SOAP fault")
+    result = _find(root, "result")
+    if result is None:
+        raise SoapFault(f"no result element in SOAP reply: {payload[:200]!r}")
+    return result.text or ""
+
+
+def load_descriptor(path: Path) -> dict:
+    try:
+        descriptor = json.loads(Path(path).read_text())
+    except OSError as error:
+        raise SystemExit(f"no lab descriptor at {path}: {error.strerror}") from None
+    missing = [key for key in ("slot", "character", "soap_url", "soap_account", "soap_password_file")
+               if key not in descriptor]
+    if missing:
+        raise ValueError(f"lab descriptor {path} lacks {', '.join(missing)}")
+    return descriptor
+
+
+def default_descriptor_path() -> Path:
+    lab_root = Path(os.environ.get("COA_LAB_ROOT", Path.home() / "CoaServer/client-lab"))
+    instance = os.environ.get("COA_LAB_INSTANCE", "")
+    state_dir = lab_root / "state" / instance if instance else lab_root / "state"
+    return state_dir / "lab.json"
+
+
+def default_file_for_slot(slot: int) -> Path:
+    return Path.home() / f"CoaServer/slots/s{slot}/logs/lab-world.pkt"
+
+
+def load_opcode_names(path: Path) -> dict:
+    names = {}
+    try:
+        text = path.read_text()
+    except OSError as error:
+        raise PacketLogError(f"cannot read opcodes file {path}: {error.strerror}") from None
+    for line in text.splitlines():
+        match = OPCODE_ENUM_RE.match(line)
+        if not match:
+            continue
+        name, value = match.group(1), match.group(2)
+        number = int(value, 16) if value.lower().startswith("0x") else int(value)
+        names.setdefault(number, name)
+    return names
+
+
+def resolve_opcode_filters(raw_values, name_to_number: dict) -> set:
+    numbers = set()
+    by_name = {name: number for number, name in name_to_number.items()}
+    for raw in raw_values or ():
+        if raw.lower().startswith("0x"):
+            numbers.add(int(raw, 16))
+            continue
+        if raw.isdigit():
+            numbers.add(int(raw))
+            continue
+        if raw in by_name:
+            numbers.add(by_name[raw])
+            continue
+        raise PacketLogError(f"unknown opcode name {raw!r} (not found in the opcodes file)")
+    return numbers
+
+
+def read_packets(file_path: Path):
+    """Yield (index, header_dict, payload, log_header_dict) for each complete packet in the PKT file.
+
+    Tolerates a partially written last packet (short header or short payload): stops instead of
+    raising, since the server's writer fflushes per packet but a reader can still catch a write in
+    progress.
+    """
+    with open(file_path, "rb") as handle:
+        raw_log_header = handle.read(LOG_HEADER_SIZE)
+        if len(raw_log_header) < LOG_HEADER_SIZE:
+            raise PacketLogError(f"{file_path}: truncated PKT header "
+                                 f"({len(raw_log_header)} of {LOG_HEADER_SIZE} bytes)")
+        log_header = dict(zip(LOG_HEADER_FIELDS, struct.unpack(LOG_HEADER_FORMAT, raw_log_header)))
+        if log_header["signature"] != b"PKT":
+            raise PacketLogError(f"{file_path}: not a PKT file (signature {log_header['signature']!r})")
+        index = 0
+        while True:
+            raw_header = handle.read(PACKET_HEADER_SIZE)
+            if not raw_header:
+                break
+            if len(raw_header) < PACKET_HEADER_SIZE:
+                break  # partially written last packet header: stop, do not raise
+            header = dict(zip(PACKET_HEADER_FIELDS, struct.unpack(PACKET_HEADER_FORMAT, raw_header)))
+            payload_size = header["length"] - 4  # Length = payload size + sizeof(Opcode) (PacketLog.cpp)
+            if payload_size < 0:
+                break
+            payload = handle.read(payload_size)
+            if len(payload) < payload_size:
+                break  # partially written last packet payload: stop, do not raise
+            yield index, header, payload, log_header
+            index += 1
+
+
+def packet_time(header: dict, log_header: dict) -> datetime.datetime:
+    delta_ms = (header["arrival_ticks"] - log_header["sniff_start_ticks"]) & 0xFFFFFFFF
+    seconds = log_header["sniff_start_unixtime"] + delta_ms / 1000.0
+    return datetime.datetime.fromtimestamp(seconds, tz=datetime.timezone.utc)
+
+
+def packet_record(index: int, header: dict, payload: bytes, log_header: dict, opcode_names: dict) -> dict:
+    direction = DIRECTION_NAMES.get(header["direction"])
+    return {
+        "index": index,
+        "time": packet_time(header, log_header).isoformat(timespec="milliseconds"),
+        "direction": direction if direction is not None else header["direction"],
+        "opcode": header["opcode"],
+        "opcode_name": opcode_names.get(header["opcode"]),
+        "size": len(payload),
+    }
+
+
+def iter_filtered_packets(file_path: Path, *, since_seconds=None, after_index=None, direction=None,
+                           opcode_numbers=None):
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    for index, header, payload, log_header in read_packets(file_path):
+        if after_index is not None and index <= after_index:
+            continue
+        if since_seconds is not None:
+            age = (now - packet_time(header, log_header)).total_seconds()
+            if age > since_seconds:
+                continue
+        packet_direction = DIRECTION_NAMES.get(header["direction"])
+        if direction is not None and packet_direction != direction:
+            continue
+        if opcode_numbers is not None and header["opcode"] not in opcode_numbers:
+            continue
+        yield index, header, payload, log_header
+
+
+class PayloadReader:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self._pos = 0
+
+    def remaining(self) -> int:
+        return len(self._payload) - self._pos
+
+    def read(self, size: int) -> bytes:
+        if self.remaining() < size:
+            raise PacketLogError(f"short read: wanted {size} bytes, {self.remaining()} left")
+        chunk = self._payload[self._pos:self._pos + size]
+        self._pos += size
+        return chunk
+
+    def read_u8(self) -> int:
+        return self.read(1)[0]
+
+    def read_u32(self) -> int:
+        return struct.unpack("<I", self.read(4))[0]
+
+    def read_packed_guid(self) -> int:
+        # ByteBuffer::appendPackGUID (src/server/shared/Packets/ByteBuffer.h): one mask byte, bit i
+        # set means byte i of the 8-byte GUID is present, followed by only the present bytes in order.
+        mask = self.read_u8()
+        guid = 0
+        for i in range(8):
+            if mask & (1 << i):
+                guid |= self.read_u8() << (8 * i)
+        return guid
+
+
+def decode_aura_flags(flags: int) -> list:
+    return [name for bit, name in AFLAG_NAMES if flags & bit]
+
+
+def decode_aura_application(reader: PayloadReader) -> dict:
+    # AuraApplication::BuildUpdatePacket (SpellAuras.cpp)
+    slot = reader.read_u8()
+    spell_id = reader.read_u32()
+    if spell_id == 0:
+        return {"slot": slot, "removed": True}
+    flags = reader.read_u8()
+    level = reader.read_u8()
+    stack_or_charges = reader.read_u8()
+    record = {
+        "slot": slot,
+        "spell_id": spell_id,
+        "flags": flags,
+        "flag_names": decode_aura_flags(flags),
+        "level": level,
+        "stack_or_charges": stack_or_charges,
+    }
+    if not (flags & AFLAG_CASTER):
+        record["caster_guid"] = f"0x{reader.read_packed_guid():016X}"
+    if flags & AFLAG_DURATION:
+        record["max_duration"] = reader.read_u32()
+        record["duration"] = reader.read_u32()
+    return record
+
+
+def decode_aura_packet(opcode_name: str, payload: bytes) -> dict:
+    reader = PayloadReader(payload)
+    target_guid = reader.read_packed_guid()
+    auras = []
+    if opcode_name == SMSG_AURA_UPDATE_NAME:
+        # One slot per packet (AuraApplication::ClientUpdate): either "removed" (uint32 0) or one
+        # full aura application record.
+        auras.append(decode_aura_application(reader))
+    else:
+        # SMSG_AURA_UPDATE_ALL (Player::GetAurasForTarget): one record per currently visible aura,
+        # back to back, until the payload is exhausted.
+        while reader.remaining() > 0:
+            auras.append(decode_aura_application(reader))
+    return {"target_guid": f"0x{target_guid:016X}", "auras": auras}
+
+
+def resolve_file(args) -> Path:
+    if args.file:
+        return Path(args.file)
+    descriptor = load_descriptor(getattr(args, "descriptor", default_descriptor_path()))
+    return default_file_for_slot(int(descriptor["slot"]))
+
+
+def cmd_toggle(args, on: bool) -> int:
+    descriptor_path = default_descriptor_path() if args.descriptor is None else args.descriptor
+    descriptor = load_descriptor(descriptor_path)
+    character = args.character or descriptor["character"]
+    password = Path(descriptor["soap_password_file"]).read_text().strip()
+    command = f".packetlog {character} {'on' if on else 'off'}"
+    try:
+        reply = soap_execute(descriptor["soap_url"], descriptor["soap_account"], password, command)
+    except SoapFault as error:
+        print(f"coa-lab-packets: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps({"character": character, "command": command, "reply": reply.strip()},
+                      ensure_ascii=False))
+    return 0
+
+
+def cmd_list(args) -> int:
+    file_path = resolve_file(args)
+    opcode_names = load_opcode_names(Path(args.opcodes))
+    opcode_numbers = resolve_opcode_filters(args.opcode, opcode_names) if args.opcode else None
+    try:
+        for index, header, payload, log_header in iter_filtered_packets(
+                file_path, since_seconds=args.since_seconds, after_index=args.after_index,
+                direction=args.direction, opcode_numbers=opcode_numbers):
+            print(json.dumps(packet_record(index, header, payload, log_header, opcode_names),
+                              ensure_ascii=False))
+    except PacketLogError as error:
+        print(f"coa-lab-packets: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_auras(args) -> int:
+    file_path = resolve_file(args)
+    opcode_names = load_opcode_names(Path(args.opcodes))
+    opcode_numbers = {number for number, name in opcode_names.items()
+                      if name in (SMSG_AURA_UPDATE_NAME, SMSG_AURA_UPDATE_ALL_NAME)}
+    if not opcode_numbers:
+        print("coa-lab-packets: SMSG_AURA_UPDATE/SMSG_AURA_UPDATE_ALL not found in the opcodes file",
+              file=sys.stderr)
+        return 1
+    guid_filter = int(args.guid, 16) if args.guid else None
+    try:
+        for index, header, payload, log_header in iter_filtered_packets(
+                file_path, opcode_numbers=opcode_numbers):
+            opcode_name = opcode_names[header["opcode"]]
+            try:
+                decoded = decode_aura_packet(opcode_name, payload)
+            except PacketLogError as error:
+                print(json.dumps({"index": index, "opcode_name": opcode_name, "error": str(error)},
+                                  ensure_ascii=False))
+                continue
+            if guid_filter is not None and int(decoded["target_guid"], 16) != guid_filter:
+                continue
+            record = packet_record(index, header, payload, log_header, opcode_names)
+            record.update(decoded)
+            print(json.dumps(record, ensure_ascii=False))
+    except PacketLogError as error:
+        print(f"coa-lab-packets: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="coa-lab-packets")
+    parser.add_argument("--descriptor", type=Path, default=None)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    on_parser = sub.add_parser("on", help="`.packetlog <character> on` over SOAP")
+    on_parser.add_argument("character", nargs="?")
+
+    off_parser = sub.add_parser("off", help="`.packetlog <character> off` over SOAP")
+    off_parser.add_argument("character", nargs="?")
+
+    list_parser = sub.add_parser("list", help="list packets from the PKT file")
+    list_parser.add_argument("--file", type=Path, default=None)
+    list_parser.add_argument("--opcodes", type=Path, default=DEFAULT_OPCODES_PATH)
+    since_group = list_parser.add_mutually_exclusive_group()
+    since_group.add_argument("--since-seconds", type=float, default=None)
+    since_group.add_argument("--after-index", type=int, default=None)
+    list_parser.add_argument("--direction", choices=("s2c", "c2s"), default=None)
+    list_parser.add_argument("--opcode", action="append", default=None)
+
+    auras_parser = sub.add_parser("auras", help="decode SMSG_AURA_UPDATE(_ALL) from the PKT file")
+    auras_parser.add_argument("--file", type=Path, default=None)
+    auras_parser.add_argument("--opcodes", type=Path, default=DEFAULT_OPCODES_PATH)
+    auras_parser.add_argument("--guid", default=None)
+
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "on":
+            return cmd_toggle(args, on=True)
+        if args.command == "off":
+            return cmd_toggle(args, on=False)
+        if args.command == "list":
+            return cmd_list(args)
+        if args.command == "auras":
+            return cmd_auras(args)
+    except (PacketLogError, ValueError, OSError) as error:
+        print(f"coa-lab-packets: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -575,7 +575,7 @@ coa-slot preflight 2                          # coa-preflight.py against slot 2 
 set -a; . ~/CoaServer/slots/s2/ghost.env; set +a
 go test -tags=e2e -p 1 ./e2e/coa/summonspets -count=1 -v
 coa-slot compose 2 logs --tail 50 ac-worldserver
-coa-slot stop 2 && coa-slot release 2         # batch done
+coa-slot release 2                            # batch done: stops the slot's containers (--keep leaves them running)
 ```
 
 - `create` copies `/srv/coa/etc` once (Ghost tests edit `worldserver.conf`), seeds slots 2 and 3 from the repack
@@ -625,9 +625,11 @@ go through gamescope's own X display, so your focus and mouse are never used. On
 ```bash
 coa-client-lab create                      # once: reflink copy of the client and prefix (near-zero disk space)
 coa-slot claim 2 "client check"            # the lab client talks to a claimed slot
+coa-client-lab character --slot 2 --character Coalabnecro --race 5 --class 23 \
+    --level 20 --learn 704723 --items 9701803   # creates/updates its own dedicated account; prints JSON
 coa-client-lab preflight 2                 # server and lab client data must match
 coa-client-lab start 2
-coa-client-lab login <account> <password>  # GM account on that slot; takes about 90 seconds
+coa-client-lab login Coalabnecro           # resolves the dedicated account and its password itself
 coa-client-lab chat "/say hello"
 coa-client-lab screenshot                  # prints the PNG path
 coa-client-lab hold w 300                  # hold a key down for milliseconds (walk with w/s, turn with Left/Right)
@@ -646,9 +648,36 @@ coa-client-lab stop                        # warns if your own client changed me
 
 The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:
 `coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
-slot; create the character through a Ghost bot login rather than the character creation screen. Tests:
-`scripts/tests/coa-client-lab.test.sh`. Design and spike results:
-[`docs/design/`](docs/design/).
+slot; `coa-client-lab character` (above) creates or updates one through the Ghost e2e harness in one command
+(race/class/level/spec/spells/items), refuses slot 1 and refuses to change an existing character's class.
+It needs [`scripts/lab-character`](scripts/lab-character) (a Go module driven as `go test`, since the Ghost
+harness is built around `*testing.T`) and a Ghost checkout (`COA_GHOST_REPO`, default
+`~/Projects/ConquestOfAzerothGhost`); the checkout path is supplied through a generated `go.work` `replace`
+at run time, so `scripts/lab-character/go.mod` never hard-codes one user's home.
+
+Without `--account`, `character` derives a dedicated account for that one character: `COALAB` plus the
+upper-cased character name, truncated to `MAX_ACCOUNT_STR` (17; `src/server/game/Accounts/AccountMgr.h:34`
+in the server repo) — `DeriveAccount` in `scripts/lab-character`. The `COALAB` prefix matches the relay's
+own `CoA.ProbeRelay.AccountPrefix` default, below, so a dedicated account can be probed too. Its password
+is generated once with
+`openssl rand -hex 16` and kept at `~/CoaServer/client-lab/secrets/<account lower>.password` (mode 600,
+reused on later calls, never printed); `login CHARACTER` reads the same account and password back, so
+there is never a character list to pick from. The account refuses to pick up a second, differently named
+character (a real second character, or a name collision after truncation) — delete it or use a different
+name. Pass `--account NAME` to keep a shared account instead, e.g. for account-wide issues (bank,
+account-bound items, collections, the char-select screen itself): `character` then warns, but does not
+refuse, once that account holds 2+ characters, since `login CHARACTER` can only resolve a dedicated account
+and character-select navigation by name is disabled (next paragraph) — use
+`login ACCOUNT PASSWORD CHARACTER` and verify the right one loaded.
+
+`login`'s CHARACTER argument (both forms) also looks up that character on the character-select screen
+(CHAR_SEL_ENUM order) to report its index, but navigation itself is disabled: live on slot 2 the list wraps
+circularly instead of clamping at the top, so a fixed Up-then-Down sequence is not reliable (see the comment
+on `select_character` in `scripts/coa-client-lab`); login falls back to whatever the client already has
+highlighted. This is moot for a dedicated account (nothing to pick between). Tests:
+`scripts/tests/coa-client-lab.test.sh` and, for the Go module, `go vet ./...` plus the DB-free tests
+(`go test -run '^(TestValidateClass|TestCharacterListOrder|TestDeriveAccount|TestDedicatedAccountConflict)$'`).
+Design and spike results: [`docs/design/`](docs/design/).
 
 `start` installs the CoaProbe addon ([`addons/CoaProbe`](addons/CoaProbe)) into the lab client. A probe types
 `/coaprobe`, then `/reload` so the client writes the answer to its SavedVariables, which
@@ -672,9 +701,12 @@ coa-client-lab preflight 2                  # also records pass/fail for the lab
 COA_LAB_PROFILE=minimal coa-client-lab start 2               # 800x600, low-cost settings, gamescope headless
 coa-client-lab login COALAB1 <password> Coalabone            # CHARACTER writes state/lab.json
 coa-client-lab probe spell 501281           # now goes through the relay: no /reload, the target is kept
-coa-lab-relay probe frame GameTooltip       # the same, directly; `errors` reports the addon's handler only:
-                                            #   this client replaces it after login, so read Lua errors from `probe log`
+coa-lab-relay probe frame GameTooltip       # the same, directly
+coa-client-lab probe errors 5               # the client's own Lua error text and stack (ERROR_HANDLER_DATABASE);
+                                            #   a /reload empties it: pass `previous` to read the errors from before the last one
 coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this lab client and its wineserver
+coa-lab-mem check                           # read-only process-memory diagnostics: object manager, unit/aura state, spell rows
+coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 
 - `COA_LAB_PROFILE=minimal` writes `gxResolution` and low-cost CVars (`maxFPS`, `farclip`, `baseMip`, ...) before
@@ -690,6 +722,10 @@ coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this l
   prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.
 - Measured footprint and design notes: [`docs/design/client-lab-level3.md`](docs/design/client-lab-level3.md).
+- [`scripts/coa-lab-mem`](scripts/coa-lab-mem) and [`scripts/coa-lab-packets`](scripts/coa-lab-packets) read the
+  lab client's own process memory and the worldserver's packet log, read only, lab only, and only on a slot with
+  `Warden.Enabled = 0` — see [Part 2, "reading the lab client's own state"](docs/design/client-lab-level3.md#part-2-reading-the-lab-clients-own-state)
+  and [ADR 0001](docs/adr/0001-lab-client-read-only-diagnostics.md).
 
 ### CoaProbe on its own
 
@@ -699,7 +735,8 @@ The probe addon does not need the lab client, the slots or Linux: it answers in 
    and start the client (an addon folder added while it runs is not loaded by `/reload`).
 2. In game, type a request with an id of your choice:
    `/coaprobe r1 spell 706240`, `/coaprobe r2 item 6948`, `/coaprobe r3 auras target`, `/coaprobe r4 spellbook`,
-   `/coaprobe r5 known 78`, `/coaprobe r6 log 20`, `/coaprobe r7 state`. The chat answers `COAPROBE r1 ok`.
+   `/coaprobe r5 known 78`, `/coaprobe r6 log 20`, `/coaprobe r7 state`, `/coaprobe r8 errors 5`. The chat answers
+   `COAPROBE r1 ok`.
 3. Type `/reload`: the client writes the answers to
    `WTF/Account/<ACCOUNT>/SavedVariables/CoaProbe.lua` (`WTF\Account\<ACCOUNT>\SavedVariables\CoaProbe.lua` on
    Windows).
@@ -709,9 +746,11 @@ Answers are JSON: `spell` gives name, rank, icon, cost, cast time, range, whethe
 tooltip lines; `item` gives the tooltip lines; `auras` gives name, spell id, count, duration, expirationTime, caster
 and whether it is harmful for every aura on the unit; `spellbook` lists the known spells with their ids; `known`
 answers one spell id; `log` returns the addon's own continuous capture (see below); `state` snapshots the player
-and target together. The addon keeps the last 50 answers and never talks to the server, so it is safe on a live
-realm. Limits: it cannot read action bars, 3D models or Lua errors (a `seterrorhandler` wrapper never sees them),
-and a request must not contain `|`.
+and target together; `errors [N] [previous] [locals]` reads the client's own Lua error log
+(`ERROR_HANDLER_DATABASE`) directly, no handler install — on this path a `/reload` is also what rotates
+`errors.current` into `.previous`, so `errors` and `errors previous` in the same `/reload` describe the errors
+from right before and right after it. The addon keeps the last 50 answers and never talks to the server, so it
+is safe on a live realm. Limits: it cannot read action bars or 3D models, and a request must not contain `|`.
 
 Installing the addon adds a second SavedVariable, `CoaProbeLog`, written into the same `CoaProbe.lua` file: the
 addon continuously captures UI errors ("Not enough rage"), system messages and the player's own casts (with their
