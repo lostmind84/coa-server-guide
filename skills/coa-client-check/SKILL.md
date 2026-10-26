@@ -66,6 +66,12 @@ through `.localspec`, `Learn`, `AddItem`/`EquipEntry`, `Teleport`, `Spawn` for a
 spell itself, checking both the server's aura list and the one the client receives. Typing GM commands into the lab
 client is slower, blind and fails silently: use it only for a last tweak.
 
+For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
+`coa-client-lab character --slot N --account A --character C --race R --class K [--level N] [--spec ID]
+[--learn ID,ID,...] [--items ID,ID,...]` (guide README, "Client lab for agents"). It refuses slot 1 and refuses
+to silently change an existing character's class; then log in with `coa-client-lab login <account> <password>
+<character>`, which also selects that character on the character-select screen.
+
 Split the work:
 
 1. **Ghost** does the setup: account, character of the right race, class and level, spec, spells, equipment,

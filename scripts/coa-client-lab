@@ -37,6 +37,10 @@ PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
 RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
 # Commands the server relay and the addon accept over addon whispers; everything else keeps the /reload path.
 RELAY_COMMANDS=" ping spell item auras spellbook known log state ca frame errors "
+# The Ghost e2e harness checkout `character` and `login`'s character-select navigation build against
+# (scripts/lab-character). Overridable so the Go module in this guide never hard-codes one user's home.
+GHOST_REPO="${COA_GHOST_REPO:-$HOME/Projects/ConquestOfAzerothGhost}"
+LAB_CHARACTER_DIR="$SCRIPT_DIR/lab-character"
 PROFILE="${COA_LAB_PROFILE:-readable}"
 FPS="${COA_LAB_FPS:-10}"
 if [[ "$PROFILE" == minimal ]]; then
@@ -76,8 +80,15 @@ Running (one lab client per instance):
                            readable|minimal, COA_LAB_DISPLAY nested|headless (minimal defaults to headless),
                            COA_LAB_WIDTH/HEIGHT, COA_LAB_FPS)
   login ACCOUNT PASSWORD [CHARACTER]
-                           keyboard login and world entry; with CHARACTER and a relay-setup slot, also writes
-                           the lab descriptor state/lab.json used by relay probes
+                           keyboard login and world entry; dismisses a leftover glue modal first. With
+                           CHARACTER, navigates the character list to it before entering the world (falls
+                           back to the default highlighted character if the lookup fails) and, on a
+                           relay-setup slot, writes the lab descriptor state/lab.json used by relay probes
+  character --slot 2|3 --account A --character C --race R --class K [--level N] [--spec ID] [--gm N]
+            [--learn ID,ID,...] [--items ID,ID,...]
+                           create or update one lab test character through the Ghost e2e harness (slot 1,
+                           the user's own server, is refused); an existing character of a different class
+                           is refused, never deleted; class must be a CoA class id (12-32); prints JSON
   type TEXT                type text into the client
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
@@ -419,17 +430,154 @@ cmd_chat() {
     xdotool key --window "$WINDOW" Return
 }
 
+# Builds a go.work that supplies the only user-specific path (GHOST_REPO) as a `replace`, instead of
+# baking it into lab-character/go.mod (go help work: go.work replace directives take precedence and are
+# meant for exactly this; go.mod itself keeps only the public detour-go replace AzerothGhost also needs).
+# GOSUMDB=off/GOPROXY=off: every module here is either this local replace or already in the module
+# cache from building this package; no network fetch is expected, and none is attempted.
+run_lab_character() {
+    [[ -f "$GHOST_REPO/go.mod" ]] || die "no Ghost checkout at $GHOST_REPO (set COA_GHOST_REPO): no go.mod there"
+    local workfile status=0
+    workfile=$(mktemp --suffix=.work)
+    printf 'go 1.26\n\nuse %s\n\nreplace github.com/azerothcore/AzerothGhost => %s\n' \
+        "$LAB_CHARACTER_DIR" "$GHOST_REPO" > "$workfile"
+    # `|| status=$?`, not a bare statement then `status=$?` on the next line: under this script's
+    # `set -e`, a bare failing command exits the whole script before that next line ever runs.
+    ( cd "$LAB_CHARACTER_DIR" && GOSUMDB=off GOPROXY=off GOWORK="$workfile" go test "$@" ) || status=$?
+    rm -f "$workfile"
+    return "$status"
+}
+
+cmd_character() {
+    local slot="" account="" character="" race="" class="" level="0" spec="0" gm="0" learn="" items=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --slot) slot="${2:-}"; shift 2 ;;
+            --account) account="${2:-}"; shift 2 ;;
+            --character) character="${2:-}"; shift 2 ;;
+            --race) race="${2:-}"; shift 2 ;;
+            --class) class="${2:-}"; shift 2 ;;
+            --level) level="${2:-}"; shift 2 ;;
+            --spec) spec="${2:-}"; shift 2 ;;
+            --gm) gm="${2:-}"; shift 2 ;;
+            --learn) learn="${2:-}"; shift 2 ;;
+            --items) items="${2:-}"; shift 2 ;;
+            *) die "unknown character argument: $1" ;;
+        esac
+    done
+    [[ "$slot" =~ ^[23]$ ]] \
+        || die "usage: coa-client-lab character --slot 2|3 --account A --character C --race R --class K [--level N] [--spec ID] [--gm N] [--learn ID,ID,...] [--items ID,ID,...] (slot 1 is the user's own client/server; refused)"
+    [[ -n "$account" && -n "$character" && -n "$race" && -n "$class" ]] \
+        || die "character needs --account --character --race --class"
+    [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
+    [[ "$class" =~ ^[0-9]+$ ]] && ((class >= 12 && class <= 32)) \
+        || die "class must be a CoA class id 12-32 (CLASS_BARBARIAN..CLASS_SPIRIT_MAGE), got: $class"
+    [[ "$race" =~ ^[0-9]+$ ]] || die "race must be a numeric race id, got: $race"
+    [[ "$level" =~ ^[0-9]+$ ]] || die "level must be a number, got: $level"
+    [[ "$spec" =~ ^[0-9]+$ ]] || die "spec must be a number, got: $spec"
+    [[ "$gm" =~ ^[0-9]+$ ]] || die "gm must be a number, got: $gm"
+
+    local ghost_env
+    ghost_env=$(coa-slot env "$slot" | sed -n 's/^GHOST_ENV=//p')
+    [[ -n "$ghost_env" && -f "$ghost_env" ]] || die "coa-slot env $slot gave no readable GHOST_ENV (coa-slot create $slot first?)"
+
+    local spec_json
+    spec_json=$(python3 -c '
+import json, sys
+account, character, race, klass, level, spec, gm, learn, items = sys.argv[1:10]
+def ids(s):
+    return [int(x) for x in s.split(",") if x.strip()]
+print(json.dumps({
+    "account": account, "character": character, "race": int(race), "class": int(klass),
+    "level": int(level), "spec": int(spec), "gm": int(gm), "learn": ids(learn), "items": ids(items),
+}))
+' "$account" "$character" "$race" "$class" "$level" "$spec" "$gm" "$learn" "$items") || die "could not build the character request"
+
+    local out status=0
+    out=$(mktemp)
+    ( set -a; source "$ghost_env"; set +a
+      export COA_LAB_CHARACTER_SPEC="$spec_json" COA_LAB_CHARACTER_OUT="$out"
+      run_lab_character -run '^TestLabCharacterApply$' -v . ) || status=$?
+    if [[ "$status" != 0 ]]; then
+        rm -f "$out"
+        die "character setup failed (go test output above)"
+    fi
+    cat "$out"
+    rm -f "$out"
+}
+
+# The 0-based index of CHARACTER in ACCOUNT's glue character list (CHAR_SEL_ENUM order; see
+# scripts/lab-character/character_test.go), or empty on any lookup failure (new character, no relay
+# slot recorded, Ghost checkout missing): the caller then skips navigation and keeps the default
+# highlighted character, exactly like before this change.
+lab_character_index() {
+    local account="$1" character="$2" slot ghost_env out status=0 index
+    slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || return 1
+    [[ -n "$slot" ]] || return 1
+    ghost_env=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^GHOST_ENV=//p') || return 1
+    [[ -n "$ghost_env" && -f "$ghost_env" ]] || return 1
+    out=$(mktemp)
+    ( set -a; source "$ghost_env"; set +a
+      export COA_LAB_CHARACTER_ACCOUNT="$account" COA_LAB_CHARACTER_NAME="$character" COA_LAB_CHARACTER_OUT="$out"
+      run_lab_character -run '^TestLabCharacterIndex$' . ) > /dev/null 2>&1 || status=$?
+    if [[ "$status" != 0 ]]; then
+        rm -f "$out"
+        return 1
+    fi
+    index=$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print(d["index"] if d.get("found") else "")' "$out" 2>/dev/null)
+    rm -f "$out"
+    [[ -n "$index" ]] || return 1
+    echo "$index"
+}
+
+# Navigates the character-select list to CHARACTER before the caller's "enter world" Return. `/run` is
+# not available at the glue screen (no Lua console there) and mouse clicks are unreliable in gamescope
+# (spike findings Q2), so the only verified input is keyboard: Up enough times to reach the top of the
+# list. Up/Down WAS tried here (clamp-to-top then step down to the known index) and is disabled again:
+# live on slot 2 (2026-10-26) the list turned out to wrap circularly, not clamp, so a fixed "many Up
+# presses" is not a reliable way to reach a known absolute position without first knowing the current
+# highlight. One run it even moved the highlight OFF the already-correct default character (observed via
+# screenshot: default highlight was already the target, 30 Up (even, so a no-op on a 2-entry circular
+# list) + 1 Down moved it to the other character) — actively worse than doing nothing. Left/Right arrow
+# icons are visible next to Enter World in the real screenshot and may be the actual paging control
+# instead of Up/Down; unconfirmed. Needs a redesigned approach (read the current highlight first, or
+# confirm the real paging keys) before this does anything; until then it only looks up and reports.
+select_character() {
+    local account="$1" character="$2" index
+    if ! index=$(lab_character_index "$account" "$character"); then
+        echo "WARN: could not find $character in $account's character list; using the default highlighted character" >&2
+        return 0
+    fi
+    echo "WARN: $character is at character-list index $index, but character-select navigation is not" \
+        "implemented yet (see comment above); using the default highlighted character" >&2
+}
+
 # Sequence and delays from the spike findings (Q2). The account field sits at x = width / 2,
 # y = 315 / 600 of the height; `Return` on the character list works only once the list is loaded.
 cmd_login() {
     [[ $# -eq 2 || $# -eq 3 ]] || die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER]"
     require_running
+    # A dismiss Return is only sent when THIS lab session already attempted a login (state/account exists
+    # from a previous cmd_login call since the last `start`): only then can a leftover "disconnected" or
+    # "invalid account" dialog exist. Confirmed live (slot 2, 2026-10-26): sending it unconditionally on a
+    # fresh client, with no dialog open and nothing typed yet, corrupted the account field instead (the
+    # client's own default-focused control is not the account field on an untouched login screen) and the
+    # character never reached the world. Spike findings Q2 only evidences Return dismissing that dialog
+    # after a login attempt, never on a screen nothing has touched yet.
+    local had_prior_attempt=0
+    [[ -f "$STATE_DIR/account" ]] && had_prior_attempt=1
     echo "$1" > "$STATE_DIR/account"
     local account="$1" password="$2" character="${3:-}" backspaces geometry
     backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
     eval "$geometry"
     "$SLEEP" "$LOGIN_WAIT"
+    if [[ "$had_prior_attempt" == 1 ]]; then
+        xdotool key --window "$WINDOW" Return
+        "$SLEEP" 0.5
+    fi
     xdotool mousemove --window "$WINDOW" $((WIDTH / 2)) $((HEIGHT * 315 / 600)) click 1
     "$SLEEP" 0.5
     # shellcheck disable=SC2086
@@ -442,6 +590,9 @@ cmd_login() {
     xdotool type --window "$WINDOW" --delay 60 "$password"
     xdotool key --window "$WINDOW" Return
     "$SLEEP" "$REALM_WAIT"
+    if [[ -n "$character" ]]; then
+        select_character "$account" "$character"
+    fi
     xdotool key --window "$WINDOW" Return
     "$SLEEP" "$WORLD_WAIT"
     # In-game sound options, set through the client's own CVars: they take effect at once and are saved with the
@@ -685,6 +836,7 @@ main() {
         key) cmd_key "$@" ;;
         chat) cmd_chat "$@" ;;
         login) cmd_login "$@" ;;
+        character) cmd_character "$@" ;;
         screenshot) cmd_screenshot "$@" ;;
         hold) cmd_hold "$@" ;;
         mute) cmd_mute ;;

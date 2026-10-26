@@ -625,9 +625,12 @@ go through gamescope's own X display, so your focus and mouse are never used. On
 ```bash
 coa-client-lab create                      # once: reflink copy of the client and prefix (near-zero disk space)
 coa-slot claim 2 "client check"            # the lab client talks to a claimed slot
+coa-client-lab character --slot 2 --account COALAB1 --character Coalabnecro --race 5 --class 23 \
+    --level 20 --learn 704723 --items 9701803   # create/update a test character through Ghost; prints JSON
 coa-client-lab preflight 2                 # server and lab client data must match
 coa-client-lab start 2
-coa-client-lab login <account> <password>  # GM account on that slot; takes about 90 seconds
+coa-client-lab login <account> <password> [character]   # GM account on that slot; takes about 90 seconds;
+                                            #   with CHARACTER, selects it on the character-select screen
 coa-client-lab chat "/say hello"
 coa-client-lab screenshot                  # prints the PNG path
 coa-client-lab hold w 300                  # hold a key down for milliseconds (walk with w/s, turn with Left/Right)
@@ -646,9 +649,17 @@ coa-client-lab stop                        # warns if your own client changed me
 
 The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:
 `coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
-slot; create the character through a Ghost bot login rather than the character creation screen. Tests:
-`scripts/tests/coa-client-lab.test.sh`. Design and spike results:
-[`docs/design/`](docs/design/).
+slot; `coa-client-lab character` (above) creates or updates one through the Ghost e2e harness in one command
+(race/class/level/spec/spells/items), refuses slot 1 and refuses to change an existing character's class.
+It needs [`scripts/lab-character`](scripts/lab-character) (a Go module driven as `go test`, since the Ghost
+harness is built around `*testing.T`) and a Ghost checkout (`COA_GHOST_REPO`, default
+`~/Projects/ConquestOfAzerothGhost`); the checkout path is supplied through a generated `go.work` `replace`
+at run time, so `scripts/lab-character/go.mod` never hard-codes one user's home. `login`'s CHARACTER argument
+selects that character on the character-select screen (Up to the top of the list, then Down to its position
+in CHAR_SEL_ENUM order, looked up the same way); if the lookup fails it falls back to whatever the client
+already has highlighted, as before this existed. Tests: `scripts/tests/coa-client-lab.test.sh` and, for the
+Go module, `go vet ./...` plus the two DB-free tests (`go test -run '^(TestValidateClass|TestCharacterListOrder)$'`).
+Design and spike results: [`docs/design/`](docs/design/).
 
 `start` installs the CoaProbe addon ([`addons/CoaProbe`](addons/CoaProbe)) into the lab client. A probe types
 `/coaprobe`, then `/reload` so the client writes the answer to its SavedVariables, which
