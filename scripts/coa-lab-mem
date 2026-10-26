@@ -16,8 +16,8 @@ layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
 
 Guards enforced before any read (refused with a plain error otherwise):
   1. the target pid maps an `Ascension.exe` under `$COA_LAB_ROOT` (never the user's own client);
-  2. the lab lock names a slot, and that slot is not 1;
-  3. that slot's `~/CoaServer/slots/s<N>/etc/worldserver.conf` has `Warden.Enabled = 0`.
+  2. the lab lock names a slot;
+  3. that slot's `worldserver.conf` (the `ETC` directory `coa-slot env N` reports) has `Warden.Enabled = 0`.
 
 Offsets come from `research/wowdecomp-offsets.md` (wowdecomp decompilation, no license: addresses and
 layouts only, no copied code) and from this tool's own empirical calibration against the live lab process
@@ -62,6 +62,7 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -243,15 +244,23 @@ def check_pid_is_lab_client(pid: int, lab_root: Path, proc_root: Path = Path("/p
     return exe_real
 
 
-def check_slot_not_one(state_dir: Path) -> int:
-    slot = _slot_from_lock(state_dir)
-    if slot == 1:
-        raise GuardError("the lab lock names slot 1; refusing to read a non-lab slot")
-    return slot
+def check_lab_slot(state_dir: Path) -> int:
+    return _slot_from_lock(state_dir)
+
+
+def slot_worldserver_conf(slot: int) -> Path:
+    try:
+        env = subprocess.run(["coa-slot", "env", str(slot)], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise GuardError(f"coa-slot env {slot} failed: {error}") from None
+    match = re.search(r"^ETC=(.+)$", env, re.MULTILINE)
+    if not match:
+        raise GuardError(f"coa-slot env {slot} reports no ETC directory")
+    return Path(match.group(1).strip()) / "worldserver.conf"
 
 
 def check_warden_disabled(slot: int) -> None:
-    conf = Path.home() / f"CoaServer/slots/s{slot}/etc/worldserver.conf"
+    conf = slot_worldserver_conf(slot)
     text = _read_text(conf)
     match = re.search(r"^\s*Warden\.Enabled\s*=\s*(\S+)", text, re.MULTILINE)
     if not match or match.group(1).strip('"') != "0":
@@ -296,10 +305,10 @@ def run_guards(pid_override, lab_root: Path, instance: str) -> dict:
     checks = []
     state_dir = _state_dir(lab_root, instance)
     try:
-        slot = check_slot_not_one(state_dir)
-        checks.append({"name": "slot_not_1", "ok": True, "detail": f"slot {slot}"})
+        slot = check_lab_slot(state_dir)
+        checks.append({"name": "lab_slot", "ok": True, "detail": f"slot {slot}"})
     except GuardError as error:
-        checks.append({"name": "slot_not_1", "ok": False, "detail": str(error)})
+        checks.append({"name": "lab_slot", "ok": False, "detail": str(error)})
         raise GuardError(str(error)) from None
 
     try:

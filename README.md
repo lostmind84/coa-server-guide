@@ -560,7 +560,7 @@ side, so up to three agents can fix and test batches at once without a shared se
 | 2 | `coa-s2` | `coa-s2-*` | `s2` | 3824 / 8185 / 3406 / 7978 | `~/CoaServer/slots/s2/{etc,logs}` |
 | 3 | `coa-s3` | `coa-s3-*` | `s3` | 3924 / 8285 / 3506 / 8078 | `~/CoaServer/slots/s3/{etc,logs}` |
 
-Slot 1 is the original server; the game client connects to it. Each slot also has its own database volume, build
+Slot 1 is the original server layout (`/srv/coa`); since 2026-10-26 it is a development slot like the others, no longer the game server. Each slot also has its own database volume, build
 clone `~/Projects/azerothcore-wotlk-coa-build-sN` (`origin` = GitHub, remote `local` = the main checkout) and Ghost
 environment file `~/CoaServer/slots/sN/ghost.env`. Server data (`/srv/coa/server-data`, read-only in the
 containers) is shared unless the slot was created with `--own-data`.
@@ -649,7 +649,7 @@ coa-client-lab stop                        # warns if your own client changed me
 The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:
 `coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
 slot; `coa-client-lab character` (above) creates or updates one through the Ghost e2e harness in one command
-(race/class/level/spec/spells/items), refuses slot 1 and refuses to change an existing character's class.
+(race/class/level/spec/spells/items) on any slot and refuses to change an existing character's class.
 It needs [`scripts/lab-character`](scripts/lab-character) (a Go module driven as `go test`, since the Ghost
 harness is built around `*testing.T`) and a Ghost checkout (`COA_GHOST_REPO`, default
 `~/Projects/ConquestOfAzerothGhost`); the checkout path is supplied through a generated `go.work` `replace`

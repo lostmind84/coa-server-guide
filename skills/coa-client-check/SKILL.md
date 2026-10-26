@@ -68,7 +68,7 @@ client is slower, blind and fails silently: use it only for a last tweak.
 
 For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
 `coa-client-lab character --slot N --character C --race R --class K [--level N] [--spec ID]
-[--learn ID,ID,...] [--items ID,ID,...]` (guide README, "Client lab for agents"). It refuses slot 1 and refuses
+[--learn ID,ID,...] [--items ID,ID,...]` (guide README, "Client lab for agents"). It works on any slot and refuses
 to silently change an existing character's class; by default it makes a dedicated account for C alone, so
 `coa-client-lab login C` logs straight into it. Pass `--account A` instead only when the check is itself about
 a shared account (bank, account-bound items, char-select screen) or needs a second character alongside it on

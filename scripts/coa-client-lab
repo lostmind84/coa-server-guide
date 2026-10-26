@@ -89,9 +89,8 @@ Running (one lab client per instance):
                            character list to navigate
   character --slot N [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N]
             [--learn ID,ID,...] [--items ID,ID,...]
-                           create or update one lab test character through the Ghost e2e harness (slot 1,
-                           the user's own server, is refused); an existing character of a different class
-                           is refused, never deleted; class must be a CoA class id (12-32); prints JSON.
+                           create or update one lab test character through the Ghost e2e harness, on any
+                           slot; an existing character of a different class is refused, never deleted; class must be a CoA class id (12-32); prints JSON.
                            Without --account, uses a dedicated account for this character alone (COALAB +
                            the character name, see derive_account), with a generated password saved under
                            secrets/ and reused on later calls; refuses if that account already holds a
@@ -515,8 +514,8 @@ cmd_character() {
             *) die "unknown character argument: $1" ;;
         esac
     done
-    [[ "$slot" =~ ^[1-9][0-9]*$ && "$slot" != 1 ]] \
-        || die "usage: coa-client-lab character --slot N [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N] [--learn ID,ID,...] [--items ID,ID,...] (slot 1 is the user's own client/server; refused)"
+    [[ "$slot" =~ ^[1-9][0-9]*$ ]] \
+        || die "usage: coa-client-lab character --slot N [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N] [--learn ID,ID,...] [--items ID,ID,...]"
     [[ -n "$character" && -n "$race" && -n "$class" ]] \
         || die "character needs --character --race --class (and --account for a shared account)"
     [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
