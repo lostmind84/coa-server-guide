@@ -479,6 +479,68 @@ class SpellRecordTest(unittest.TestCase):
         self.assertIn("null", result["reason"])
 
 
+class GlueTest(unittest.TestCase):
+    def _write_character_list(self, fake, names):
+        data = 0x6000000
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_ALLOC_OFF, max(len(names), 1))
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_COUNT_OFF, len(names))
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_DATA_OFF, data if names else 0)
+        for index, name in enumerate(names):
+            entry = data + index * mem.GLUE_CHARLIST_ENTRY_SIZE
+            fake.write(entry + mem.GLUE_CHARLIST_NAME_OFF, (name.encode() + b"\x00").ljust(48, b"\x00"))
+
+    def test_account_login_screen_not_in_world_empty_list(self):
+        fake = FakeMemory()
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"login\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 0xFFFFFFFF)  # -1 as i32
+        self._write_character_list(fake, [])
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", side_effect=mem.MemoryError_("no tls")):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["current_screen"], "login")
+        self.assertFalse(result["in_world"])
+        self.assertEqual(result["selection_index"], -1)
+        self.assertEqual(result["characters"], [])
+
+    def test_character_select_screen_lists_names_and_index(self):
+        fake = FakeMemory()
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"charselect\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 1)
+        self._write_character_list(fake, ["Memdedi", "Memtwo"])
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", side_effect=mem.MemoryError_("no tls")):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["current_screen"], "charselect")
+        self.assertFalse(result["in_world"])
+        self.assertEqual(result["selection_index"], 1)
+        self.assertEqual(result["characters"], ["Memdedi", "Memtwo"])
+
+    def test_in_world_flag_true_when_object_manager_resolves(self):
+        fake = FakeMemory()
+        # m_currentScreen is not cleared on entering the world (validated live): it keeps the stale
+        # glue screen name, which is exactly why `in_world` must come from the object manager, not
+        # from the screen string.
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"charselect\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 0)
+        self._write_character_list(fake, [])  # cleared on entering the world, validated live
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", return_value={"tls_index": 0, "s_curmgr_delta": 0}), \
+             unittest.mock.patch.object(mem, "resolve_object_manager", return_value={"address": 0x3000000}), \
+             unittest.mock.patch.object(mem, "object_manager_summary", return_value={"active_player_guid": 7}):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["current_screen"], "charselect")
+        self.assertTrue(result["in_world"])
+        self.assertEqual(result["characters"], [])
+
+    def test_character_list_not_read_when_data_pointer_is_null(self):
+        fake = FakeMemory()
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_ALLOC_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_COUNT_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_DATA_OFF, 0)
+        patch_memory(self, fake)
+        self.assertEqual(mem.read_glue_character_list(None), [])
+
+
 class GuardsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

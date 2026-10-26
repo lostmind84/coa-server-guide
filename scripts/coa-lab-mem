@@ -10,6 +10,8 @@ read-only `/proc/<pid>/mem` open) for every read; no write syscall, no ptrace at
     coa-lab-mem objects                      guid, type, entry, name for every object in the object manager
     coa-lab-mem spell-db                     g_spellDB summary: record count, min/max spell id
     coa-lab-mem spell ID                     the client's loaded Spell.dbc row for ID, or "not loaded"
+    coa-lab-mem glue                         glue screen state: current screen, in-world flag, character-select
+                                              selection index and character names
 
 Global options: --pid (override discovery, still guarded), --instance (or COA_LAB_INSTANCE; state directory
 layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
@@ -133,6 +135,39 @@ SPELLREC_DESCRIPTION_PTR_OFF = 0x228     # validated
 SPELLREC_TOOLTIP_PTR_OFF = 0x22C         # validated (not in the decompilation excerpt; found by pattern + file match)
 SPELLREC_SCHOOL_MASK_OFF = 0x284         # validated (file offset 900, shifted by the 256-byte string shrink)
 SPELLREC_STRING_MAXLEN = 1024
+
+# Glue (login/character-select) screen state. wowdecomp has no licence: addresses and layouts only, never
+# copied code. `CGlueMgr::m_currentScreen` (WoW/Source/Glue/CGlueMgr.h:55, address WoW/Source/Glue/CGlueMgr.cpp:152
+# "// STATIC: 0x00B6A9E0"): set by CGlueMgr::SetScreen on every glue screen transition ("login", "charselect",
+# "charcreate", ...) but, read live, is *not* cleared or updated on entering the world -- it keeps the last glue
+# screen's name (validated live: reads "charselect" while already in world after a character-select login). An
+# empty object-manager resolution (see `resolve_object_manager`) is the in-world signal instead, already used by
+# `check`/`player`/`unit`/`objects`.
+# `CCharacterSelection::s_selectionIndex` (WoW/Source/Glue/CharacterSelection.h:18, address
+# WoW/Source/Glue/CharacterSelection.cpp:47 "// STATIC: 0x00AC436C"): validated live -- -1 with no character
+# list loaded (account-login screen), 0 on a fresh character-select screen matching the first highlighted
+# character, and moves 0->1 after one Down keypress, matching the client's own highlight (screenshot-confirmed).
+# `CCharacterSelection::s_characterList` (WoW/Source/Glue/CharacterSelection.h:17, address
+# WoW/Source/Glue/CharacterSelection.cpp:62 "// STATIC: 0x00B6B238"): a TSGrowableArray<CharacterSelectionDisplay>
+# (Engine/Source/Storm/H/stpl.h:88-100, TSBaseArray<T>: alloc +0, count +4, data +8 -- the same base layout
+# already validated for the aura array's dynamic mode). Entry stride is sizeof(CharacterSelectionDisplay)
+# (WoW/Source/Glue/CharacterSelectionDisplay.h:14-18): m_characterInfo at +0, m_component (a pointer) at +0x188,
+# so sizeof(CHARACTER_INFO) == 0x188 and the stride including CharacterSelectionDisplay's own trailing fields
+# (m_petModel, m_petAlpha, unused_0194, the last ending at +0x198) is 0x198 -- validated live (not file-sourced):
+# with one character the list read exactly one entry whose name matched; with two, entry 0 and entry 1 (stride
+# 0x198 apart) read back the two distinct character names the screen showed, and after a Down keypress the
+# highlighted entry in the screenshot was exactly s_characterList[s_selectionIndex] by name. Name field
+# CHARACTER_INFO::m_name at +0x08 (WoW/Source/WowServices/RealmConnection.h:19 "char m_name [48]") -- validated
+# live against both characters' names. The list is cleared on entering the world (CharacterSelection.cpp:103,
+# `s_characterList.Clear()`; validated live: count reads 0 once in world).
+GLUE_CURRENT_SCREEN = 0x00B6A9E0    # CGlueMgr::m_currentScreen, char[64] -- validated
+GLUE_SELECTION_INDEX = 0x00AC436C  # CCharacterSelection::s_selectionIndex, int32_t -- validated
+GLUE_CHARACTER_LIST = 0x00B6B238   # CCharacterSelection::s_characterList, TSGrowableArray -- validated
+GLUE_CHARLIST_ALLOC_OFF = 0x00
+GLUE_CHARLIST_COUNT_OFF = 0x04
+GLUE_CHARLIST_DATA_OFF = 0x08
+GLUE_CHARLIST_ENTRY_SIZE = 0x198   # sizeof(CharacterSelectionDisplay) -- validated live, not in the decompilation
+GLUE_CHARLIST_NAME_OFF = 0x08      # CharacterSelectionDisplay::m_characterInfo.m_name -- validated
 
 USER_CLIENT_DEFAULT = Path.home() / "CoaServer/client/ascension-live"
 
@@ -685,6 +720,40 @@ def find_node_by_guid(pid: int, mgr: int, guid: int) -> int:
     raise MemoryError_(f"no object with guid {guid:#x} in the object manager")
 
 
+def read_glue_character_list(pid: int) -> list:
+    alloc = read_u32(pid, GLUE_CHARACTER_LIST + GLUE_CHARLIST_ALLOC_OFF)
+    count = read_u32(pid, GLUE_CHARACTER_LIST + GLUE_CHARLIST_COUNT_OFF)
+    data = read_u32(pid, GLUE_CHARACTER_LIST + GLUE_CHARLIST_DATA_OFF)
+    if data == 0 or count == 0 or count > alloc:
+        return []
+    names = []
+    for index in range(count):
+        entry = data + index * GLUE_CHARLIST_ENTRY_SIZE
+        names.append(read_cstring(pid, entry + GLUE_CHARLIST_NAME_OFF, 48))
+    return names
+
+
+def cmd_glue(pid: int) -> dict:
+    screen = read_cstring(pid, GLUE_CURRENT_SCREEN, 64)
+    selection_index = read_i32(pid, GLUE_SELECTION_INDEX)
+    characters = read_glue_character_list(pid)
+    in_world = False
+    try:
+        tls = parse_tls_directory(pid)
+        mgr = resolve_object_manager(pid, tls)
+        object_manager_summary(pid, mgr["address"])
+        in_world = True
+    except MemoryError_:
+        in_world = False
+    return {
+        "current_screen": screen,
+        "in_world": in_world,
+        "selection_index": selection_index,
+        "characters": characters,
+        "validated": {"current_screen": True, "in_world": True, "selection_index": True, "characters": True},
+    }
+
+
 def cmd_check(pid: int, guards: dict) -> dict:
     build = check_build_identity(pid)
     tls = parse_tls_directory(pid)
@@ -756,6 +825,7 @@ def main(argv=None) -> int:
     sub.add_parser("spell-db")
     spell_parser = sub.add_parser("spell")
     spell_parser.add_argument("spell_id", type=int)
+    sub.add_parser("glue")
     args = parser.parse_args(argv)
 
     try:
@@ -767,6 +837,8 @@ def main(argv=None) -> int:
             result = cmd_spell_db(pid)
         elif args.command == "spell":
             result = cmd_spell(pid, args.spell_id)
+        elif args.command == "glue":
+            result = cmd_glue(pid)
         else:
             tls = parse_tls_directory(pid)
             mgr = resolve_object_manager(pid, tls)

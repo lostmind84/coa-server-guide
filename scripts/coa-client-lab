@@ -35,6 +35,10 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ADDON_SRC="$SCRIPT_DIR/../addons/CoaProbe"
 PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
 RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
+# Read-only glue/world memory reader (scripts/coa-lab-mem): same guards as every other read (lab exe under the
+# lab root, lab slot from the lock, Warden.Enabled = 0). `login` treats it as advisory, never required: any
+# failure to run it (missing python3, guard refusal, unexpected output) falls back to the pixel-check path below.
+LAB_MEM="${COA_LAB_MEM:-$SCRIPT_DIR/coa-lab-mem}"
 # Commands the server relay and the addon accept over addon whispers; everything else keeps the /reload path.
 RELAY_COMMANDS=" ping spell item auras spellbook known log state ca frame errors "
 # The Ghost e2e harness checkout `character` and `login`'s character-select navigation build against
@@ -641,6 +645,159 @@ select_character() {
         "implemented yet (see comment above); using the default highlighted character" >&2
 }
 
+# Seconds between `coa-lab-mem glue` polls inside `wait_or_sleep`.
+GLUE_POLL_INTERVAL="${COA_LAB_GLUE_POLL_INTERVAL:-2}"
+
+# Runs `coa-lab-mem glue` and prints its JSON on success; prints nothing and returns non-zero on any failure
+# (guard refusal, no python3, unexpected output) -- the caller's cue to fall back to the pixel-check path,
+# never a hard error here.
+glue_state() {
+    [[ -x "$LAB_MEM" ]] && command -v python3 > /dev/null 2>&1 || return 1
+    python3 "$LAB_MEM" glue 2> /dev/null
+}
+
+# Reads one field (current_screen, in_world, selection_index) out of a `coa-lab-mem glue` JSON blob already
+# captured in $1. Prints nothing if the blob is empty or the field is missing/unreadable.
+glue_field() {
+    local json="$1" field="$2"
+    [[ -n "$json" ]] || return 0
+    # json.load parses a JSON `false`/`true` into Python's `False`/`True`; printing it raw would give
+    # "False"/"True" (capitalized), which never matches this file's own "false"/"true" string literals
+    # (confirmed live, 2026-10-26: `in_world` always read back as "False", so `[[ "$world" == "true" ]]`
+    # never matched even while genuinely in world, and the stale `current_screen` value -- left over
+    # from before entering the world, see `GLUE_CURRENT_SCREEN`'s comment -- then coincidentally matched
+    # the character-select branch below, so this command tried the "Back" click while still in the
+    # world, without ever having sent /camp; every live attempt timed out and fell back to a restart).
+    # Booleans are normalized to JSON's own spelling here so every caller's string comparison works.
+    python3 -c '
+import json, sys
+try:
+    value = json.load(sys.stdin).get(sys.argv[1], "")
+    print(str(value).lower() if isinstance(value, bool) else value)
+except Exception:
+    pass
+' "$field" <<< "$json" 2> /dev/null
+}
+
+# Waits up to $2 seconds (the same fixed sleep this replaces, kept as an upper bound) for $1 (a function name
+# taking no arguments, returning 0 once its condition holds) to succeed, polling every GLUE_POLL_INTERVAL
+# seconds; falls back to sleeping the full $2 seconds, unchanged, when `coa-lab-mem` is not usable at all
+# (`glue_state` itself fails). Never waits longer than $2 either way, so a condition memory cannot confirm (or
+# a client memory cannot read) costs no more than the original fixed delay did.
+wait_or_sleep() {
+    local glue_check="$1" ceiling="$2" waited=0
+    if ! glue_state > /dev/null 2>&1; then
+        "$SLEEP" "$ceiling"
+        return 0
+    fi
+    while (( waited < ceiling )); do
+        "$glue_check" && return 0
+        "$SLEEP" "$GLUE_POLL_INTERVAL"
+        waited=$((waited + GLUE_POLL_INTERVAL))
+    done
+    return 1
+}
+
+# Clicks the character-select screen's "Back" button (proportional to window size, same pattern as the
+# account-login field click in `cmd_login`; measured live, slot 2, 2026-10-26, 1024x768: pixel (966, 743) of
+# a (1024, 768) window, i.e. (0.943, 0.967) of width/height). Kept for reference and possible future reuse
+# (e.g. driven as a separate, external invocation, which has always worked -- see below), but no longer called
+# from `cmd_login`: see `goto_login_screen_via_memory`.
+click_charselect_back() {
+    local geometry
+    geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || return 1
+    eval "$geometry"
+    xdotool mousemove --window "$WINDOW" $((WIDTH * 943 / 1000)) $((HEIGHT * 967 / 1000)) click 1
+}
+
+# Returns 0 only if memory already confirms the account-login screen right now (current_screen == "login",
+# in_world == false); 1 otherwise, including when memory itself is unusable. This used to also try to *drive*
+# the client there with /camp + a click on the character-select "Back" button, each step confirmed by a
+# bounded poll. That recovery is no longer attempted: live testing (slot 2, 2026-10-26, after fixing a real
+# bug below) confirmed /camp reliably reaches character-select every time, but the same `click_charselect_back`
+# call that succeeds every time run on its own, outside this script, timed out (no screen change within the
+# bounded poll) every time it was driven from inside this function's own process -- 2/2 full attempts after
+# the fix, matching the 4/4 failures the original /camp + Back recovery hit before this session (ADR 0003) for
+# a cause neither session established (not verified; ruled out live before this session: click coordinates,
+# combined vs split mousemove+click, hover-state, rapid-repeat-click interference, elapsed time up to 330s).
+# The bug fixed first: `glue_field` printed Python's capitalized "True"/"False" for the `in_world` boolean,
+# which never matched this file's own "true"/"false" string comparisons, so the in-world branch below was
+# silently skipped and the stale (not cleared on entering the world) `current_screen` value coincidentally
+# matched the character-select branch -- the Back click was being attempted while still in the world, before
+# ever sending /camp. Fixing that made the /camp step run correctly (confirmed live) but did not fix the
+# click's own unreliability in this process, so the caller now goes straight to `restart_client` whenever this
+# returns 1, instead of spending a further bounded poll on a transition already shown not to complete here.
+goto_login_screen_via_memory() {
+    local json screen world
+    json=$(glue_state) || return 1
+    screen=$(glue_field "$json" current_screen)
+    world=$(glue_field "$json" in_world)
+    [[ "$screen" == "login" && "$world" == "false" ]]
+}
+
+# At character-select, presses Down until `coa-lab-mem glue`'s selection index names the wanted character,
+# bounded by the character list's own length read from memory (never an infinite loop; wraps are not needed
+# since Down alone reaches every index within one pass over a list of that length). Returns 0 once the
+# highlighted character's name matches; 1 (refuse by name, never guess) if it never does within that many
+# presses, or if memory stops answering partway through.
+select_character_via_memory() {
+    local character="$1" json count index name tries
+    json=$(glue_state) || return 1
+    count=$(python3 -c '
+import json, sys
+try:
+    print(len(json.load(sys.stdin).get("characters", [])))
+except Exception:
+    print(0)
+' <<< "$json" 2> /dev/null) || count=0
+    [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || return 1
+    tries=0
+    while (( tries < count )); do
+        index=$(glue_field "$json" selection_index)
+        name=$(python3 -c '
+import json, sys
+try:
+    chars = json.load(sys.stdin).get("characters", [])
+    index = int(sys.argv[1])
+    print(chars[index] if 0 <= index < len(chars) else "")
+except Exception:
+    pass
+' "$index" <<< "$json" 2> /dev/null)
+        [[ "$name" == "$character" ]] && return 0
+        xdotool key --window "$WINDOW" Down
+        "$SLEEP" 1
+        json=$(glue_state) || return 1
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+# `wait_or_sleep` conditions: each reads fresh memory and returns 0 once satisfied. No arguments (the
+# function-name-as-callback convention `wait_or_sleep` uses), since the waits in `cmd_login` have nothing left
+# to pass in once `wait_or_sleep` has already checked that `coa-lab-mem` itself runs at all.
+glue_check_login_ready() {
+    local json
+    json=$(glue_state) || return 1
+    [[ "$(glue_field "$json" current_screen)" == "login" ]]
+}
+
+glue_check_charselect_ready() {
+    local json
+    json=$(glue_state) || return 1
+    [[ "$(glue_field "$json" current_screen)" == "charselect" && "$(glue_field "$json" in_world)" == "false" ]] \
+        || return 1
+    python3 -c '
+import json, sys
+sys.exit(0 if json.load(sys.stdin).get("characters") else 1)
+' <<< "$json" 2> /dev/null
+}
+
+glue_check_in_world() {
+    local json
+    json=$(glue_state) || return 1
+    [[ "$(glue_field "$json" in_world)" == "true" ]]
+}
+
 # Samples one pixel (top-center, where the account-login screen's bright logo/sky sits) and returns
 # its R+G+B sum. Measured live (slot 2, 2026-10-26, 800x600): account-login srgb(176,155,148) (sum
 # 479); character-select srgb(0,56,56) (sum 112, the same point over the character-select scene's dark
@@ -712,26 +869,45 @@ cmd_login() {
     fi
     require_running
     # Credentials are only ever typed onto a screen this command has just confirmed is the clean
-    # account-login screen. On a fresh client since the last `start` (no state/account file yet),
-    # nothing has touched the glue screens and the client's own default state is the account-login
-    # screen (confirmed live, slot 2, 2026-10-26: sending a blind dismiss Return here, unconditionally,
-    # instead corrupted the account field, since the client's default-focused control on an untouched
-    # login screen is not that field). Once this lab session has attempted a login before, this command
-    # no longer tries to recover in place (character-select, a leftover error dialog, in-world, and
-    # mid-transition all look the same from here without reading the screen): it restarts the lab
-    # client on the same slot (restart_client) and then takes the same fresh-client path below, so
-    # every login — the first one and every one after it — ends up typing onto the one screen state
-    # this command has ever proven it can reach reliably.
-    if [[ -f "$STATE_DIR/account" ]]; then
+    # account-login screen. Two ways to get that confirmation, tried in order:
+    #
+    # 1. Memory (`coa-lab-mem glue`, read-only, same guards as every other memory read): if this session
+    #    has attempted a login before and memory already confirms the login screen right now
+    #    (`goto_login_screen_via_memory`), nothing else is needed. It does not try to *drive* the client
+    #    there any more (see that function's own comment for why, and the real bug fixed along the way).
+    # 2. Restart (`restart_client`): proven reliable end-to-end inside one `login` process (ADR 0003).
+    #    Used whenever (1) does not already hold -- in world, at character-select, or memory unusable --
+    #    so the same restart this script has always used for every non-login starting state.
+    #
+    # On a fresh client since the last `start` (no state/account file yet), nothing has touched the glue
+    # screens and the client's own default state is the account-login screen already (confirmed live,
+    # slot 2, 2026-10-26: sending a blind dismiss Return here, unconditionally, instead corrupted the
+    # account field, since the client's default-focused control on an untouched login screen is not that
+    # field), so neither (1) nor (2) runs for a fresh client.
+    if [[ -f "$STATE_DIR/account" ]] && ! goto_login_screen_via_memory; then
         restart_client
         require_running
     fi
-    # A fresh client (or one just restarted above) has not finished loading the glue screen yet: give
-    # it LOGIN_WAIT before the pixel check, same as the rest of this command always did before typing
-    # anything.
-    "$SLEEP" "$LOGIN_WAIT"
+    # A fresh client (or one just restarted above) has not finished loading the glue screen yet. Memory,
+    # when it is usable, turns each of this command's old fixed sleeps into a bounded poll on the real
+    # state instead (measured live, 2026-10-26: a manual launch + login reaches the login screen well
+    # under LOGIN_WAIT's 20s); each still never waits longer than the original constant, so a condition
+    # memory cannot confirm (or a client memory cannot read at all) costs no more than before.
+    wait_or_sleep glue_check_login_ready "$LOGIN_WAIT" || true
+    # The pixel-brightness check (`is_login_screen`) still runs unconditionally, even when memory already
+    # confirmed the screen: it also catches a leftover error dialog layered over the login screen (e.g. a
+    # previous wrong-password attempt), which shares the same `current_screen` value in memory ("login")
+    # but is not safe to type into -- memory alone cannot tell the two apart, since
+    # `CGlueMgr::m_currentScreen` only names the glue screen, not whether a modal is on top of it.
+    if glue_state > /dev/null 2>&1; then
+        local confirm_screen
+        confirm_screen=$(glue_field "$(glue_state)" current_screen)
+        [[ "$confirm_screen" == "login" ]] \
+            || die "memory no longer confirms the account-login screen (current_screen=${confirm_screen:-unknown});" \
+                   "refusing to type credentials."
+    fi
     is_login_screen \
-        || die "fresh client, but the account-login screen is not confirmed (pixel check failed);" \
+        || die "the account-login screen is not confirmed (pixel check failed);" \
                "see $STATE_DIR/screen-check.png. Refusing to type credentials."
     echo "$account" > "$STATE_DIR/account"
     local backspaces geometry
@@ -749,12 +925,20 @@ cmd_login() {
     xdotool key --window "$WINDOW" --delay 30 $backspaces
     xdotool type --window "$WINDOW" --delay 60 "$password"
     xdotool key --window "$WINDOW" Return
-    "$SLEEP" "$REALM_WAIT"
+    wait_or_sleep glue_check_charselect_ready "$REALM_WAIT" || true
     if [[ -n "$character" ]]; then
-        select_character "$account" "$character"
+        # `wait_or_sleep glue_check_charselect_ready` above already waited for the character list to be
+        # loaded (when memory is usable); re-check here only confirms memory is still usable right now.
+        if glue_state > /dev/null 2>&1; then
+            select_character_via_memory "$character" \
+                || die "could not highlight $character in the character-select list within its own length;" \
+                       "refusing to enter the world as an unconfirmed character. See $STATE_DIR/screen-check.png."
+        else
+            select_character "$account" "$character"
+        fi
     fi
     xdotool key --window "$WINDOW" Return
-    "$SLEEP" "$WORLD_WAIT"
+    wait_or_sleep glue_check_in_world "$WORLD_WAIT" || true
     # In-game sound options, set through the client's own CVars: they take effect at once and are saved with the
     # rest of the settings. The null sink above covers the login screen, where there is no chat to type into.
     local setting

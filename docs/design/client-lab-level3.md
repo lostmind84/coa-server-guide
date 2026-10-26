@@ -233,3 +233,42 @@ it is not called on a client that is fresh since `start`, then takes the already
 (`LOGIN_WAIT`, pixel check, type). No relay probe ping is required for this any more. `CAMP_WAIT` and
 `recover_to_login_screen` are removed. See [ADR 0003](../adr/0003-login-trusts-only-provable-screen-state.md)
 for the updated decision and consequences.
+
+## Addendum, 2026-10-26 (L5 session): `login` driven by the client's own glue screen state, read from memory
+
+Addresses found in wowdecomp and validated live (slot 2): `CGlueMgr::m_currentScreen` (char[64], 0x00B6A9E0),
+`CCharacterSelection::s_selectionIndex` (int32_t, 0x00AC436C) and `s_characterList`
+(`TSGrowableArray<CharacterSelectionDisplay>`, 0x00B6B238; name at each entry's +0x08, entry stride 0x198).
+Full file:line provenance and live-validation evidence is in the code comment at each constant in
+`scripts/coa-lab-mem` and in [ADR 0004](../adr/0004-login-driven-by-memory-read-glue-state.md). New read-only
+command: `coa-lab-mem glue` (`current_screen`, `in_world`, `selection_index`, `characters`). `in_world` comes
+from the existing object-manager resolution (ADR 0001), not from the screen string: `m_currentScreen` is not
+cleared on entering the world (validated live: it keeps reading the last glue screen's name, e.g.
+`"charselect"`, well after the player is in world).
+
+`login` (`scripts/coa-client-lab`) now uses this to: (1) confirm the account-login screen before typing, ahead
+of the still-unconditional pixel check; (2) replace the fixed `LOGIN_WAIT`/`REALM_WAIT`/`WORLD_WAIT` sleeps
+with bounded polls on the real state, capped at the same constants as upper bounds; (3) navigate the
+character-select list to a named character (pressing Down, re-reading the highlighted name from memory until
+it matches, bounded by the list's own length) when `login ACCOUNT PASSWORD CHARACTER` is used on a shared
+account -- the "character-select navigation is not implemented yet" limitation from the first addendum above
+is now implemented when memory is available, with the old client-default-highlight fallback kept for when it
+is not.
+
+An in-place recovery from in-world/character-select back to the login screen (`/camp`, then a click on the
+character-select "Back" button, each step confirmed by a bounded poll instead of a fixed wait) was tried again
+this session, after fixing a real bug (`glue_field` printed Python's `"True"`/`"False"` instead of JSON's
+`"true"`/`"false"`, so the in-world branch never matched and the click was attempted from inside the world,
+before `/camp`). With the bug fixed, `/camp` reliably reached character-select (2/2), but the Back click still
+did not reach the login screen within a 30s bounded poll either time, even though the identical click run as a
+separate external command against the same window succeeded instantly both times it was tried standalone --
+the same 4/4-in-process-failure, 3/3-standalone-success split the first addendum above already documented, for
+a cause this session did not establish either. `login` therefore still restarts for every state memory cannot
+already confirm is the login screen (unchanged from the addendum above), but now reaches that restart
+immediately instead of spending a further 30s on a transition already shown not to complete in-process.
+
+Measured live, slot 2, 2026-10-26, `COA_LAB_PROFILE=minimal`: a restart-based switch between two dedicated,
+already-created, in-world characters took 42.9-49.6s end to end across 6 separate live runs (3 repeated
+switches, one fresh start, two shared-account selections by name), each confirmed by a relay probe ping naming
+the expected character -- down from 178-228s measured earlier the same session with the fixed sleeps (and the
+boolean bug) still in place.

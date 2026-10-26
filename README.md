@@ -670,23 +670,37 @@ refuse, once that account holds 2+ characters, since `login CHARACTER` can only 
 and character-select navigation by name is disabled (next paragraph) — use
 `login ACCOUNT PASSWORD CHARACTER` and verify the right one loaded.
 
-`login` only ever types credentials onto a screen it has just confirmed is the account-login screen (a pixel
-check of its logo area). On a fresh client (nothing attempted since `start`) it waits and checks directly. On
-any other state — in world, character-select, a leftover dialog, mid-transition — it no longer tries to
-recover in place: it restarts the lab client on the same slot (same instance and profile/resolution, read
-from the environment this run already has) and then takes that same fresh-client path. An earlier in-world
-recovery (`/camp`, then the character-select Back button) was tried and dropped: driven inside one `login`
-process it failed to reach the login screen 4/4 times for a cause that was never established, while the
-restart path is the one this guide has proven reliable; see
-[ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md). `coa-client-lab stop && start N` still
-reaches the same clean state manually, if needed.
+`login` only ever types credentials onto a screen it has just confirmed is the account-login screen: when
+`coa-lab-mem glue` (below) is usable, a read-only memory check of `CGlueMgr::m_currentScreen`; the
+pixel-brightness check of the logo area still always runs too, since memory alone cannot tell a clean login
+screen from a leftover error dialog layered over it. On a fresh client (nothing attempted since `start`) it
+waits (now a bounded poll on memory, capped by `COA_LAB_LOGIN_WAIT`, falling back to the old fixed sleep when
+memory is unusable) and checks directly. On any other state memory can confirm (in world, character-select) —
+or any state at all when memory is unusable — it restarts the lab client on the same slot (same instance and
+profile/resolution, read from the environment this run already has) and then takes that same fresh-client
+path. An in-place recovery (`/camp`, then a click on the character-select Back button) was tried twice, in two
+separate sessions: it failed to reach the login screen when driven inside one `login` process both times (4/4,
+then 2/2 after fixing a real bug in the second attempt — see
+[ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md)), while the exact same click succeeded
+every time it was run as a separate, external command against the same window. The restart path remains the
+one this guide has proven reliable; see
+[ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md) and
+[ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md). `coa-client-lab stop && start N` still
+reaches the same clean state manually, if needed. Measured live, slot 2, 2026-10-26: a restart-based switch
+between two in-world characters now takes 42.9-49.6s (6 separate live runs), down from 178-228s before the
+polls below replaced the old fixed sleeps.
 
-`login`'s CHARACTER argument (both forms) also looks up that character on the character-select screen
-(CHAR_SEL_ENUM order) to report its index, but navigation itself is disabled: live on slot 2 the list wraps
-circularly instead of clamping at the top, so a fixed Up-then-Down sequence is not reliable (see the comment
-on `select_character` in `scripts/coa-client-lab`); login falls back to whatever the client already has
-highlighted. This is moot for a dedicated account (nothing to pick between). Tests:
-`scripts/tests/coa-client-lab.test.sh` and, for the Go module, `go vet ./...` plus the DB-free tests
+`login`'s CHARACTER argument (both forms) picks that character on the character-select screen by name when
+`coa-lab-mem glue` is usable: `select_character_via_memory` presses Down and re-reads the highlighted name from
+memory until it matches, bounded by the list's own length, and refuses (dies) rather than entering the world as
+an unconfirmed character if it never matches. Proven live on a 2-character shared account: the first character
+needed no navigation, the second needed one Down press and matched both times. When memory is unavailable, the
+previous behavior is unchanged: the lookup still reports the character's index, but navigation itself falls
+back to whatever the client already has highlighted (live on slot 2 the list wraps circularly instead of
+clamping at the top, so a fixed Up-then-Down sequence without reading the result back is not reliable; see the
+comment on `select_character` in `scripts/coa-client-lab`). This is moot for a dedicated account (nothing to
+pick between). Tests: `scripts/tests/coa-client-lab.test.sh`, `python3 -m unittest discover -s scripts/tests -p
+'test_*.py'` (covers `coa-lab-mem glue`) and, for the Go module, `go vet ./...` plus the DB-free tests
 (`go test -run '^(TestValidateClass|TestCharacterListOrder|TestDeriveAccount|TestDedicatedAccountConflict)$'`).
 Design and spike results: [`docs/design/`](docs/design/).
 
@@ -721,6 +735,8 @@ coa-client-lab probe errors 5               # the client's own Lua error text an
                                             #   a /reload empties it: pass `previous` to read the errors from before the last one
 coa-lab-footprint sample --seconds 60       # memory (Rss/Pss) and CPU of this lab client and its wineserver
 coa-lab-mem check                           # read-only process-memory diagnostics: object manager, unit/aura state, spell rows
+coa-lab-mem glue                            # glue screen state: current screen, in-world flag, char-select index/names;
+                                            #   `login` reads this itself (see above) -- useful standalone for debugging it
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 
@@ -737,8 +753,13 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
 - Only read-only commands go through the relay (`ping spell item auras spellbook known log state ca frame errors`);
   `eval`, `pksend` and the watches keep the `/reload` path (`COA_LAB_TRANSPORT=reload` forces it for any command).
   Every relay answer carries `loadId` (changes on each UI load) and the answering `character`.
-- `login` waits 20 + 25 + 45 s by default; `COA_LAB_LOGIN_WAIT`, `COA_LAB_REALM_WAIT` and `COA_LAB_WORLD_WAIT`
-  change them. With 6, 8 and 0 the lab answered its first relay probe 37-39 s after `start` (slot 2, 2026-10-26).
+- `login` waits up to 20 + 25 + 45 s by default (`COA_LAB_LOGIN_WAIT`, `COA_LAB_REALM_WAIT`,
+  `COA_LAB_WORLD_WAIT`, each an upper bound, not a fixed sleep, since `coa-lab-mem glue` is usable: each wait
+  ends as soon as memory confirms the real state, or at the bound if memory cannot confirm it). With these
+  as fixed sleeps (`COA_LAB_SLEEP`/memory unavailable) and 6, 8 and 0 the lab answered its first relay probe
+  37-39 s after `start` (slot 2, 2026-10-26); with memory-driven polling and the defaults, a full
+  restart-based login (switching between two already-created in-world characters) took 42.9-49.6s end to end
+  (slot 2, 2026-10-26, 6 live runs) -- see [ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md).
 - Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (reflink copy of the base lab and
   prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.

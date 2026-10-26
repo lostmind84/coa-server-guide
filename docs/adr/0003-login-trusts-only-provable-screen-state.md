@@ -1,6 +1,9 @@
 # 0003. `login` trusts only a provable screen state before typing credentials
 
-- Status: accepted
+- Status: accepted ([ADR 0004](0004-login-driven-by-memory-read-glue-state.md) extends this decision: the
+  pixel check and the restart-on-non-fresh-state fallback described below are unchanged, but `login` now also
+  reads the client's own glue screen state from memory where available, replacing the fixed sleeps below with
+  bounded polls and adding character-select navigation by name)
 - Date: 2026-10-26
 
 ## Context
