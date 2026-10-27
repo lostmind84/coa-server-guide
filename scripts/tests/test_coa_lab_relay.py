@@ -128,5 +128,66 @@ class RelayTest(unittest.TestCase):
                 relay.load_descriptor(path)
 
 
+class ResolveRelayEnvTest(unittest.TestCase):
+    """L14b: coa-lab-relay's `soap` subcommand no longer reads a single shared lab_root/relay.env --
+    `coa-client-lab relay-setup N` now writes one file per slot (lab_root/relay/slotN.env), and this is
+    the matching resolution on the Python side, used directly by a human running `coa-lab-relay soap`
+    (through state_dir/slot, the same file `coa-client-lab start N` already writes for its own slot
+    tracking) and overridden by coa-client-lab's own internal calls (COA_LAB_RELAY_ENV) when they already
+    know the slot before any instance state exists for it (cmd_character's --slot, before `start`)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.lab_root = Path(self.tmp.name) / "lab"
+        self.state_dir = self.lab_root / "state"
+        self.state_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _slot(self, n):
+        (self.state_dir / "slot").write_text(str(n))
+
+    def test_prefers_the_per_slot_file(self):
+        self._slot(3)
+        per_slot = self.lab_root / "relay" / "slot3.env"
+        per_slot.parent.mkdir(parents=True)
+        per_slot.write_text("SLOT=3\n")
+        (self.lab_root / "relay.env").write_text("SLOT=3\n")
+        self.assertEqual(relay.resolve_relay_env(self.lab_root, self.state_dir), per_slot)
+
+    def test_falls_back_to_a_legacy_relay_env_with_a_matching_slot(self):
+        self._slot(4)
+        legacy = self.lab_root / "relay.env"
+        legacy.write_text("SLOT=4\nSOAP_URL=http://127.0.0.1:7978/\n")
+        self.assertEqual(relay.resolve_relay_env(self.lab_root, self.state_dir), legacy)
+
+    def test_ignores_a_legacy_relay_env_of_another_slot(self):
+        self._slot(4)
+        (self.lab_root / "relay.env").write_text("SLOT=2\n")
+        with self.assertRaisesRegex(SystemExit, "no relay configuration for slot 4"):
+            relay.resolve_relay_env(self.lab_root, self.state_dir)
+
+    def test_no_slot_recorded(self):
+        with self.assertRaisesRegex(SystemExit, "no slot recorded"):
+            relay.resolve_relay_env(self.lab_root, self.state_dir)
+
+    def test_override_env_var_wins_over_everything(self):
+        self._slot(4)
+        (self.lab_root / "relay.env").write_text("SLOT=4\n")
+        override = Path(self.tmp.name) / "explicit.env"
+        override.write_text("SLOT=9\n")
+        import os
+        old = os.environ.get("COA_LAB_RELAY_ENV")
+        os.environ["COA_LAB_RELAY_ENV"] = str(override)
+        try:
+            self.assertEqual(relay.resolve_relay_env(self.lab_root, self.state_dir), override)
+        finally:
+            if old is None:
+                del os.environ["COA_LAB_RELAY_ENV"]
+            else:
+                os.environ["COA_LAB_RELAY_ENV"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

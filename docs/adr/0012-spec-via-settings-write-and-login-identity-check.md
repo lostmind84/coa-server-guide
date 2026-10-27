@@ -80,6 +80,10 @@ this task's `relay-setup` call on slot 2 was refused by the harness's own auto-m
 another session was actively using it for slot 4 at the time (see "Concerns" in the task report). The
 database-level proof above is unaffected by that; it does not depend on the relay.
 
+**Done in L14b** (2026-10-27, ADR 0013): with relay configuration moved to one file per slot, `relay-setup 2`
+no longer touches slot 4's file at all, so the live client-probe proof ran: `character --spec 34` on
+`COALABSHARE`'s `Sharea`, then `login`, then `probe ca` read `"activeSpec": 34` back.
+
 ## Problem 2: `login` entering the world as the wrong character
 
 ### Decision
@@ -111,6 +115,12 @@ fixture gap described above -- not from the feature itself; fixed by scoping `re
 sub-tests that already exist for it). Live end-to-end verification (an actual account with two characters,
 alternating `login --account A C1`/`C2`) was not run, for the same `relay-setup` refusal as problem 1's
 client-probe step.
+
+**Done in L14b** (2026-10-27, ADR 0013): `COALABSHARE`'s `Sharea`/`Shareb` alternated 4 times each (8
+switches), the in-world name confirmed correct every time by `probe ping`. The negative case (the check
+itself failing loudly) was proven by calling `wait_ui_ready` directly with a wrong expected name against a
+real, correctly in-world session, without provoking an actual bad login: it died with "logged in as the
+wrong character: requested WrongCharacterName, the relay reports Sharea is in world".
 
 ## Problem 3: first-login retry ("account-login screen is not confirmed")
 

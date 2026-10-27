@@ -673,7 +673,9 @@ back reverted a few seconds later (reproduced live, slot 2, 2026-10-27: one of t
 row before giving up, instead of trusting a single read-back. Read the setting back from
 `character_settings` (or, once logged in through the lab client, `coa-client-lab probe ca`'s `activeSpec`
 field) to confirm it took -- there is no chat command any more to confirm it the way `.localspec` itself once
-did.
+did. The client-shown half (`probe ca`'s `activeSpec`) ran live for the first time in L14b (2026-10-27,
+slot 2): `character --spec 34` on a shared account's character, then `login`, then `probe ca` --
+`activeSpec` read back `34`, through the slot's own per-slot relay file (below).
 
 Without `--account`, `character` derives a dedicated account for that one character: `COALAB` plus the
 upper-cased character name, truncated to `MAX_ACCOUNT_STR` (17; `src/server/game/Accounts/AccountMgr.h:34`
@@ -908,6 +910,16 @@ coa-lab-mem glue --until in-world --timeout 45  # one process polls internally (
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 
+- **Relay configuration is per slot (L14b, 2026-10-27).** `relay-setup N` used to write one file,
+  `~/CoaServer/client-lab/relay.env`, shared by every slot and every lab instance; a `relay-setup` on one
+  slot silently broke another session's relay on a different slot, because the next read anywhere just
+  took whatever slot that single file last named. `relay-setup N` now writes
+  `~/CoaServer/client-lab/relay/slotN.env` instead, one file per slot, and never touches a pre-existing
+  shared `relay.env` -- every reader (`grant_instant_logout_rbac`, `kick_via_soap`, `write_descriptor`,
+  `coa-lab-relay soap`) resolves its own slot's file first and falls back to the legacy shared `relay.env`,
+  read only, only when that file's own `SLOT` line still matches. An old setup that never reruns
+  `relay-setup` keeps working through that fallback; a setup rerun on the new code gets its own file and
+  stops competing with every other slot's. See [ADR 0013](docs/adr/0013-per-slot-relay-configuration.md).
 - `COA_LAB_PROFILE=minimal` writes `gxResolution` and low-cost CVars (`maxFPS`, `farclip`, `baseMip`, ...) before
   every start and defaults to `COA_LAB_DISPLAY=headless` (gamescope `--backend headless`: no Hyprland window;
   `screenshot` and keyboard input still work). `COA_LAB_DISPLAY=nested` shows it on the workspace again.
@@ -942,6 +954,12 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
   dies if it does not match CHARACTER -- reusing that same ping instead of a second relay round trip. Only
   runs when a relay is configured for this slot (`coa-client-lab relay-setup N`): without one there is no
   reliable, non-visual way to read the in-world name back, same as `write_descriptor` already requires.
+  Live end-to-end (L14b, 2026-10-27, slot 2, shared account `COALABSHARE`, characters Sharea/Shareb):
+  `login --account COALABSHARE Shareb` / `Sharea` alternated 4 times each (8 switches total), the in-world
+  name confirmed correct every time by `probe ping`'s own `character` field. The negative case (the check
+  itself failing loudly) was proven without provoking an actual bad login: calling `wait_ui_ready` directly
+  with a wrong expected name against a real, correctly in-world session died with `logged in as the wrong
+  character: requested WrongCharacterName, the relay reports Sharea is in world`.
 - Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (reflink copy of the base lab and
   prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.

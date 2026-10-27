@@ -154,7 +154,7 @@ Running (one lab client per instance):
 Server relay:
   relay-setup N --soap-account NAME --soap-password-file PATH
                            enable SOAP (container 0.0.0.0, host loopback) and CoA.ProbeRelay.Enable in slot N's
-                           configuration and write relay.env; restart the worldserver afterwards
+                           configuration and write relay/slotN.env; restart the worldserver afterwards
 EOF
 }
 
@@ -535,6 +535,29 @@ ensure_lab_password() {
     cat "$file"
 }
 
+# Resolves the relay configuration file for SLOT (L14b: `relay.env` used to be one file under $LAB_ROOT
+# shared by every slot and every lab instance, so `relay-setup` on one slot silently broke another
+# session's relay on a different slot -- reports/l14-lab-fixes.md Concern 1). `relay-setup N` now writes
+# $LAB_ROOT/relay/slotN.env instead, tried first; a pre-existing shared $LAB_ROOT/relay.env is still read
+# (never rewritten, never deleted, never moved by this script) when its own SLOT line matches, so a setup
+# from before this change keeps working without rerunning relay-setup. Echoes the resolved path and
+# returns 0 on a match; prints nothing and returns 1 for an empty/unknown slot or no match either way.
+relay_env_for_slot() {
+    local slot="$1" candidate
+    [[ -n "$slot" ]] || return 1
+    candidate="$LAB_ROOT/relay/slot${slot}.env"
+    if [[ -f "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    if [[ -f "$LAB_ROOT/relay.env" ]] \
+        && [[ "$(sed -n 's/^SLOT=//p' "$LAB_ROOT/relay.env")" == "$slot" ]]; then
+        printf '%s\n' "$LAB_ROOT/relay.env"
+        return 0
+    fi
+    return 1
+}
+
 # Grants RBAC_PERM_INSTANT_LOGOUT (id 1, src/server/game/Accounts/RBAC.h:52) to a lab account over the
 # lab SOAP relay (`.rbac account grant ACCOUNT 1`, src/server/scripts/Commands/cs_rbac.cpp:85-117). This
 # is the only effective use of that permission found in the server source (grepped: a single read site,
@@ -547,20 +570,25 @@ ensure_lab_password() {
 # that permission"); both count as success here. Refuses any account that is not COALAB* (lab accounts
 # only, never a real player account) regardless of caller. Non-fatal to the caller by design (returns 1,
 # does not `die`): a slot without relay-setup yet should not block `character` from creating the account.
+# SLOT, when given (cmd_character already knows its own --slot before any `start`/STATE_DIR/slot exists
+# for it), picks the relay file directly; otherwise falls back to the running instance's own slot
+# (STATE_DIR/slot, written by `start`), same as every other reader below (L14b).
 grant_instant_logout_rbac() {
-    local account="$1" out upper
+    local account="$1" slot="${2:-}" out upper relay_env
     upper=$(tr '[:lower:]' '[:upper:]' <<<"$account")
     if [[ "$upper" != "${LAB_ACCOUNT_PREFIX}"* ]]; then
         echo "WARN: refusing to grant RBAC_PERM_INSTANT_LOGOUT to $account: not a $LAB_ACCOUNT_PREFIX*" \
              "lab account; it keeps the normal 20s /logout delay" >&2
         return 1
     fi
-    if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
-        echo "WARN: no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): RBAC_PERM_INSTANT_LOGOUT" \
-             "not granted to $account; /logout will keep the normal 20s delay for it" >&2
+    [[ -n "$slot" ]] || slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
+    if ! relay_env=$(relay_env_for_slot "$slot"); then
+        echo "WARN: no relay configuration for slot ${slot:-unknown} (coa-client-lab relay-setup" \
+             "${slot:-N} ...): RBAC_PERM_INSTANT_LOGOUT not granted to $account; /logout will keep the" \
+             "normal 20s delay for it" >&2
         return 1
     fi
-    out=$("$RELAY" soap "rbac account grant $account 1" 2>&1) || {
+    out=$(COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "rbac account grant $account 1" 2>&1) || {
         echo "WARN: rbac grant for $account failed: $out" >&2
         return 1
     }
@@ -615,7 +643,7 @@ cmd_character() {
         dedicated=1
     fi
     password=$(ensure_lab_password "$account")
-    grant_instant_logout_rbac "$account" \
+    grant_instant_logout_rbac "$account" "$slot" \
         || echo "WARN: $character's account ($account) may still see the normal 20s /logout delay" >&2
 
     local ghost_env
@@ -906,18 +934,20 @@ except Exception:
 # succeeded in every reproduction this session. The previous 1-attempt-after-1s retry does not clear this
 # window reliably (observed failing on both attempt 1 at t+0s and attempt 2 at t+1.0s); KICK_RETRY_ATTEMPTS
 # and KICK_RETRY_WAIT widen it to as many attempts as that many seconds, still far cheaper than the ~45s
-# restart fallback this replaces when it lands. Advisory like every other memory/relay use in this script: a
-# missing relay.env (no relay-setup on this slot), an unknown character, or a kick still unsuccessful after
-# every attempt falls back to the caller's /camp path (and from there to restart_client) instead of being
-# treated as a hard failure.
+# restart fallback this replaces when it lands. Advisory like every other memory/relay use in this script: no
+# relay configuration for this slot (no relay-setup yet; L14b: STATE_DIR/slot names the slot, relay_env_for_slot
+# resolves its file), an unknown character, or a kick still unsuccessful after every attempt falls back to the
+# caller's /camp path (and from there to restart_client) instead of being treated as a hard failure.
 KICK_RETRY_WAIT="${COA_LAB_KICK_RETRY_WAIT:-1}"
 KICK_RETRY_ATTEMPTS="${COA_LAB_KICK_RETRY_ATTEMPTS:-4}"
 kick_via_soap() {
-    local character="$1" out err attempt
-    [[ -n "$character" && -f "$LAB_ROOT/relay.env" ]] || return 1
+    local character="$1" slot="${2:-}" out err attempt relay_env
+    [[ -n "$slot" ]] || slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
+    relay_env=$(relay_env_for_slot "$slot") || return 1
+    [[ -n "$character" ]] || return 1
     for ((attempt = 1; attempt <= KICK_RETRY_ATTEMPTS; attempt++)); do
         err=$(mktemp)
-        out=$("$RELAY" soap "kick $character" 2> "$err") || out=""
+        out=$(COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "kick $character" 2> "$err") || out=""
         if [[ "$out" == *kicked* ]]; then
             rm -f "$err"
             return 0
@@ -1464,17 +1494,18 @@ cmd_login() {
 # `preflight` is "pass" only for a pass recorded for this slot after the slot's last deploy; an older or foreign
 # pass is "stale". The recorded slot and times are copied too, so the server check can apply the same rule.
 write_descriptor() {
-    local account="$1" character="$2" slot state_file etc
+    local account="$1" character="$2" slot state_file etc relay_env
     [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
-    if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
-        echo "no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): no lab descriptor written"
+    slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
+    if ! relay_env=$(relay_env_for_slot "$slot"); then
+        echo "no relay configuration for slot ${slot:-unknown} (coa-client-lab relay-setup ${slot:-N} ...):" \
+             "no lab descriptor written"
         return 0
     fi
-    slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
     state_file=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^STATE_FILE=//p') || state_file=""
     etc=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^ETC=//p') || etc=""
     ( umask 077
-      python3 - "$LAB_ROOT/relay.env" "$STATE_DIR/lab.json" "${COA_LAB_INSTANCE:-}" "$slot" "$account" \
+      python3 - "$relay_env" "$STATE_DIR/lab.json" "${COA_LAB_INSTANCE:-}" "$slot" "$account" \
           "$character" "${state_file:-/nonexistent}" "$STATE_DIR/preflight" "$LAB_CLIENT" \
           "${etc:+$etc/worldserver.conf}" <<'PYEOF'
 import json
@@ -1506,7 +1537,7 @@ for line in open(env_path):
     if sep:
         env[key] = value
 if env.get("SLOT") != slot:
-    sys.exit(f"relay.env is set up for slot {env.get('SLOT')}, the lab client runs on slot {slot}: "
+    sys.exit(f"{env_path} is set up for slot {env.get('SLOT')}, the lab client runs on slot {slot}: "
              f"run coa-client-lab relay-setup {slot} ...")
 deploy = first_line(state_path)
 deployed_commit = deploy[1] if len(deploy) > 1 else "unknown"
@@ -1695,10 +1726,15 @@ cmd_relay_setup() {
       run_lab_character -run '^TestLabSoapAccount$' . ) || status=$?
     [[ "$status" == 0 ]] || die "could not create/update the SOAP account $account on slot $n (go test output above)"
 
-    mkdir -p "$LAB_ROOT"
+    # L14b: one file per slot under $LAB_ROOT/relay/, never the single shared $LAB_ROOT/relay.env every
+    # slot and every lab instance used to overwrite (reports/l14-lab-fixes.md Concern 1: a relay-setup on
+    # one slot silently broke another session's relay on a different slot). This never touches a
+    # pre-existing $LAB_ROOT/relay.env (relay_env_for_slot still reads it, read only, for a setup made
+    # before this change).
+    mkdir -p "$LAB_ROOT/relay"
     ( umask 077
       printf 'SLOT=%s\nSOAP_URL=http://127.0.0.1:%s/\nSOAP_ACCOUNT=%s\nSOAP_PASSWORD_FILE=%s\n' \
-          "$n" "$((7878 + (n - 1) * 100))" "$account" "$password_file" > "$LAB_ROOT/relay.env" )
+          "$n" "$((7878 + (n - 1) * 100))" "$account" "$password_file" > "$LAB_ROOT/relay/slot${n}.env" )
     echo "relay configured for slot $n; restart: coa-slot compose $n restart ac-worldserver"
 }
 
