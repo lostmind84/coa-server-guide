@@ -934,23 +934,31 @@ assert_eq "second call for the same character exits 0" "$?" "0"
 assert_eq "dedicated account password file is reused, not regenerated" "$(cat "$pwfile")" "$password1"
 assert_contains "second call sends the same reused password" "$FAKE_LOG" "\"password\": \"$password1\""
 
-# With an explicit --account, today's behavior is kept: empty password (e2eharness.DefaultPassword
-# applies), dedicated=false, and a warning once the account's final character count is 2+ (the Go
-# module reports this; the fake stands in for its account_characters field).
+# With an explicit --account (L9: shared accounts get the same treatment as dedicated ones), the
+# account's password is generated/reused through ensure_lab_password exactly like a dedicated
+# account, dedicated stays false, and a warning still fires once the account's final character count
+# is 2+ (the Go module reports this; the fake stands in for its account_characters field).
 : > "$FAKE_LOG"
 FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "Second", "class": 23, "created": true, "account_characters": ["First", "Second"]}' \
     run_lab character --slot 2 --account shared1 --character Second --race 5 --class 23
 assert_eq "character with explicit --account exits 0" "$?" "0"
-assert_contains "explicit --account request has no password override" "$FAKE_LOG" '"password": ""'
+shared_pwfile="$COA_LAB_ROOT/secrets/shared1.password"
+assert_file "explicit --account creates a secrets file too" "$shared_pwfile"
+assert_eq "explicit --account password file is mode 600" "$(stat -c %a "$shared_pwfile")" "600"
+shared_password1=$(cat "$shared_pwfile")
+[[ -n "$shared_password1" ]] && pass "explicit --account password file is non-empty" \
+    || fail "explicit --account password file is empty"
+assert_contains "explicit --account request carries the generated password" "$FAKE_LOG" \
+    "\"password\": \"$shared_password1\""
 assert_contains "explicit --account request is not dedicated" "$FAKE_LOG" '"dedicated": false'
 assert_contains "explicit --account warns once the account holds 2+ characters" "$WORK/out" \
     "account shared1 now holds 2 characters"
-assert_absent "explicit --account does not create a secrets file" "$COA_LAB_ROOT/secrets/shared1.password"
 
 : > "$FAKE_LOG"
 FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "First", "class": 23, "created": true, "account_characters": ["First"]}' \
     run_lab character --slot 2 --account shared1 --character First --race 5 --class 23
 assert_not_contains "explicit --account with 1 character does not warn" "$WORK/out" "coa-client-lab login cannot"
+assert_eq "explicit --account password is reused, not regenerated" "$(cat "$shared_pwfile")" "$shared_password1"
 
 # --- login: character-select lookup (navigation itself is disabled; see select_character's comment:
 #     live on slot 2 the character list wraps circularly instead of clamping at the top, so a fixed
@@ -1011,6 +1019,42 @@ if run_lab login 'Bad Name'; then
 else
     pass "login CHARACTER refuses a non-letters name"
 fi
+
+# --- login --account NAME CHARACTER: the shared-account form (L9), resolving NAME's generated
+#     password the same way (shared_password1/shared_pwfile from the character tests above), so no
+#     password is ever typed on this command line ---
+
+run_lab stop
+run_lab start 3
+
+: > "$FAKE_LOG"
+run_lab login --account shared1 Second
+assert_eq "login --account (shared account) exits 0" "$?" "0"
+assert_contains "login --account types the given account" "$FAKE_LOG" "type --window 4242 --delay 40 shared1"
+assert_contains "login --account types the stored shared password" "$FAKE_LOG" \
+    "type --window 4242 --delay 40 $shared_password1"
+
+if run_lab login --account nosuchaccount Second; then
+    fail "login --account refuses when no generated password exists"
+else
+    pass "login --account refuses when no generated password exists"
+fi
+assert_contains "login --account refusal names the missing account" "$WORK/out" \
+    "no generated password for account nosuchaccount"
+
+if run_lab login --account shared1 'Bad Name'; then
+    fail "login --account refuses a non-letters character name"
+else
+    pass "login --account refuses a non-letters character name"
+fi
+
+if run_lab login --account shared1; then
+    fail "login --account refuses without a character"
+else
+    pass "login --account refuses without a character"
+fi
+assert_contains "login --account usage names the missing character" "$WORK/out" \
+    "usage: coa-client-lab login --account NAME CHARACTER"
 
 if run_lab login one two three four; then
     fail "login refuses more than 3 arguments"

@@ -107,6 +107,11 @@ Running (one lab client per instance):
   login CHARACTER         same, for a character made by `character` without --account: resolves the
                            dedicated account and its generated password itself, so there is never a
                            character list to navigate
+  login --account NAME CHARACTER
+                           same, for a shared account made by `character --account NAME ...`: resolves
+                           NAME's generated password itself (secrets/, see ensure_lab_password), so no
+                           password ever appears on the command line; navigates to CHARACTER in the
+                           account's character list the same way as `login ACCOUNT PASSWORD CHARACTER`
   character --slot N [--account A] --character C --race R --class K [--level N] [--spec ID] [--gm N]
             [--learn ID,ID,...] [--items ID,ID,...]
                            create or update one lab test character through the Ghost e2e harness, on any
@@ -114,11 +119,15 @@ Running (one lab client per instance):
                            Without --account, uses a dedicated account for this character alone (COALAB +
                            the character name, see derive_account), with a generated password saved under
                            secrets/ and reused on later calls; refuses if that account already holds a
-                           different character. With --account, keeps a shared account as before (bank,
-                           account-bound items, collections, char-select screen) but warns once the
-                           account holds 2+ characters, since `login CHARACTER` alone and character-select
-                           navigation by name cannot pick among them (character-select navigation is
-                           currently disabled; see select_character)
+                           different character. With --account, the named account's password is generated
+                           or reused the same way (secrets/<account>.password) and always re-applied to
+                           the account's real DB password, so `login --account NAME CHARACTER` always has
+                           a valid password to read back, even if the account pre-existed with a different
+                           one. Warns once the account holds 2+ characters, since navigating to CHARACTER
+                           by name then needs lab-client memory to be usable this session
+                           (select_character_via_memory); without memory it is not implemented
+                           (select_character) and login lands on whichever character is already
+                           highlighted
   type TEXT                type text into the client
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
@@ -551,16 +560,19 @@ cmd_character() {
 
     # Without --account, this character gets its own dedicated account (derive_account), with a
     # generated, reused password (ensure_lab_password): `login CHARACTER` alone can then resolve
-    # both without ever picking from a character list. With --account, today's behavior is kept
-    # unchanged (DefaultPassword "test" via an empty Password in the request; shared accounts stay
-    # possible for account-wide issues), except that TestLabCharacterApply now reports the account's
-    # full character list so this command can warn when it holds 2+ characters.
+    # both without ever picking from a character list. With --account, the named shared account gets
+    # the same treatment (L9): its password is generated/reused the same way through
+    # ensure_lab_password and passed to the harness, so EnsureAccount (e2eharness/db.go) always
+    # updates the account's real DB password (salt/verifier) to match the secret, even when the
+    # account already existed with a different password. This is what lets `login --account NAME
+    # CHARACTER` read back a password that is actually valid. TestLabCharacterApply also reports the
+    # account's full character list so this command can warn when it holds 2+ characters.
     local dedicated=0 password=""
     if [[ -z "$account" ]]; then
         account=$(derive_account "$character")
-        password=$(ensure_lab_password "$account")
         dedicated=1
     fi
+    password=$(ensure_lab_password "$account")
 
     local ghost_env
     ghost_env=$(coa-slot env "$slot" | sed -n 's/^GHOST_ENV=//p')
@@ -598,11 +610,13 @@ d = json.load(open(sys.argv[1]))
 print(len(d.get("account_characters", [])))
 ' "$out" 2>/dev/null) || others=0
         if [[ "${others:-0}" -ge 2 ]]; then
-            echo "WARN: account $account now holds $others characters; coa-client-lab login cannot" \
-                "pick among them by name (character-select navigation by name is disabled), so" \
-                "\`login $account PASSWORD\` lands on whichever one the client already has" \
+            echo "WARN: account $account now holds $others characters; \`login --account $account" \
+                "$character\` (or \`login $account PASSWORD $character\`) navigates to $character by" \
+                "name only when lab-client memory is usable this session (select_character_via_memory)." \
+                "Without memory, character-select navigation by name is not implemented" \
+                "(select_character), and login lands on whichever character the client already has" \
                 "highlighted. Give $character its own dedicated account (omit --account) if it" \
-                "needs to be logged into by name." >&2
+                "needs to be logged into by name without relying on memory." >&2
         fi
     fi
     rm -f "$out"
@@ -933,7 +947,20 @@ restart_client() {
 # y = 315 / 600 of the height; `Return` on the character list works only once the list is loaded.
 cmd_login() {
     local account="" password="" character=""
-    if [[ $# -eq 1 ]]; then
+    if [[ "${1:-}" == "--account" ]]; then
+        # Shared-account form (L9): the account's password was generated/reused by `character
+        # --account NAME ...` through the same ensure_lab_password path as a dedicated account, and
+        # that call always re-applies it to the account's real DB password (EnsureAccount), so no
+        # password ever needs to appear on this command line.
+        [[ $# -eq 3 ]] || die "usage: coa-client-lab login --account NAME CHARACTER"
+        account="$2"; character="$3"
+        [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
+        local pwfile
+        pwfile=$(lab_password_file "$account")
+        [[ -f "$pwfile" ]] \
+            || die "no generated password for account $account (run: coa-client-lab character --account $account --character $character --race R --class K ... first)"
+        password=$(cat "$pwfile")
+    elif [[ $# -eq 1 ]]; then
         # Dedicated-account form: resolve the account and its generated password the same way
         # `character` derived and stored them, so this character never needs a character list.
         character="$1"
@@ -947,7 +974,7 @@ cmd_login() {
     elif [[ $# -eq 2 || $# -eq 3 ]]; then
         account="$1"; password="$2"; character="${3:-}"
     else
-        die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER] | login CHARACTER (dedicated account made by 'character' without --account)"
+        die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER] | login CHARACTER (dedicated account made by 'character' without --account) | login --account NAME CHARACTER (shared account made by 'character --account NAME ...')"
     fi
     require_running
     # Credentials are only ever typed onto a screen this command has just confirmed is the clean

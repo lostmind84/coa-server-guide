@@ -666,9 +666,16 @@ there is never a character list to pick from. The account refuses to pick up a s
 character (a real second character, or a name collision after truncation) — delete it or use a different
 name. Pass `--account NAME` to keep a shared account instead, e.g. for account-wide issues (bank,
 account-bound items, collections, the char-select screen itself): `character` then warns, but does not
-refuse, once that account holds 2+ characters, since `login CHARACTER` can only resolve a dedicated account
-and character-select navigation by name is disabled (next paragraph) — use
-`login ACCOUNT PASSWORD CHARACTER` and verify the right one loaded.
+refuse, once that account holds 2+ characters, since character-select navigation by name only works when
+lab-client memory is usable this session (next paragraph). A shared account gets the same password
+treatment as a dedicated one (L9): its password is generated once and kept at
+`~/CoaServer/client-lab/secrets/<account lower>.password` too, and every `character --account NAME ...`
+call re-applies it to the account's real DB password (`e2eharness.EnsureAccount` always rewrites
+salt/verifier, even for an account that already existed under a different password), so the secret and the
+server never drift apart. `login --account NAME CHARACTER` reads that secret back the same way `login
+CHARACTER` does for a dedicated account — no password ever appears on a command line. The older
+`login ACCOUNT PASSWORD CHARACTER` form still works for any caller that already has the password another
+way.
 
 `login` only ever types credentials onto a screen it has just confirmed is the account-login screen: when
 `coa-lab-mem glue` (below) is usable, a read-only memory check of `CGlueMgr::m_currentScreen`; the
