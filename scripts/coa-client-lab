@@ -823,6 +823,20 @@ click_login_dialog_dismiss() {
     xtest_click_pct 500 517
 }
 
+# L13 (2026-10-27, slot 2, live): a SECOND, custom "Project Descension - Connection Help" popup (this
+# client's own addon, not a Blizzard StaticPopup) appears on a genuine connection drop and shares
+# current_screen=="login" with a clean login screen, same as the dialog above -- but it is a much larger
+# panel and its own "Okay" button sits at approx (0.697, 0.792) of the window (measured live, 1024x768:
+# (714, 608)), well outside click_login_dialog_dismiss's (0.5, 0.517) point, which lands inside this
+# panel's body text and does nothing. Reproduced twice in this session (screenshots 05:44 and 06:05): once
+# shown, every later `login` call kept failing or misreporting until this point was clicked by hand. Same
+# harmlessness precedent as click_login_dialog_dismiss: on a clean login screen (1024x768) this point sits
+# in empty background between the Login and Quit buttons (confirmed live against a dialog-free screenshot),
+# so calling it unconditionally alongside the dialog above is not expected to corrupt a clean screen.
+click_connection_help_dismiss() {
+    xtest_click_pct 697 792
+}
+
 # The character this session last wrote to `state/lab.json` (cmd_login's own write_descriptor, called only
 # after reaching world): the one `kick_via_soap` below needs to name, read without ever invoking a
 # `coa-lab-relay probe` round trip. Empty, not an error, when no login has reached world yet this session.
@@ -959,6 +973,9 @@ dismiss_login_dialog_via_memory() {
 # before the caller proceeds, never assumed.
 clear_login_dialog_unconditionally() {
     click_login_dialog_dismiss || return 1
+    # L13: also try the custom Connection-Help popup's own Okay button (see click_connection_help_dismiss);
+    # current_screen alone cannot tell which dialog, if any, was showing, so both clicks always run.
+    click_connection_help_dismiss || return 1
     glue_until login "$DIALOG_DISMISS_WAIT" > /dev/null
 }
 
@@ -1272,19 +1289,25 @@ cmd_login() {
                    "(login_state stayed LOGIN_STATE_FAILED); see $STATE_DIR/screen-check.png."
     fi
     echo "$account" > "$STATE_DIR/account"
-    local backspaces geometry
-    backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
+    local geometry
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
     eval "$geometry"
+    # L13 (2026-10-27, slot 2, live): a fixed run of 20 BackSpace keys does not reliably clear a field that
+    # already held a *different* account's text from a previous fast switch -- reproduced live, screen-check.png:
+    # after Coalabres -> Labswitch the Username field read "COALABCOALABRESLABS", the prior account's text
+    # untouched with the new one's tail appended, an unrecognized account the server/client reject outright
+    # (explains a LOGIN_DISCONNECTED with no corresponding WorldSocket::HandleAuthSession line at all -- see
+    # agent-protocol progress notes). Select-all + Delete clears the field regardless of its prior length or
+    # the click's exact cursor position, unlike a fixed backspace count.
     xdotool mousemove --window "$WINDOW" $((WIDTH / 2)) $((HEIGHT * 315 / 600)) click 1
     "$SLEEP" 0.5
-    # shellcheck disable=SC2086
-    xdotool key --window "$WINDOW" --delay 20 $backspaces
+    xdotool key --window "$WINDOW" ctrl+a
+    xdotool key --window "$WINDOW" Delete
     xdotool type --window "$WINDOW" --delay 40 "$account"
     xdotool key --window "$WINDOW" Tab
     "$SLEEP" 0.3
-    # shellcheck disable=SC2086
-    xdotool key --window "$WINDOW" --delay 20 $backspaces
+    xdotool key --window "$WINDOW" ctrl+a
+    xdotool key --window "$WINDOW" Delete
     xdotool type --window "$WINDOW" --delay 40 "$password"
     xdotool key --window "$WINDOW" Return
     # `login-settled` (L11, 2026-10-27) stops as soon as either the character list loads or the client's own

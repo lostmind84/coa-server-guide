@@ -804,6 +804,40 @@ character-select/Back leg) kept working immediately after, in the same session. 
 (`kick_via_soap` first, old full-length `/camp` as fallback) — the instant permission's only proven, tested use
 stays the same-account path above, which never reaches the login screen or clicks Back at all.
 
+**Two more dialogs and a field-clearing bug (L13, 2026-10-27).** Live, slot 2, reproducing a fast different-
+account switch sequence (`--account Coalabshare Sharea`, `Coalabres`, `--account Coalabshare Shareb`,
+zero-gap): worldserver logs (`Logger.network.kick=4`, `Logger.network=5`, slot 2 only, restored afterward)
+showed every switch completing a normal `WorldSocket::HandleAuthSession ... authenticated successfully` then
+exactly one `.kick`-driven `kicked with reason: Unknown reason` (`WorldSession.h:562`'s no-reason overload,
+reached through the SOAP `.kick` command) — never once the `AddSession_`/`PlayerLoading` same-account refusal
+(`WorldSessionMgr.cpp:328`) this had previously been suspected to be. Two client-side bugs, not a server race,
+explained what was actually observed:
+- A second, custom "Project Descension - Connection Help" popup (this client's own addon, not a Blizzard
+  `StaticPopup`) appears on a genuine drop and shares `current_screen == "login"` with a clean screen, same as
+  the dialog `click_login_dialog_dismiss` already targets — but it is much larger and its own Okay button sits
+  at about (0.697, 0.792) of the window, well outside that point (measured live, 1024x768: (714, 608)), so the
+  existing click landed in its body text and never closed it; every later `login` call then degraded or failed
+  until it was cleared by hand. `clear_login_dialog_unconditionally` now also clicks this point
+  (`click_connection_help_dismiss`); same harmlessness precedent as the first click (confirmed live against a
+  dialog-free login screenshot: this point sits in empty background between the Login and Quit buttons).
+- `cmd_login` cleared the Username/Password fields with a fixed run of 20 `BackSpace` keys, which does not
+  reliably clear a field still holding a *different*, differently-sized account's text from a fast previous
+  switch: reproduced live (screen-check.png) as `COALABCOALABRESLABS` after `Coalabres -> Labswitch` — the old
+  account's text untouched with the new one's tail appended — an unrecognized account the server/client reject
+  outright (`LOGIN_DISCONNECTED` with no corresponding `WorldSocket::HandleAuthSession` line at all, since the
+  client never gets that far). Both fields are now cleared with `ctrl+a` then `Delete` instead, which clears
+  regardless of the field's prior length or the click's exact cursor position.
+
+Both fixes measurably improved, but did not eliminate, zero-gap different-account switch reliability in this
+session: before them, the exact sequence above failed at its very first different-account step; after them,
+three full zero-gap reps (9 switches) ran clean before a `kick_via_soap` retry-cadence flake (documented
+above: the SOAP relay's own reply can be its usage/syntax text instead of a real kick, on no fixed schedule)
+produced another `LOGIN_DISCONNECTED`, this time with no field-clearing or dialog symptom at all — a
+pre-existing, already-documented limitation, not newly introduced, and not re-diagnosed further within this
+task's time budget. Root cause of the very first disconnect that triggers either popup in the first place
+remains unestablished: Server.log and Auth.log carry no timestamps, so a specific failing attempt cannot be
+matched to a specific log line among many textually-identical cycles.
+
 Tests: `scripts/tests/coa-client-lab.test.sh`, `python3 -m unittest discover -s scripts/tests -p
 'test_*.py'` (covers `coa-lab-mem glue`) and, for the Go module, `go vet ./...` plus the DB-free tests
 (`go test -run '^(TestValidateClass|TestCharacterListOrder|TestDeriveAccount|TestDedicatedAccountConflict)$'`).

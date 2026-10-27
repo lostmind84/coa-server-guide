@@ -1008,6 +1008,13 @@ run_lab login Dedibot
 assert_eq "login CHARACTER (dedicated account) exits 0" "$?" "0"
 assert_contains "login CHARACTER types the derived account" "$FAKE_LOG" "type --window 4242 --delay 40 COALABDEDIBOT"
 assert_contains "login CHARACTER types the stored password" "$FAKE_LOG" "type --window 4242 --delay 40 $password1"
+# L13: the credential fields are cleared with select-all + Delete, not a fixed BackSpace count -- a fixed
+# count left a previous, longer account's text only partly erased (reproduced live, slot 2, 2026-10-27:
+# "COALABCOALABRESLABS", the old account's text with the new one's tail appended) and the server/client
+# reject the resulting malformed username outright.
+assert_contains "login CHARACTER clears the username field with ctrl+a" "$FAKE_LOG" "key --window 4242 ctrl+a"
+assert_contains "login CHARACTER clears fields with Delete, not BackSpace" "$FAKE_LOG" "key --window 4242 Delete"
+assert_not_contains "login CHARACTER no longer sends a fixed BackSpace run" "$FAKE_LOG" "BackSpace"
 
 if run_lab login Nodedicatedaccount; then
     fail "login CHARACTER refuses when no dedicated account exists"
@@ -1227,6 +1234,25 @@ glue_state() { return 1; }
 goto_charselect_via_memory
 ")
 assert_eq "goto_charselect_via_memory fails when memory is unusable" "$?" "1"
+
+# L13: clear_login_dialog_unconditionally must try BOTH dialogs' Okay buttons -- the standard Blizzard
+# disconnect popup (click_login_dialog_dismiss, (0.5, 0.517)) and the custom "Project Descension - Connection
+# Help" popup (click_connection_help_dismiss, (0.697, 0.792)) -- since current_screen alone cannot tell which,
+# if either, was actually showing (reproduced live, slot 2, 2026-10-27: the custom popup's Okay button sits
+# well outside click_login_dialog_dismiss's point, so only clicking that point never dismissed it).
+: > "$FAKE_LOG"
+out=$(WINDOW=4242 bash -c "
+source \"$FUNCS_FILE\"
+WINDOW=4242
+glue_until() { return 0; }
+clear_login_dialog_unconditionally
+")
+rc=$?
+assert_eq "clear_login_dialog_unconditionally exits 0" "$rc" "0"
+assert_contains "clear_login_dialog_unconditionally clicks the standard dialog's Okay point" "$FAKE_LOG" \
+    "mousemove --sync 640 372"
+assert_contains "clear_login_dialog_unconditionally also clicks the Connection-Help dialog's Okay point" \
+    "$FAKE_LOG" "mousemove --sync 892 570"
 rm -f "$FUNCS_FILE"
 
 printf '\n%s failure(s)\n' "$FAILURES"
