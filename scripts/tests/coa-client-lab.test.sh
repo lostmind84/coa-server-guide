@@ -691,6 +691,31 @@ assert_absent "bogus display takes no lock" "$COA_LAB_ROOT/state/lock"
 if COA_LAB_PROFILE=fancy run_lab start 3; then fail "bogus profile refused"; else pass "bogus profile refused"; fi
 assert_contains "bogus profile message" "$WORK/out" "COA_LAB_PROFILE must be readable or minimal"
 
+# L16: a `login` that forces restart_client (the fake lab-mem here never confirms the login screen, so a
+# second login in the same session always takes the restart path, as the earlier same-account restart test
+# above already relies on) must relaunch with the settings `start` actually used, recorded in state/profile,
+# not whatever COA_LAB_PROFILE/COA_LAB_DISPLAY this `login` process's own environment has -- here, nothing
+# at all, which defaults to readable/nested. Before the fix this restarted nested/readable (hyprctl,
+# 1920x1080) instead of the minimal/headless client that was actually running.
+: > "$FAKE_LOG"
+COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=headless run_lab start 3
+assert_eq "L16 setup: minimal/headless start exits 0" "$?" "0"
+assert_contains "L16 setup: state/profile records the minimal profile" "$COA_LAB_ROOT/state/profile" "PROFILE=minimal"
+assert_contains "L16 setup: state/profile records headless" "$COA_LAB_ROOT/state/profile" "DISPLAY_MODE=headless"
+
+run_lab login coalabswitch1 secretpw CharA
+assert_eq "L16 setup: first login (fresh client, no restart yet) exits 0" "$?" "0"
+
+: > "$FAKE_LOG"
+run_lab login coalabswitch2 secretpw CharB
+assert_eq "L16: second login (account switch, forces restart_client) exits 0" "$?" "0"
+assert_contains "L16: restart relaunches headless, as state/profile recorded" "$FAKE_LOG" \
+    "gamescope-argv --backend headless -W 1024 -H 768 -w 1024 -h 768"
+assert_not_contains "L16: restart does not fall back to the caller's own nested default (hyprctl)" \
+    "$FAKE_LOG" "hyprctl"
+assert_contains "L16: restart's own start step reports the minimal profile" "$WORK/out" "profile minimal"
+run_lab stop
+
 # relay-setup: one line per key after two runs, relay/slot3.env with slot 3's SOAP port (L14b: one file
 # per slot under relay/, not the single shared relay.env every slot used to overwrite).
 mkdir -p "$FAKE_ETC/modules"

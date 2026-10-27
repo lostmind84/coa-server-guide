@@ -412,6 +412,12 @@ cmd_start() {
     if [[ "$(awk 'NR == 1 { print $3 }' "$STATE_DIR/preflight" 2>/dev/null)" != "$n" ]]; then
         rm -f "$STATE_DIR/preflight"
     fi
+    # Recorded so a later restart_client (possibly a different script invocation, e.g. a `login` with an
+    # account switch, with none of these variables in its own environment) launches with the settings this
+    # start actually used, not whatever COA_LAB_PROFILE/COA_LAB_DISPLAY/COA_LAB_WIDTH/HEIGHT/FPS its own
+    # caller happens to have (or not have). See docs/adr/0015-lab-restart-keeps-start-profile.md.
+    printf 'PROFILE=%s\nDISPLAY_MODE=%s\nWIDTH=%s\nHEIGHT=%s\nFPS=%s\n' \
+        "$PROFILE" "$DISPLAY_MODE" "$WIDTH" "$HEIGHT" "$FPS" > "$STATE_DIR/profile"
     warden_status_line "$n"
 
     apply_profile
@@ -1309,16 +1315,25 @@ is_login_screen() {
 # reproducibly failed to reach the login screen in 4/4 full runs (up to ~330s each), for a cause that
 # was never established (not verified), while a plain restart + the already-proven fresh-client path
 # (start N, then LOGIN_WAIT + pixel check + type) is the one path this script has proven reliable.
-# Reads the slot from state/slot before `cmd_stop` deletes that file. COA_LAB_INSTANCE, COA_LAB_PROFILE,
-# COA_LAB_WIDTH/HEIGHT/FPS are read once from the environment at the top of this script, so the restart
-# necessarily launches with the same instance and profile/resolution settings as the client being
-# replaced; only the slot (an explicit argument, not state) needs to be carried across the restart.
+# Reads the slot from state/slot before `cmd_stop` deletes that file. This can run in a different script
+# invocation than the one that started the client (e.g. `login` driving an account switch), so
+# COA_LAB_PROFILE/COA_LAB_DISPLAY/COA_LAB_WIDTH/HEIGHT/FPS in *this* process's environment are not
+# necessarily the ones the running client was started with. state/profile (written by cmd_start, L16) is
+# read instead and overrides the globals derived from this process's own environment, so the restart
+# launches with the settings actually recorded for this instance; only the slot (an explicit argument,
+# not state) also needs to be carried across the restart. A pre-L16 instance with no state/profile falls
+# back to this process's environment, as before the fix.
 restart_client() {
     local slot
     slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || die "cannot restart the lab client: no recorded slot" \
         "(state/slot missing); coa-client-lab stop && start N"
     [[ "$slot" =~ ^[1-9][0-9]*$ ]] || die "cannot restart the lab client: state/slot is not a slot number: $slot"
-    step "restarting the lab client on slot $slot for a clean login (same instance/profile/resolution)"
+    if [[ -f "$STATE_DIR/profile" ]]; then
+        # shellcheck disable=SC1091
+        source "$STATE_DIR/profile"
+        MINIMAL_CVARS[0]="maxFPS=$FPS"
+    fi
+    step "restarting the lab client on slot $slot for a clean login (recorded instance/profile/resolution)"
     # A client restart changes neither the slot's server nor the lab's client files, so the preflight
     # recorded for this slot still describes them: keep it across cmd_stop, which deletes it.
     local preflight=""
