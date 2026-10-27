@@ -84,39 +84,34 @@ yet for this slot. It prints `{"slot": N, "warden_enabled": true|false, "detail"
 (the on/off state is the answer, not a failure).
 
 `coa-client-lab`'s new `warden_status_line` (called from both `cmd_preflight` and `cmd_start`, after the
-slot number is known) calls it and prints one line: `warden: off on slot N (coa-lab-mem and coa-lab-packets
-usable)`, or a `WARN:` naming both tools and the specific risk each faces (`coa-lab-mem`'s own hard guard;
-`coa-lab-packets`' dependence on the lab character staying connected, which Warden's anti-cheat scanning
-also puts at risk). This is advisory only -- `warden_status_line` never returns non-zero, and neither
-`preflight` nor `start` is blocked by a Warden-on slot, matching the brief ("warning only, never blocking
-`start`"); Warden is the slot's own configuration, reported here, not changed by this tool.
+slot number is known) calls it and prints one line: `warden: off on slot N (coa-lab-mem usable)`, a `WARN:`
+saying `coa-lab-mem` refuses every read until Warden is off, or `warden: unknown for slot N (...)` when the
+slot's `worldserver.conf` cannot be read (`warden-status` then reports `warden_enabled: null` rather than
+`true`). This is advisory only -- `warden_status_line` never returns non-zero, and neither `preflight` nor
+`start` is blocked by a Warden-on slot; Warden is the slot's own configuration, reported here, not changed by
+this tool.
 
-`coa-lab-packets` itself carries no `Warden.Enabled` check in its own source (grepped; none found), and
-nothing in the server's `PacketLog.cpp`/`cs_misc.cpp` `HandlePacketLog` ties packet logging to Warden
-either -- unlike `coa-lab-mem`'s guard, which is explicit and confirmed. The brief's report that
-`coa-lab-packets` was also refused on the Warden-on slot is taken as given (that session's own finding, not
-re-investigated here: out of this task's scope and time budget), and the warning names the plausible
-mechanism available from what was read this session -- the packet-log toggle needs the lab character online,
-and Warden's anti-cheat scanning is the one thing in this picture that can take a client offline on its
-own -- without asserting it as a proven cause. If a future session traces the actual failure mode, this
-message should be corrected to match it.
+`coa-lab-packets` is not named as affected. It reads the server's own packet log (`.packetlog` over SOAP),
+carries no `Warden.Enabled` check in its source, and nothing in the server's `PacketLog.cpp`/`cs_misc.cpp`
+`HandlePacketLog` ties packet logging to Warden. A first draft of the warning claimed it was at risk too;
+the pre-merge review removed that claim because nothing read in this session supports it. The batch 22
+report that it was unusable on the Warden-on slot stays unexplained.
 
 ### Proof
 
 Both messages shown in the bash test suite against a fake `worldserver.conf` (never a real slot's
 configuration, per `AGENTS.md`): `warden_status_line` sourced directly, `Warden.Enabled = 0` prints the
-`off`/usable line and exits 0; `Warden.Enabled = 1` prints the `WARN:` line (naming both tools) and still
+`off`/usable line and exits 0; `Warden.Enabled = 1` prints the `WARN:` line and still
 exits 0. `test_coa_lab_mem.py` covers `check_warden_disabled`/`warden-status` in isolation (off, on, and a
 missing-line conf, all via a mocked `slot_worldserver_conf`) and confirms `warden-status` never calls
 `run_guards` (no lock/pid needed). Live on slot 2 (Warden off, the only state available this session without
 touching a real slot's configuration): both `preflight 2` and `start 2` printed
-`warden: off on slot 2 (coa-lab-mem and coa-lab-packets usable)`.
+`warden: off on slot 2 (coa-lab-mem usable)` (wording after the review fix).
 
 ## Consequences
 
 - `--video-seconds` is now the documented way to catch a sub-second client-visible effect; `--burst`'s own
   real-world frame cost is documented instead of left to be discovered by a failed attempt, as this task's
   own brief was.
-- A Warden-on slot is now visible from `preflight`/`start` output alone, before either affected tool is
-  tried; the exact failure mode for `coa-lab-packets` under Warden remains unconfirmed and is flagged as
-  such in the warning's own wording and here.
+- A Warden-on slot is now visible from `preflight`/`start` output alone, before `coa-lab-mem` is
+  tried; why `coa-lab-packets` was reported unusable on a Warden-on slot remains unexplained.

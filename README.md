@@ -672,19 +672,17 @@ is unavailable. Evidence: `~/CoaServer/client-lab/evidence/l15/` (a caster's han
 ~2.5s/frame timing from a separate run).
 
 **Warden visibility (L15, 2026-10-27).** `coa-lab-mem`'s own guard (`check_warden_disabled`) hard-refuses
-every memory read while a slot's `worldserver.conf` does not have `Warden.Enabled = 0`; `coa-lab-packets`
-depends on the lab character staying connected, which is also at risk while Warden's anti-cheat scanning runs
-against it. A prior session only learned a slot had Warden on once a `coa-lab-mem`/`coa-lab-packets` call had
-already failed. `coa-client-lab preflight N` and `start N` now print the slot's Warden state up front
+every memory read while a slot's `worldserver.conf` does not have `Warden.Enabled = 0`. `coa-lab-packets`
+reads the server's own packet log (`.packetlog` over SOAP) and has no Warden check. A prior session only
+learned a slot had Warden on once a `coa-lab-mem` call had already failed. `coa-client-lab preflight N` and `start N` now print the slot's Warden state up front
 (`coa-lab-mem warden-status --slot N`, reusing `check_warden_disabled` directly instead of a second parser),
 and never block on it -- Warden is the slot's own configuration, reported here, not changed by this tool:
 
 ```
-warden: off on slot 2 (coa-lab-mem and coa-lab-packets usable)
+warden: off on slot 2 (coa-lab-mem usable)
 WARN: slot 4 has Warden.Enabled != 0: coa-lab-mem refuses every memory read on this slot's client (its own
-guard, see scripts/coa-lab-mem's docstring); coa-lab-packets depends on the lab character staying connected,
-which is also at risk while Warden's anti-cheat scanning runs against it. Neither tool is usable on this slot
-until Warden is off.
+guard, see scripts/coa-lab-mem's docstring) until Warden is off. coa-lab-packets reads the server's own packet
+log and has no Warden check.
 ```
 
 The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:

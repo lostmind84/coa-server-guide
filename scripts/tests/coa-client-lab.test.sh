@@ -416,6 +416,14 @@ assert_eq "video exits 0" "$video_rc" "0"
 assert_file "video clip written" "$video"
 assert_contains "video runs ffmpeg with the lab window, display and fps" "$FAKE_LOG" \
     "ffmpeg -y -loglevel warning -f x11grab -window_id 4242 -framerate 15 -i :77 -t 2"
+: > "$FAKE_LOG"
+run_lab screenshot --video-seconds 1
+assert_eq "video without --fps exits 0" "$?" "0"
+assert_contains "video defaults to 10 fps" "$FAKE_LOG" "-framerate 10 -i :77 -t 1"
+run_lab screenshot --video-seconds 1 --fps 0
+assert_eq "video rejects --fps 0" "$?" "1"
+run_lab screenshot --burst
+assert_eq "--burst without a value fails" "$?" "1"
 assert_contains "video timing.tsv records the action timestamp" "$(dirname "$video")/timing.tsv" "action_ns	"
 assert_contains "video timing.tsv records the capture start timestamp" "$(dirname "$video")/timing.tsv" \
     "capture_start_ns	"
@@ -770,6 +778,11 @@ assert_eq "login exits 0 when the relay confirms the requested character" "$?" "
 run_lab stop
 
 run_lab start 3
+run_lab login coalab1 secretpw coalabone
+assert_eq "the character check ignores case" "$?" "0"
+run_lab stop
+
+run_lab start 3
 : > "$FAKE_LOG"
 printf '#!/usr/bin/env bash\nprintf "relay %%s\\n" "$*" >> "$FAKE_LOG"\necho %s\n' \
     "'{\"pong\": true, \"character\": \"Hfkox\"}'" > "$WORK/bin/fake-relay"
@@ -780,6 +793,7 @@ else
 fi
 assert_contains "wrong-character message names both characters" "$WORK/out" \
     "logged in as the wrong character: requested Coalabone, the relay reports Hfkox is in world"
+assert_contains "the descriptor names the character actually in world" "$lab_json" '"character": "Hfkox"'
 run_lab stop
 
 # A relay too old (or too fast) to carry the `character` field cannot be told apart from a genuine
@@ -1447,7 +1461,7 @@ warden_status_line 7
 " > "$WORK/out" 2>&1
 assert_eq "warden_status_line (off) exits 0" "$?" "0"
 assert_contains "warden off slot reports usable" "$WORK/out" "warden: off on slot 7"
-assert_contains "warden off slot names both tools" "$WORK/out" "coa-lab-mem and coa-lab-packets usable"
+assert_contains "warden off slot names coa-lab-mem" "$WORK/out" "(coa-lab-mem usable)"
 
 printf 'Warden.Enabled = 1\n' > "$WARDEN_ETC/worldserver.conf"
 FAKE_ETC="$WARDEN_ETC" bash -c "
@@ -1459,8 +1473,17 @@ rc=$?
 assert_eq "warden_status_line (on) still exits 0 (warning only, never blocking)" "$rc" "0"
 assert_contains "warden on slot warns" "$WORK/out" "WARN: slot 7 has Warden.Enabled != 0"
 assert_contains "warden on slot names coa-lab-mem's own guard" "$WORK/out" "coa-lab-mem refuses every memory read"
-assert_contains "warden on slot names coa-lab-packets' connection risk" "$WORK/out" \
-    "coa-lab-packets depends on the lab character staying connected"
+assert_contains "warden on slot says coa-lab-packets has no Warden check" "$WORK/out" \
+    "coa-lab-packets reads the server's own packet log and has no Warden check"
+
+rm -f "$WARDEN_ETC/worldserver.conf"
+FAKE_ETC="$WARDEN_ETC" bash -c "
+source \"$FUNCS_FILE\"
+LAB_MEM=\"$REAL_LAB_MEM\"
+warden_status_line 7
+" > "$WORK/out" 2>&1
+assert_eq "warden_status_line (no conf) exits 0" "$?" "0"
+assert_contains "missing conf reports unknown, not Warden on" "$WORK/out" "warden: unknown for slot 7"
 
 rm -f "$FUNCS_FILE"
 rm -rf "$WARDEN_ETC"

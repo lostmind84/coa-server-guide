@@ -663,6 +663,14 @@ class WardenStatusCommandTest(unittest.TestCase):
         self.assertIn('"warden_enabled": true', printed)
         self.assertIn("does not have Warden.Enabled", printed)
 
+    def test_missing_conf_reports_unknown_not_enabled(self):
+        conf = self.root / "missing-worldserver.conf"
+        with unittest.mock.patch.object(mem, "slot_worldserver_conf", return_value=conf):
+            with unittest.mock.patch("builtins.print") as fake_print:
+                rc = mem.main(["warden-status", "--slot", "5"])
+        self.assertEqual(rc, 0)
+        self.assertIn('"warden_enabled": null', fake_print.call_args[0][0])
+
     def test_warden_status_needs_no_lock_or_pid(self):
         # No $COA_LAB_ROOT/state/lock anywhere under self.root: run_guards would refuse this (no lab
         # slot recorded), but warden-status must not call run_guards at all.

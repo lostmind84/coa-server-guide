@@ -1101,6 +1101,12 @@ def main(argv=None) -> int:
         # No lock/pid needed: this slot may not have a lab client running yet (preflight runs before
         # start). Reuses check_warden_disabled directly instead of a second Warden.Enabled parser.
         try:
+            _read_text(slot_worldserver_conf(args.slot))
+        except GuardError as error:
+            print(json.dumps({"slot": args.slot, "warden_enabled": None, "detail": str(error)},
+                             ensure_ascii=False, sort_keys=True))
+            return 0
+        try:
             check_warden_disabled(args.slot)
             result = {"slot": args.slot, "warden_enabled": False,
                        "detail": f"slot {args.slot} Warden.Enabled = 0"}

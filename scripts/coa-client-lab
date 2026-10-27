@@ -361,7 +361,7 @@ require_running() {
 
 # L15 problem 2: `coa-lab-mem`'s own guard hard-refuses every read while a slot has Warden.Enabled != 0
 # (its own check_warden_disabled, reused here via `warden-status` rather than a second parser); a prior
-# session (batch 22, slot 4) only learned that once a `coa-lab-mem`/`coa-lab-packets` call had already
+# session (batch 22, slot 4) only learned that once a `coa-lab-mem` call had already
 # failed. This prints the slot's Warden state up front, from `preflight` and from `start`, and never
 # blocks either: Warden is the slot's own configuration, reported here, not changed by this tool.
 warden_status_line() {
@@ -377,17 +377,15 @@ warden_status_line() {
     enabled=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["warden_enabled"])' "$json" 2>/dev/null) || true
     case "$enabled" in
         False)
-            echo "warden: off on slot $n (coa-lab-mem and coa-lab-packets usable)"
+            echo "warden: off on slot $n (coa-lab-mem usable)"
             ;;
         True)
             echo "WARN: slot $n has Warden.Enabled != 0: coa-lab-mem refuses every memory read on this" \
-                 "slot's client (its own guard, see scripts/coa-lab-mem's docstring); coa-lab-packets" \
-                 "depends on the lab character staying connected, which is also at risk while Warden's" \
-                 "anti-cheat scanning runs against it. Neither tool is usable on this slot until Warden" \
-                 "is off."
+                 "slot's client (its own guard, see scripts/coa-lab-mem's docstring) until Warden is off." \
+                 "coa-lab-packets reads the server's own packet log and has no Warden check."
             ;;
         *)
-            echo "warden: unknown for slot $n ($json)"
+            echo "warden: unknown for slot $n ($(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("detail", ""))' "$json" 2>/dev/null))"
             ;;
     esac
 }
@@ -696,9 +694,11 @@ cmd_character() {
     [[ -n "$ghost_env" && -f "$ghost_env" ]] || die "coa-slot env $slot gave no readable GHOST_ENV (coa-slot create $slot first?)"
 
     local spec_json
-    spec_json=$(python3 -c '
+    spec_json=$(COA_LAB_CHARACTER_PASSWORD="$password" python3 -c '
 import json, sys
-account, character, race, klass, level, spec, gm, learn, items, password, dedicated = sys.argv[1:12]
+import os
+account, character, race, klass, level, spec, gm, learn, items, dedicated = sys.argv[1:11]
+password = os.environ["COA_LAB_CHARACTER_PASSWORD"]
 def ids(s):
     return [int(x) for x in s.split(",") if x.strip()]
 print(json.dumps({
@@ -706,7 +706,7 @@ print(json.dumps({
     "level": int(level), "spec": int(spec), "gm": int(gm), "learn": ids(learn), "items": ids(items),
     "password": password, "dedicated": dedicated == "1",
 }))
-' "$account" "$character" "$race" "$class" "$level" "$spec" "$gm" "$learn" "$items" "$password" "$dedicated") \
+' "$account" "$character" "$race" "$class" "$level" "$spec" "$gm" "$learn" "$items" "$dedicated") \
         || die "could not build the character request"
 
     local out status=0
@@ -859,8 +859,17 @@ except ValueError:
              "$expected is the one in world" >&2
         return 0
     fi
-    [[ "$actual" == "$expected" ]] \
-        || die "logged in as the wrong character: requested $expected, the relay reports $actual is in world"
+    [[ "${actual,,}" == "${expected,,}" ]] && return 0
+    python3 -c '
+import json, sys
+path, actual = sys.argv[1:3]
+with open(path, encoding="utf-8") as handle:
+    descriptor = json.load(handle)
+descriptor["character"] = actual
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(descriptor, handle, indent=2)
+' "$STATE_DIR/lab.json" "$actual" || true
+    die "logged in as the wrong character: requested $expected, the relay reports $actual is in world"
 }
 
 # Waits up to $2 seconds (the same fixed sleep this replaces, kept as an upper bound) for glue state $1
@@ -1630,27 +1639,27 @@ cmd_hold() {
 # The legacy `screenshot [PATH]` form (no flags) is unchanged.
 cmd_screenshot() {
     require_running
-    local path="" burst=0 interval_ms=100 video_seconds=0 fps=0 outdir="" chat_text="" key_args=()
+    local path="" burst=0 interval_ms=100 video_seconds=0 fps="" outdir="" chat_text="" key_args=()
     if [[ $# -gt 0 && "$1" != --* ]]; then
         path="$1"
         shift
     fi
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --burst) burst="${2:-}"; shift 2 ;;
-            --interval-ms) interval_ms="${2:-}"; shift 2 ;;
-            --video-seconds) video_seconds="${2:-}"; shift 2 ;;
-            --fps) fps="${2:-}"; shift 2 ;;
-            --dir) outdir="${2:-}"; shift 2 ;;
-            --chat) chat_text="${2:-}"; shift 2 ;;
-            --key) key_args+=("${2:-}"); shift 2 ;;
+            --burst) [[ $# -ge 2 ]] || die "--burst needs a value"; burst="$2"; shift 2 ;;
+            --interval-ms) [[ $# -ge 2 ]] || die "--interval-ms needs a value"; interval_ms="$2"; shift 2 ;;
+            --video-seconds) [[ $# -ge 2 ]] || die "--video-seconds needs a value"; video_seconds="$2"; shift 2 ;;
+            --fps) [[ $# -ge 2 ]] || die "--fps needs a value"; fps="$2"; shift 2 ;;
+            --dir) [[ $# -ge 2 ]] || die "--dir needs a value"; outdir="$2"; shift 2 ;;
+            --chat) [[ $# -ge 2 ]] || die "--chat needs a value"; chat_text="$2"; shift 2 ;;
+            --key) [[ $# -ge 2 ]] || die "--key needs a value"; key_args+=("$2"); shift 2 ;;
             *) die "unknown screenshot argument: $1" ;;
         esac
     done
     [[ "$burst" =~ ^[0-9]+$ ]] || die "--burst needs a non-negative integer frame count"
     [[ "$interval_ms" =~ ^[0-9]+$ ]] || die "--interval-ms needs a non-negative integer"
     [[ "$video_seconds" =~ ^[0-9]+$ ]] || die "--video-seconds needs a non-negative integer"
-    [[ "$fps" == "" || "$fps" =~ ^[0-9]+$ ]] || die "--fps needs a non-negative integer"
+    [[ "$fps" == "" || "$fps" =~ ^[1-9][0-9]*$ ]] || die "--fps needs a positive integer"
     [[ "$burst" == 0 || "$video_seconds" == 0 ]] || die "use --burst or --video-seconds, not both"
 
     if [[ "$burst" == 0 && "$video_seconds" == 0 ]]; then

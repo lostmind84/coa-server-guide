@@ -155,3 +155,7 @@ reproduction attempts across both batches did not happen to hit.
 - Open item for whoever continues this: problem 3 stays open, unreproduced in this environment; a nested/
   visible-mode reproduction (or a real GPU-backed headless run) is needed before a state-based wait can be
   designed against an actual observed condition instead of a guess.
+- Pre-merge review fixes: the in-world name check ignores case (`login wrkox` matches `Wrkox`), and on a
+  mismatch `state/lab.json` is rewritten with the character actually in world before `login` fails, so the
+  next switch's `kick_via_soap` targets the right name. `character` passes the account password to its
+  request builder through the environment instead of the command line.
