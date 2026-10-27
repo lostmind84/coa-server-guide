@@ -646,6 +646,47 @@ coa-client-lab probe evwatch ASCENSION_KNOWN_ENTRY_UPDATED   # log that game eve
 coa-client-lab stop                        # warns if your own client changed meanwhile
 ```
 
+**Sub-second capture (L15, 2026-10-27).** A single `screenshot` call is too coarse for an effect that is
+airborne or visible for well under a second (a projectile, a brief cast glow): each call is a fresh dispatch,
+and whatever drives this script pays its own overhead between two of them. `screenshot --burst N
+[--interval-ms MS] [--dir DIR] [--chat TEXT | --key KEY...]` and `screenshot --video-seconds S [--fps N]
+[--dir DIR] [--chat TEXT | --key KEY...]` capture several frames (or a short clip) inside *one* call;
+`--chat`/`--key` fire the triggering action first, in that same call, so no second dispatch sits between the
+action and the first frame. Both print the output directory (or the clip path) and write `DIR/timing.tsv`
+(nanoseconds since epoch: the action, and -- for `--burst` -- every frame's start/end).
+
+```bash
+coa-client-lab screenshot --video-seconds 3 --fps 20 --chat "/cast Fireball"   # prints DIR/clip.mp4
+coa-client-lab screenshot --burst 10 --interval-ms 100 --key 1                 # prints DIR with frame-000.png...
+```
+
+Measured live (slot 2, 2026-10-27, nested gamescope at 1920x1080): `--video-seconds` (ffmpeg x11grab) held a
+true, evenly spaced 20fps (50ms/frame, `ffprobe` confirmed `nb_frames=60` over an exact 3.000000s) with the
+action-to-capture-start gap around 1.6ms -- well inside the `<=100ms` this was built for. `--burst`
+(`magick import` per frame) did not: each frame took roughly 2.5s on this same display, regardless of
+`--interval-ms`, so **`--burst` cannot reach sub-second spacing here** -- use `--video-seconds` for that and
+extract frames from the clip (`ffmpeg -i clip.mp4 frame-%03d.png`) to inspect one. `--burst` still has a use:
+several *regular* screenshots (seconds apart is fine) in one dispatch, or environments where ffmpeg/x11grab
+is unavailable. Evidence: `~/CoaServer/client-lab/evidence/l15/` (a caster's hands glowing green through
+"Raise: Lesser Skeletal Warrior" (spell 500970), caught across roughly 40 of 60 frames; `--burst`'s own
+~2.5s/frame timing from a separate run).
+
+**Warden visibility (L15, 2026-10-27).** `coa-lab-mem`'s own guard (`check_warden_disabled`) hard-refuses
+every memory read while a slot's `worldserver.conf` does not have `Warden.Enabled = 0`; `coa-lab-packets`
+depends on the lab character staying connected, which is also at risk while Warden's anti-cheat scanning runs
+against it. A prior session only learned a slot had Warden on once a `coa-lab-mem`/`coa-lab-packets` call had
+already failed. `coa-client-lab preflight N` and `start N` now print the slot's Warden state up front
+(`coa-lab-mem warden-status --slot N`, reusing `check_warden_disabled` directly instead of a second parser),
+and never block on it -- Warden is the slot's own configuration, reported here, not changed by this tool:
+
+```
+warden: off on slot 2 (coa-lab-mem and coa-lab-packets usable)
+WARN: slot 4 has Warden.Enabled != 0: coa-lab-mem refuses every memory read on this slot's client (its own
+guard, see scripts/coa-lab-mem's docstring); coa-lab-packets depends on the lab character staying connected,
+which is also at risk while Warden's anti-cheat scanning runs against it. Neither tool is usable on this slot
+until Warden is off.
+```
+
 The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:
 `coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
 slot; `coa-client-lab character` (above) creates or updates one through the Ghost e2e harness in one command

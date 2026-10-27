@@ -25,6 +25,12 @@ read-only `/proc/<pid>/mem` open) for every read; no write syscall, no ptrace at
                                               comment; `login-settled` is reached once a login attempt either
                                               loads the character list or fails (login_state ==
                                               LOGIN_STATE_FAILED), whichever comes first.
+    coa-lab-mem warden-status --slot N       whether slot N's worldserver.conf has Warden.Enabled = 0, via
+                                              the same check_warden_disabled guard as every other command
+                                              above (no second parser). Takes the slot number directly and
+                                              does not need a running lab client or lock file: L15 added
+                                              this so `coa-client-lab preflight`/`start` can report it before
+                                              any read is attempted, not only once a read fails against it.
 
 Global options: --pid (override discovery, still guarded), --instance (or COA_LAB_INSTANCE; state directory
 layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
@@ -1086,8 +1092,22 @@ def main(argv=None) -> int:
     glue_parser.add_argument("--until", choices=GLUE_UNTIL_STATES, default=None,
                               help="poll internally (0.1s) until this glue state holds, instead of one read")
     glue_parser.add_argument("--timeout", type=float, default=20.0, help="seconds to poll for --until")
+    warden_parser = sub.add_parser("warden-status")
+    warden_parser.add_argument("--slot", type=int, required=True)
     args = parser.parse_args(argv)
     state_dir = _state_dir(lab_root, args.instance)
+
+    if args.command == "warden-status":
+        # No lock/pid needed: this slot may not have a lab client running yet (preflight runs before
+        # start). Reuses check_warden_disabled directly instead of a second Warden.Enabled parser.
+        try:
+            check_warden_disabled(args.slot)
+            result = {"slot": args.slot, "warden_enabled": False,
+                       "detail": f"slot {args.slot} Warden.Enabled = 0"}
+        except GuardError as error:
+            result = {"slot": args.slot, "warden_enabled": True, "detail": str(error)}
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
 
     matched = True
     try:

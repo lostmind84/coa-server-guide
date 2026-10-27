@@ -55,9 +55,17 @@ twice), ask the question in the issue and stop with **inconclusive**.
 install) and returns the Lua error text and stack, not just the system line `probe log` already captures; a
 `/reload` empties the table, so read `previous` for the errors seen just before the last world entry. Still
 cannot observe: action-bar contents, 3D models, animations, anything purely visual. That is different from
-the red on-screen UI errors, which `probe log` does capture (section 4 below). Pure visuals are judged from
-screenshots and marked "visual, needs
-user confirmation"; the rest is **inconclusive** with the missing capability named.
+the red on-screen UI errors, which `probe log` does capture (section 4 below). A single `screenshot` can miss
+a sub-second effect (a projectile, a brief cast glow) between its own dispatch and the next one; for that,
+`screenshot --burst N --interval-ms MS [--chat TEXT|--key KEY...]` or `screenshot --video-seconds S [--fps N]
+[--chat TEXT|--key KEY...]` fire the triggering action and start capturing in the same call (L15,
+2026-10-27). `--burst` uses `magick import` per frame, measured at roughly 2.5s/frame on this environment's
+nested gamescope display (1920x1080) -- far above its own `--interval-ms` request, so it does not actually
+reach sub-second spacing; `--video-seconds` (ffmpeg x11grab) does: measured a true, evenly spaced 20fps
+(50ms/frame) over a 3s clip, first frame within roughly its own frame interval of the action. Prefer
+`--video-seconds` for anything sub-second; extract frames from the clip (`ffmpeg -i clip.mp4 frame-%03d.png`)
+to inspect one. Pure visuals too brief or ambiguous even for that are judged "visual, needs user
+confirmation"; the rest is **inconclusive** with the missing capability named.
 
 ## 3. Setup and action: Ghost first
 
@@ -127,6 +135,9 @@ folder.
    show what the server actually sent. Both are read-only, lab-only, and need a slot with
    `Warden.Enabled = 0`; neither substitutes for a Ghost scenario or for `probe state`/`probe auras`, and
    both are a last resort when the display and the Lua view already disagree and the cause matters.
+   `coa-client-lab preflight N`/`start N` print the slot's Warden state up front (L15, 2026-10-27) --
+   `warden: off on slot N (coa-lab-mem and coa-lab-packets usable)`, or a `WARN:` naming both tools when it
+   is on -- so a Warden-on slot is known before either tool is tried, not from the first refusal.
 
 ## Getting the state you need, shortest route first
 

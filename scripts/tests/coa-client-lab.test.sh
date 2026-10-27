@@ -66,6 +66,11 @@ make_user_client() {
 
 make_fakes() {
     mkdir -p "$WORK/bin"
+    # Default fake worldserver.conf: Warden off, matching every slot used elsewhere in this suite
+    # (slot 3 throughout). warden_status_line (L15) reads this through coa-lab-mem's own
+    # check_warden_disabled on every `preflight`/`start`, so it must exist before those run.
+    mkdir -p "$FAKE_ETC"
+    printf 'Warden.Enabled = 0\n' > "$FAKE_ETC/worldserver.conf"
     cat > "$WORK/bin/hyprctl" <<'EOF'
 #!/usr/bin/env bash
 printf 'hyprctl %s\n' "$*" >> "$FAKE_LOG"
@@ -122,6 +127,14 @@ if [[ "$*" == *-format* && "$*" == *pixel:p* ]]; then
     fi
     exit 0
 fi
+touch "${@: -1}"
+EOF
+    # Fake ffmpeg (L15 problem 1, --video-seconds): there is no real X server at the fake DISPLAY, so the
+    # real x11grab demuxer would fail here regardless of this change; this just logs the invocation and
+    # creates the output file, same convention as the magick fake above.
+    cat > "$WORK/bin/ffmpeg" <<'EOF'
+#!/usr/bin/env bash
+printf 'ffmpeg %s\n' "$*" >> "$FAKE_LOG"
 touch "${@: -1}"
 EOF
     cat > "$WORK/bin/coa-slot" <<'EOF'
@@ -370,6 +383,51 @@ assert_contains "screenshot uses the lab display" "$FAKE_LOG" "magick DISPLAY=:7
 
 run_lab screenshot
 assert_file "default screenshot written" "$(cat "$WORK/out")"
+
+# L15 problem 1: burst/video capture in one call, optionally after firing a trigger action first.
+: > "$FAKE_LOG"
+run_lab screenshot --burst 3 --interval-ms 10
+burst_rc=$?
+burst_dir=$(cat "$WORK/out")
+assert_eq "burst exits 0" "$burst_rc" "0"
+assert_file "burst frame 0 written" "$burst_dir/frame-000.png"
+assert_file "burst frame 1 written" "$burst_dir/frame-001.png"
+assert_file "burst frame 2 written" "$burst_dir/frame-002.png"
+assert_file "burst timing.tsv written" "$burst_dir/timing.tsv"
+assert_eq "burst captured exactly 3 frames" "$(grep -c '^frame	' "$burst_dir/timing.tsv")" "3"
+assert_contains "burst timing.tsv records the action timestamp" "$burst_dir/timing.tsv" "action_ns	"
+
+: > "$FAKE_LOG"
+run_lab screenshot --burst 2 --key 1
+assert_eq "burst with --key exits 0" "$?" "0"
+assert_contains "burst --key sends the key before capturing" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4242 1"
+
+: > "$FAKE_LOG"
+run_lab screenshot --burst 1 --chat "/cast Fireball"
+assert_eq "burst with --chat exits 0" "$?" "0"
+assert_contains "burst --chat sends Return, the text, then Return" "$FAKE_LOG" \
+    "xdotool DISPLAY=:77 type --window 4242 --delay 40 /cast Fireball"
+
+: > "$FAKE_LOG"
+run_lab screenshot --video-seconds 2 --fps 15
+video_rc=$?
+video=$(cat "$WORK/out")
+assert_eq "video exits 0" "$video_rc" "0"
+assert_file "video clip written" "$video"
+assert_contains "video runs ffmpeg with the lab window, display and fps" "$FAKE_LOG" \
+    "ffmpeg -y -loglevel warning -f x11grab -window_id 4242 -framerate 15 -i :77 -t 2"
+assert_contains "video timing.tsv records the action timestamp" "$(dirname "$video")/timing.tsv" "action_ns	"
+assert_contains "video timing.tsv records the capture start timestamp" "$(dirname "$video")/timing.tsv" \
+    "capture_start_ns	"
+
+if run_lab screenshot --burst 1 --video-seconds 1; then fail "burst+video refused"; else pass "burst+video refused"; fi
+assert_contains "burst+video message" "$WORK/out" "use --burst or --video-seconds, not both"
+
+if run_lab screenshot "$WORK/shot2.png" --burst 2; then fail "PATH+burst refused"; else pass "PATH+burst refused"; fi
+assert_contains "PATH+burst message" "$WORK/out" "write a directory"
+
+if run_lab screenshot --key 1; then fail "bare --key refused"; else pass "bare --key refused"; fi
+assert_contains "bare --key message" "$WORK/out" "need --burst or --video-seconds"
 
 : > "$FAKE_LOG"
 run_lab preflight 3
@@ -628,7 +686,8 @@ assert_contains "bogus profile message" "$WORK/out" "COA_LAB_PROFILE must be rea
 # relay-setup: one line per key after two runs, relay/slot3.env with slot 3's SOAP port (L14b: one file
 # per slot under relay/, not the single shared relay.env every slot used to overwrite).
 mkdir -p "$FAKE_ETC/modules"
-printf 'Ra.Enable = 0\nSOAP.Enabled = 0\nSOAP.IP = "127.0.0.1"\nSOAP.Port = 7878\n' > "$FAKE_ETC/worldserver.conf"
+printf 'Ra.Enable = 0\nSOAP.Enabled = 0\nSOAP.IP = "127.0.0.1"\nSOAP.Port = 7878\nWarden.Enabled = 0\n' \
+    > "$FAKE_ETC/worldserver.conf"
 printf 'CoA.Enable = 1\n' > "$FAKE_ETC/modules/coa.conf"
 printf 'PW\n' > "$WORK/soap.password"
 run_lab relay-setup 3 --soap-account COALABSOAP --soap-password-file "$WORK/soap.password"
@@ -1368,6 +1427,43 @@ assert_contains "clear_login_dialog_unconditionally clicks the standard dialog's
 assert_contains "clear_login_dialog_unconditionally also clicks the Connection-Help dialog's Okay point" \
     "$FAKE_LOG" "mousemove --sync 892 570"
 rm -f "$FUNCS_FILE"
+
+# L15 problem 2: warden_status_line (preflight/start) reports a slot's Warden state up front via the real
+# `coa-lab-mem warden-status --slot N` (test_coa_lab_mem.py already covers check_warden_disabled/
+# warden-status in isolation; this exercises the bash-side wiring against a FAKE conf -- AGENTS.md: never
+# change a real slot's configuration for a test). LAB_MEM is overridden because sourcing a tmp copy of the
+# script via source_lab_functions would otherwise resolve SCRIPT_DIR, and so LAB_MEM's default, to the tmp
+# file's own directory.
+REAL_LAB_MEM="$(dirname "$SCRIPT")/coa-lab-mem"
+WARDEN_ETC="$WORK/warden-etc"
+mkdir -p "$WARDEN_ETC"
+FUNCS_FILE=$(source_lab_functions)
+
+printf 'Warden.Enabled = 0\n' > "$WARDEN_ETC/worldserver.conf"
+FAKE_ETC="$WARDEN_ETC" bash -c "
+source \"$FUNCS_FILE\"
+LAB_MEM=\"$REAL_LAB_MEM\"
+warden_status_line 7
+" > "$WORK/out" 2>&1
+assert_eq "warden_status_line (off) exits 0" "$?" "0"
+assert_contains "warden off slot reports usable" "$WORK/out" "warden: off on slot 7"
+assert_contains "warden off slot names both tools" "$WORK/out" "coa-lab-mem and coa-lab-packets usable"
+
+printf 'Warden.Enabled = 1\n' > "$WARDEN_ETC/worldserver.conf"
+FAKE_ETC="$WARDEN_ETC" bash -c "
+source \"$FUNCS_FILE\"
+LAB_MEM=\"$REAL_LAB_MEM\"
+warden_status_line 7
+" > "$WORK/out" 2>&1
+rc=$?
+assert_eq "warden_status_line (on) still exits 0 (warning only, never blocking)" "$rc" "0"
+assert_contains "warden on slot warns" "$WORK/out" "WARN: slot 7 has Warden.Enabled != 0"
+assert_contains "warden on slot names coa-lab-mem's own guard" "$WORK/out" "coa-lab-mem refuses every memory read"
+assert_contains "warden on slot names coa-lab-packets' connection risk" "$WORK/out" \
+    "coa-lab-packets depends on the lab character staying connected"
+
+rm -f "$FUNCS_FILE"
+rm -rf "$WARDEN_ETC"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

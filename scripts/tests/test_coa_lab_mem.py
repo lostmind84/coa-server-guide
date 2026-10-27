@@ -610,6 +610,69 @@ class GuardsTest(unittest.TestCase):
         result = mem.check_pid_is_lab_client(123, lab_root, proc_root)
         self.assertEqual(result, (lab_exe_dir / "Ascension.exe").resolve())
 
+    def test_check_warden_disabled_passes_when_zero(self):
+        conf = self.root / "worldserver.conf"
+        conf.write_text("SomeOption = 1\nWarden.Enabled = 0\nOther = 2\n")
+        with unittest.mock.patch.object(mem, "slot_worldserver_conf", return_value=conf):
+            mem.check_warden_disabled(2)  # does not raise
+
+    def test_check_warden_disabled_raises_when_one(self):
+        conf = self.root / "worldserver.conf"
+        conf.write_text("Warden.Enabled = 1\n")
+        with unittest.mock.patch.object(mem, "slot_worldserver_conf", return_value=conf):
+            with self.assertRaises(mem.GuardError):
+                mem.check_warden_disabled(4)
+
+    def test_check_warden_disabled_raises_when_missing(self):
+        conf = self.root / "worldserver.conf"
+        conf.write_text("Other = 2\n")
+        with unittest.mock.patch.object(mem, "slot_worldserver_conf", return_value=conf):
+            with self.assertRaises(mem.GuardError):
+                mem.check_warden_disabled(5)
+
+
+class WardenStatusCommandTest(unittest.TestCase):
+    """L15 problem 2: `coa-lab-mem warden-status --slot N` reuses check_warden_disabled directly and
+    needs no running lab client/lock, so preflight/start can report it before any read is attempted."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_warden_off_reports_false(self):
+        conf = self.root / "worldserver.conf"
+        conf.write_text("Warden.Enabled = 0\n")
+        with unittest.mock.patch.object(mem, "slot_worldserver_conf", return_value=conf), \
+             unittest.mock.patch.object(mem.sys, "argv", ["coa-lab-mem", "warden-status", "--slot", "2"]):
+            with unittest.mock.patch("builtins.print") as fake_print:
+                rc = mem.main(["warden-status", "--slot", "2"])
+        self.assertEqual(rc, 0)
+        printed = fake_print.call_args[0][0]
+        self.assertIn('"slot": 2', printed)
+        self.assertIn('"warden_enabled": false', printed)
+
+    def test_warden_on_reports_true_and_detail(self):
+        conf = self.root / "worldserver.conf"
+        conf.write_text("Warden.Enabled = 1\n")
+        with unittest.mock.patch.object(mem, "slot_worldserver_conf", return_value=conf):
+            with unittest.mock.patch("builtins.print") as fake_print:
+                rc = mem.main(["warden-status", "--slot", "4"])
+        self.assertEqual(rc, 0)
+        printed = fake_print.call_args[0][0]
+        self.assertIn('"warden_enabled": true', printed)
+        self.assertIn("does not have Warden.Enabled", printed)
+
+    def test_warden_status_needs_no_lock_or_pid(self):
+        # No $COA_LAB_ROOT/state/lock anywhere under self.root: run_guards would refuse this (no lab
+        # slot recorded), but warden-status must not call run_guards at all.
+        conf = self.root / "worldserver.conf"
+        conf.write_text("Warden.Enabled = 0\n")
+        with unittest.mock.patch.object(mem, "slot_worldserver_conf", return_value=conf), \
+             unittest.mock.patch.object(mem, "run_guards", side_effect=AssertionError("must not be called")):
+            rc = mem.main(["warden-status", "--slot", "3"])
+        self.assertEqual(rc, 0)
+
 
 class TebCacheTest(unittest.TestCase):
     """resolve_object_manager's persistent cache (reports/l7): a candidate found once must not be

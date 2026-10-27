@@ -138,6 +138,17 @@ Running (one lab client per instance):
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
   screenshot [PATH]        save a PNG of the client window and print its path
+  screenshot --burst N [--interval-ms MS] [--dir DIR] [--chat TEXT | --key KEY...]
+                           capture N frames (default interval 100ms, at most that by design -- see
+                           docs/adr/0013) inside this one call, into DIR (default under
+                           screenshots/burst-<timestamp>-<pid>/, frame-000.png...); with --chat/--key, fires
+                           that action first, in the same call, then starts capturing immediately -- no
+                           second dispatch between the action and the first frame. Prints DIR; DIR/timing.tsv
+                           has the action and every frame's start/end (ns since epoch) for measuring the
+                           achieved interval and the action-to-first-frame delay
+  screenshot --video-seconds S [--fps N] [--dir DIR] [--chat TEXT | --key KEY...]
+                           same, but records DIR/clip.mp4 via ffmpeg x11grab for S seconds at --fps
+                           (default 10) instead of discrete frames
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
@@ -348,6 +359,39 @@ require_running() {
     export DISPLAY
 }
 
+# L15 problem 2: `coa-lab-mem`'s own guard hard-refuses every read while a slot has Warden.Enabled != 0
+# (its own check_warden_disabled, reused here via `warden-status` rather than a second parser); a prior
+# session (batch 22, slot 4) only learned that once a `coa-lab-mem`/`coa-lab-packets` call had already
+# failed. This prints the slot's Warden state up front, from `preflight` and from `start`, and never
+# blocks either: Warden is the slot's own configuration, reported here, not changed by this tool.
+warden_status_line() {
+    local n="$1" json enabled
+    if [[ ! -x "$LAB_MEM" ]] || ! command -v python3 > /dev/null 2>&1; then
+        echo "warden: unknown for slot $n (coa-lab-mem/python3 unavailable)"
+        return 0
+    fi
+    if ! json=$(python3 "$LAB_MEM" warden-status --slot "$n" 2>&1); then
+        echo "warden: unknown for slot $n (coa-lab-mem warden-status failed: $json)"
+        return 0
+    fi
+    enabled=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["warden_enabled"])' "$json" 2>/dev/null) || true
+    case "$enabled" in
+        False)
+            echo "warden: off on slot $n (coa-lab-mem and coa-lab-packets usable)"
+            ;;
+        True)
+            echo "WARN: slot $n has Warden.Enabled != 0: coa-lab-mem refuses every memory read on this" \
+                 "slot's client (its own guard, see scripts/coa-lab-mem's docstring); coa-lab-packets" \
+                 "depends on the lab character staying connected, which is also at risk while Warden's" \
+                 "anti-cheat scanning runs against it. Neither tool is usable on this slot until Warden" \
+                 "is off."
+            ;;
+        *)
+            echo "warden: unknown for slot $n ($json)"
+            ;;
+    esac
+}
+
 cmd_start() {
     local n="${1:-}" auth pid display window waited
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab start N (a coa-slot slot number)"
@@ -370,6 +414,7 @@ cmd_start() {
     if [[ "$(awk 'NR == 1 { print $3 }' "$STATE_DIR/preflight" 2>/dev/null)" != "$n" ]]; then
         rm -f "$STATE_DIR/preflight"
     fi
+    warden_status_line "$n"
 
     apply_profile
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
@@ -1576,12 +1621,98 @@ cmd_hold() {
     xdotool keyup --window "$WINDOW" "$1"
 }
 
+#
+# L15 problem 1: a separate `screenshot` call per frame cannot catch a sub-second effect (e.g. a brief
+# projectile) -- each call is a fresh dispatch from whatever drives this script, so the gap between two
+# calls is that dispatch's own overhead, not anything this script controls. `--burst`/`--video-seconds`
+# capture several frames (or a short clip) inside ONE call, optionally after firing the trigger action
+# (`--chat`/`--key`) in that same call, so no second dispatch sits between the action and the first frame.
+# The legacy `screenshot [PATH]` form (no flags) is unchanged.
 cmd_screenshot() {
     require_running
-    local path="${1:-$LAB_ROOT/screenshots/lab-$(date +%Y%m%d-%H%M%S).png}"
-    mkdir -p "$(dirname "$path")"
-    magick import -window "$WINDOW" "$path"
-    echo "$path"
+    local path="" burst=0 interval_ms=100 video_seconds=0 fps=0 outdir="" chat_text="" key_args=()
+    if [[ $# -gt 0 && "$1" != --* ]]; then
+        path="$1"
+        shift
+    fi
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --burst) burst="${2:-}"; shift 2 ;;
+            --interval-ms) interval_ms="${2:-}"; shift 2 ;;
+            --video-seconds) video_seconds="${2:-}"; shift 2 ;;
+            --fps) fps="${2:-}"; shift 2 ;;
+            --dir) outdir="${2:-}"; shift 2 ;;
+            --chat) chat_text="${2:-}"; shift 2 ;;
+            --key) key_args+=("${2:-}"); shift 2 ;;
+            *) die "unknown screenshot argument: $1" ;;
+        esac
+    done
+    [[ "$burst" =~ ^[0-9]+$ ]] || die "--burst needs a non-negative integer frame count"
+    [[ "$interval_ms" =~ ^[0-9]+$ ]] || die "--interval-ms needs a non-negative integer"
+    [[ "$video_seconds" =~ ^[0-9]+$ ]] || die "--video-seconds needs a non-negative integer"
+    [[ "$fps" == "" || "$fps" =~ ^[0-9]+$ ]] || die "--fps needs a non-negative integer"
+    [[ "$burst" == 0 || "$video_seconds" == 0 ]] || die "use --burst or --video-seconds, not both"
+
+    if [[ "$burst" == 0 && "$video_seconds" == 0 ]]; then
+        [[ ${#key_args[@]} -eq 0 && -z "$chat_text" ]] || die "--chat/--key need --burst or --video-seconds"
+        path="${path:-$LAB_ROOT/screenshots/lab-$(date +%Y%m%d-%H%M%S).png}"
+        mkdir -p "$(dirname "$path")"
+        magick import -window "$WINDOW" "$path"
+        echo "$path"
+        return 0
+    fi
+    [[ -z "$path" ]] || die "--burst/--video-seconds write a directory (--dir), not a single PATH"
+    outdir="${outdir:-$LAB_ROOT/screenshots/burst-$(date +%Y%m%d-%H%M%S)-$$}"
+    mkdir -p "$outdir"
+
+    # Fire the trigger action, if any, then start capture immediately: no second command dispatch, no
+    # extra round trip. action_ns is the timestamp of the LAST action sent (the one whose effect capture
+    # cares about), so a later reader can compute the delay to the first frame.
+    local action_ns
+    action_ns=$(date +%s%N)
+    if [[ -n "$chat_text" ]]; then
+        xdotool key --window "$WINDOW" Return
+        "$SLEEP" 0.5
+        xdotool type --window "$WINDOW" --delay 40 "$chat_text"
+        xdotool key --window "$WINDOW" Return
+        action_ns=$(date +%s%N)
+    fi
+    if [[ ${#key_args[@]} -gt 0 ]]; then
+        xdotool key --window "$WINDOW" "${key_args[@]}"
+        action_ns=$(date +%s%N)
+    fi
+
+    if [[ "$video_seconds" != 0 ]]; then
+        fps="${fps:-10}"
+        local video="$outdir/clip.mp4" capture_start_ns
+        printf 'action_ns\t%s\n' "$action_ns" > "$outdir/timing.tsv"
+        capture_start_ns=$(date +%s%N)
+        printf 'capture_start_ns\t%s\n' "$capture_start_ns" >> "$outdir/timing.tsv"
+        # x11grab's window_id option selects the window within the display given as -i; the display
+        # itself (not the window id) is the input, matching ffmpeg's own x11grab usage.
+        ffmpeg -y -loglevel warning -f x11grab -window_id "$WINDOW" -framerate "$fps" -i "$DISPLAY" \
+            -t "$video_seconds" "$video" > "$outdir/ffmpeg.log" 2>&1
+        echo "$video"
+        return 0
+    fi
+
+    : > "$outdir/timing.tsv"
+    printf 'action_ns\t%s\n' "$action_ns" >> "$outdir/timing.tsv"
+    local i frame_start frame_end elapsed_ms remaining_ms
+    for ((i = 0; i < burst; i++)); do
+        frame_start=$(date +%s%N)
+        magick import -window "$WINDOW" "$outdir/frame-$(printf '%03d' "$i").png" 2> /dev/null || true
+        frame_end=$(date +%s%N)
+        printf 'frame\t%s\t%s\t%s\n' "$i" "$frame_start" "$frame_end" >> "$outdir/timing.tsv"
+        if (( i < burst - 1 )); then
+            elapsed_ms=$(( (frame_end - frame_start) / 1000000 ))
+            remaining_ms=$(( interval_ms - elapsed_ms ))
+            if (( remaining_ms > 0 )); then
+                "$SLEEP" "$(printf '%d.%03d' "$((remaining_ms / 1000))" "$((remaining_ms % 1000))")"
+            fi
+        fi
+    done
+    echo "$outdir"
 }
 
 # The addon answers in SavedVariables, which the client writes on /reload (spike findings Q3).
@@ -1669,6 +1800,7 @@ cmd_preflight() {
     shift
     mkdir -p "$STATE_DIR"
     coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@" || status=$?
+    warden_status_line "$n"
     if [[ "$status" == 0 ]]; then
         echo "pass slot $n $(date -Is)" > "$STATE_DIR/preflight"
     else
