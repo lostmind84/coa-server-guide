@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/azerothcore/AzerothGhost/e2e/e2eharness"
 	_ "github.com/go-sql-driver/mysql"
@@ -157,6 +158,70 @@ func existingCharacterClass(authDB, charDB *sql.DB, account, character string) (
 	return class, guid, true, nil
 }
 
+// ascensionActiveSpecSetting mirrors ASCENSION_ACTIVE_SPEC_SETTING (src/server/coa/AscensionCompat.cpp
+// in the server repo): the character_settings "source" OnPlayerLogin reads to decide the active CoA
+// specialization (player->GetPlayerSetting(ASCENSION_ACTIVE_SPEC_SETTING, 0).value) and then grants
+// through SynchronizeAutomaticTalents/SynchronizeProgression.
+const ascensionActiveSpecSetting = "core.ascension_active_spec"
+
+// setActiveSpecialization stages a CoA specialization the way the current server actually honors it.
+// Ghost's ScenarioBot.SetSpecialization whispers `.localspec N`, which server commit 2d13ffd73a (#5507,
+// "talk to the client through native Extensions.dll packets only") removed along with every other
+// ASC_LOCAL_* chat command; the whisper is now silently ignored (no handler), so the character's
+// character_settings row never changes and the call is a no-op. #5507 replaced it with CMSG 0x0727
+// (known-entries upload) from the client's ChrSpecs identity/signature entries -- not reachable from a
+// chat whisper -- but OnPlayerLogin (src/server/coa/AscensionCompat.cpp) still reads
+// core.ascension_active_spec from character_settings on every login, independent of that packet, and
+// uses it to populate the in-memory active-specialization map and synchronize the automatic (identity)
+// entries for that spec. Writing this row directly is therefore a path the server still honors today,
+// without depending on a chat command or constructing a native upload the harness has no DBC catalog to
+// validate. It only stages the switch: the actual spellbook sync happens in OnPlayerLogin, i.e. on the
+// character's *next* login (the lab client's own `coa-client-lab login`, not this helper's own
+// session) -- matching PlayerSettingsStore::UpdateSetting's REPLACE-based design, which is meant to work
+// for an offline character.
+//
+// The wire format (PlayerSettingsStore::SerializeSettingsData, src/server/game/Entities/Player/
+// PlayerSettings.cpp) is one decimal value followed by a trailing space, and CHAR_REP_CHAR_SETTINGS
+// (src/server/database/Database/Implementation/CharacterDatabase.cpp) is a plain
+// `REPLACE INTO character_settings (guid, source, data) VALUES (?, ?, ?)`, reproduced here verbatim.
+func setActiveSpecialization(charDB *sql.DB, guid uint64, spec uint32) error {
+	data := fmt.Sprintf("%d ", spec)
+	if _, err := charDB.Exec(
+		`REPLACE INTO character_settings (guid, source, data) VALUES (?, ?, ?)`,
+		guid, ascensionActiveSpecSetting, data,
+	); err != nil {
+		return fmt.Errorf("write character_settings %s for guid %d: %w", ascensionActiveSpecSetting, guid, err)
+	}
+	readBack, err := readActiveSpecialization(charDB, guid)
+	if err != nil {
+		return err
+	}
+	if readBack != data {
+		return fmt.Errorf("character_settings %s for guid %d did not persist: wrote %q, read back %q",
+			ascensionActiveSpecSetting, guid, data, readBack)
+	}
+	return nil
+}
+
+// readActiveSpecialization returns the raw character_settings data for guid's
+// core.ascension_active_spec row ("" if there is none yet), with no write of its own: the one way to
+// tell whether a previous setActiveSpecialization write is still there, or something (the server's own
+// pending logout save) has since reverted it.
+func readActiveSpecialization(charDB *sql.DB, guid uint64) (string, error) {
+	var data string
+	err := charDB.QueryRow(
+		`SELECT data FROM character_settings WHERE guid = ? AND source = ?`,
+		guid, ascensionActiveSpecSetting,
+	).Scan(&data)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read character_settings %s for guid %d: %w", ascensionActiveSpecSetting, guid, err)
+	}
+	return data, nil
+}
+
 // TestLabCharacterApply creates or updates the lab test character described by
 // COA_LAB_CHARACTER_SPEC. Run with: go test -run '^TestLabCharacterApply$' -v
 func TestLabCharacterApply(t *testing.T) {
@@ -235,9 +300,6 @@ func TestLabCharacterApply(t *testing.T) {
 	if spec.Level > 0 {
 		e2eharness.SetLevel(t, sess.World, spec.Level)
 	}
-	if spec.Spec != 0 {
-		bot.SetSpecialization(t, spec.Spec)
-	}
 	for _, spell := range spec.Learn {
 		bot.Learn(t, spell)
 	}
@@ -254,6 +316,65 @@ func TestLabCharacterApply(t *testing.T) {
 		}
 	}
 	bot.Save(t)
+
+	if spec.Spec != 0 {
+		// A direct character_settings write only sticks once nothing server-side can save the
+		// character's *old* in-memory settings back over it. A bare bot.Save(t) above is not enough:
+		// the player object this session created still holds spec 0 in memory, and a defer'd
+		// sess.World.Close() -- an abrupt disconnect, not a clean logout -- still triggers the
+		// server's own on-disconnect save with that same stale value, clobbering this write right
+		// after it lands (reproduced live, slot 2, 2026-10-27: the row read back "0 " immediately
+		// after a plain mid-session UPDATE). Logging out properly first, and waiting for the
+		// server's own SMSG_LOGOUT_COMPLETE, moves past every save this session can still trigger, so
+		// the write made afterward is the last one before the character's next login.
+		if err := sess.World.SendLogout(); err != nil {
+			t.Fatalf("logout before setting specialization: %v", err)
+		}
+		if err := sess.World.WaitForLogout(30 * time.Second); err != nil {
+			t.Fatalf("waiting for logout before setting specialization: %v", err)
+		}
+		if err := setActiveSpecialization(charDB, sess.GUID, spec.Spec); err != nil {
+			t.Fatalf("set specialization: %v", err)
+		}
+		// setActiveSpecialization's own read-back (above) only proves the write landed at that
+		// instant -- it does not prove nothing overwrites it a moment later. SaveToDB runs
+		// synchronously inside WorldSession::LogoutPlayer, before SMSG_LOGOUT_COMPLETE is sent
+		// (src/server/game/Server/WorldSession.cpp), but that call only *queues* the save onto
+		// CharacterDatabase's async worker; WaitForLogout above only proves the client saw the
+		// packet, not that the queued transaction has actually run yet. Reproduced live, slot 2,
+		// 2026-10-27: the very write above stuck immediately for one character (guid 16) and lost
+		// the race against that still-pending async save for the next two (17, 18) -- each read back
+		// "0 " a few seconds later despite its own immediate read-back having just confirmed "36 ".
+		// There is no notification for "the async save queue drained", so this settles for real by
+		// re-reading (without rewriting) until the value holds across specSettleChecks consecutive
+		// checks, re-writing and restarting the count on any check that still finds it reverted.
+		const (
+			specSettleWait     = 1 * time.Second
+			specSettleChecks   = 3
+			specSettleAttempts = 10
+		)
+		stable := 0
+		for attempt := 0; attempt < specSettleAttempts && stable < specSettleChecks; attempt++ {
+			time.Sleep(specSettleWait)
+			data, err := readActiveSpecialization(charDB, sess.GUID)
+			if err != nil {
+				t.Fatalf("re-reading specialization while it settles: %v", err)
+			}
+			if data == fmt.Sprintf("%d ", spec.Spec) {
+				stable++
+				continue
+			}
+			stable = 0
+			if err := setActiveSpecialization(charDB, sess.GUID, spec.Spec); err != nil {
+				t.Fatalf("re-setting specialization after it reverted: %v", err)
+			}
+		}
+		if stable < specSettleChecks {
+			t.Fatalf("specialization did not settle on %d after %d attempt(s): something keeps reverting"+
+				" character_settings %s for guid %d", spec.Spec, specSettleAttempts, ascensionActiveSpecSetting,
+				sess.GUID)
+		}
+	}
 
 	accountCharacters, _, err := CharacterListOrder(authDB, charDB, spec.Account, spec.Character)
 	if err != nil {

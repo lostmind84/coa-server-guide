@@ -696,6 +696,36 @@ run_lab stop
 assert_absent "stop removes the descriptor" "$lab_json"
 assert_absent "stop clears the preflight record" "$COA_LAB_ROOT/state/preflight"
 
+# L14 (problem 2): `login --account COALABKOX Wrkox` once entered the world as the account's other
+# character, Hfkox, with nothing noticing. wait_ui_ready now reads `character` off the same relay ping it
+# already sends to confirm the UI is ready (addons/CoaProbe/Relay.lua stamps every relayed answer with
+# the in-world player's own name) and treats a match as success, a mismatch as a hard failure.
+run_lab start 3
+: > "$FAKE_LOG"
+printf '#!/usr/bin/env bash\nprintf "relay %%s\\n" "$*" >> "$FAKE_LOG"\necho %s\n' \
+    "'{\"pong\": true, \"character\": \"Coalabone\"}'" > "$WORK/bin/fake-relay"
+run_lab login coalab1 secretpw Coalabone
+assert_eq "login exits 0 when the relay confirms the requested character" "$?" "0"
+run_lab stop
+
+run_lab start 3
+: > "$FAKE_LOG"
+printf '#!/usr/bin/env bash\nprintf "relay %%s\\n" "$*" >> "$FAKE_LOG"\necho %s\n' \
+    "'{\"pong\": true, \"character\": \"Hfkox\"}'" > "$WORK/bin/fake-relay"
+if run_lab login coalab1 secretpw Coalabone; then
+    fail "login refuses when the relay reports a different in-world character"
+else
+    pass "login refuses when the relay reports a different in-world character"
+fi
+assert_contains "wrong-character message names both characters" "$WORK/out" \
+    "logged in as the wrong character: requested Coalabone, the relay reports Hfkox is in world"
+run_lab stop
+
+# A relay too old (or too fast) to carry the `character` field cannot be told apart from a genuine
+# mismatch, so this only warns and still lets the login through -- unchanged from before this field
+# existed (the very first assertion of this section, "login with character exits 0", already covers this
+# with the plain `{"pong": true, "via": "relay"}` fake).
+
 # A "disconnected" dialog that stays over the login fields stops login before any credential is typed.
 run_lab start 3
 : > "$FAKE_LOG"
@@ -778,6 +808,12 @@ assert_absent "no descriptor for a slot mismatch" "$lab_json"
 run_lab stop
 sed -i 's/^SLOT=2$/SLOT=3/' "$COA_LAB_ROOT/relay.env"
 unset COA_LAB_RELAY
+# The relay sub-tests above are the only ones that want a relay.env in COA_LAB_ROOT (write_descriptor
+# and, since L14, wait_ui_ready's character check both key off it). Removing it here keeps every later
+# login test (character-select focus, dedicated/shared account typing) relay-free, as they already
+# assumed before either of those existed: without this, those tests would start going through
+# $SCRIPT_DIR/coa-lab-relay (the real, un-mocked relay) against a server that was never set up for them.
+rm -f "$COA_LAB_ROOT/relay.env"
 
 # Instances: separate client, prefix, state, lock and pid per COA_LAB_INSTANCE; the silent sink stays while any
 # other lab client still holds its lock.

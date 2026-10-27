@@ -655,6 +655,26 @@ harness is built around `*testing.T`) and a Ghost checkout (`COA_GHOST_REPO`, de
 `~/Projects/ConquestOfAzerothGhost`); the checkout path is supplied through a generated `go.work` `replace`
 at run time, so `scripts/lab-character/go.mod` never hard-codes one user's home.
 
+**`--spec ID` (L14, 2026-10-27).** Ghost's own `SetSpecialization` whispers `.localspec`, which server
+commit 2d13ffd73a (#5507, "talk to the client through native Extensions.dll packets only") removed along
+with every other `ASC_LOCAL_*` chat command; the whisper is now silently ignored, so that path stopped doing
+anything with no error at all. `--spec` instead writes the character's `character_settings` row for
+`core.ascension_active_spec` directly (`setActiveSpecialization`, `scripts/lab-character/character_test.go`)
+-- the same setting `AscensionCompat.cpp`'s `OnPlayerLogin` still reads on every login to populate the active
+specialization and grant its automatic (identity) entries, independent of the native 0x0727 packet #5507
+replaced the whisper with. This only *stages* the switch: the actual spellbook sync happens at the
+character's next login (the lab client's own `coa-client-lab login`, not `character`'s own session), exactly
+like `PlayerSettingsStore::UpdateSetting`'s own REPLACE-based design, which is meant to work for an offline
+character. Writing it only once was not enough in practice: `WorldSession::LogoutPlayer`'s own `SaveToDB`
+only *queues* a save onto `CharacterDatabase`'s async worker before sending `SMSG_LOGOUT_COMPLETE`, so a
+write made right after that packet arrives can still lose a race against that still-pending save and read
+back reverted a few seconds later (reproduced live, slot 2, 2026-10-27: one of three characters in a row).
+`--spec` logs the session out, then re-writes and re-reads the row until it holds across several checks in a
+row before giving up, instead of trusting a single read-back. Read the setting back from
+`character_settings` (or, once logged in through the lab client, `coa-client-lab probe ca`'s `activeSpec`
+field) to confirm it took -- there is no chat command any more to confirm it the way `.localspec` itself once
+did.
+
 Without `--account`, `character` derives a dedicated account for that one character: `COALAB` plus the
 upper-cased character name, truncated to `MAX_ACCOUNT_STR` (17; `src/server/game/Accounts/AccountMgr.h:34`
 in the server repo) — `DeriveAccount` in `scripts/lab-character`. The `COALAB` prefix matches the relay's
@@ -912,6 +932,16 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
   8.6-14.9s. Sound is now silenced through `Config.wtf` at every `start`, not through post-login chat;
   `click_charselect_back_xtest`'s pre-existing unreliability (ADR 0005) is unchanged -- a failed click still
   falls back to `restart_client`, whose cost is the client's own relaunch, not glue polling.
+- `login CHARACTER` (and `login --account A C`) now confirms CHARACTER is the one actually in world, not just
+  that *a* character-select navigation ran (L14, 2026-10-27): `login --account COALABKOX Wrkox` once entered
+  the world as the account's other character, Hfkox, with nothing noticing -- `select_character_via_memory`
+  already guarded against a *mis-highlight* inside the list, but nothing after it checked the eventual
+  in-world name. `wait_ui_ready` (which every successful `login` already calls to confirm the UI is ready)
+  now also checks the `character` field every relayed probe answer carries (`addons/CoaProbe/Relay.lua`
+  stamps it with the in-world player's own name, independent of whichever name the ping was addressed to) and
+  dies if it does not match CHARACTER -- reusing that same ping instead of a second relay round trip. Only
+  runs when a relay is configured for this slot (`coa-client-lab relay-setup N`): without one there is no
+  reliable, non-visual way to read the in-world name back, same as `write_descriptor` already requires.
 - Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (reflink copy of the base lab and
   prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.

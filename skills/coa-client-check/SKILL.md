@@ -61,10 +61,15 @@ user confirmation"; the rest is **inconclusive** with the missing capability nam
 
 ## 3. Setup and action: Ghost first
 
-The Ghost e2e harness builds a character in seconds (race and class at login, `SetLevel`, `SetSpecialization`
-through `.localspec`, `Learn`, `AddItem`/`EquipEntry`, `Teleport`, `Spawn` for a fixture target) and can cast the
-spell itself, checking both the server's aura list and the one the client receives. Typing GM commands into the lab
-client is slower, blind and fails silently: use it only for a last tweak.
+The Ghost e2e harness builds a character in seconds (race and class at login, `SetLevel`, `Learn`,
+`AddItem`/`EquipEntry`, `Teleport`, `Spawn` for a fixture target) and can cast the spell itself, checking both
+the server's aura list and the one the client receives. Typing GM commands into the lab client is slower,
+blind and fails silently: use it only for a last tweak. Ghost's own `SetSpecialization` still whispers
+`.localspec`, which server commit 2d13ffd73a (#5507, "talk to the client through native Extensions.dll
+packets only") removed along with every other `ASC_LOCAL_*` chat command; the whisper is now silently
+ignored, so that helper no longer does anything. For the lab client, use `coa-client-lab character --spec ID`
+below instead: it writes the `core.ascension_active_spec` character_settings row the server's own
+`OnPlayerLogin` still reads, which the character's next login then applies.
 
 For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
 `coa-client-lab character --slot N --character C --race R --class K [--level N] [--spec ID]
@@ -92,8 +97,10 @@ folder.
 ## 4. Observe
 
 1. `coa-client-lab start N`, then `coa-client-lab login <character>` (about 90 s) for a character made with
-   `character`'s default dedicated account, or `coa-client-lab login <account> <password> [<character>]` for a
-   shared one. On a slot prepared with `coa-client-lab relay-setup N` (guide README, "Headless lab with relay
+   `character`'s default dedicated account, or `coa-client-lab login --account <account> <character>` for a
+   shared one (its password is generated/reused the same way as a dedicated account's — never type or pass one
+   on the command line). `coa-client-lab login <account> <password> [<character>]` still works for a password
+   held another way. On a slot prepared with `coa-client-lab relay-setup N` (guide README, "Headless lab with relay
    probes"), prefer `COA_LAB_PROFILE=minimal coa-client-lab start N`: with CHARACTER given either way, read-only
    probes then go through the server relay in a fraction of a second, without `/reload`.
 2. Drive the client with `chat` (slash and GM commands), `key`, `hold KEY MS` (walk with `w`/`s`, turn with
@@ -135,9 +142,13 @@ fixtures wander. Set the state instead, and record what you set.
 - GM cheats (`.cheat god|power|cooldown`) change how the game behaves, so they are a last resort: use one only
   when a captured error proves it is the blocker, and write in the report which one and why. A dummy that cannot
   kill you removes the need for `god`; `.modify` removes the need for `power`.
-- Prefer the normal player path for what the check is about: level, `.localspec`, `.localtalent <entry> <rank>`.
-  If a forced `.learn` was used and the issue does not reproduce, redo it through the talent path before
-  concluding: the acquisition method can be the difference. Talent entry ids come from
+- Prefer the normal player path for what the check is about: level, `coa-client-lab character --spec ID` for a
+  specialization. Neither `.localspec` nor `.localtalent <entry> <rank>` exists any more (server commit
+  2d13ffd73a, #5507): a specialization switch now has the DB-write path above, but a single talent rank has
+  no chat command or lab-level equivalent at all — only the native CMSG 0x0727 upload the client itself sends
+  (`.agents/docs/systems/ascension-talents.md` in the server repo). If a forced `.learn` was used and the
+  issue does not reproduce, redo it through the talent path before concluding: the acquisition method can be
+  the difference. Talent entry ids come from
   `/srv/coa/server-data/dbc/CharacterAdvancement.dbc` (field layout in
   `modules/mod-ascension-compat/src/AscensionCoATalentData.cpp`).
 

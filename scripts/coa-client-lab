@@ -752,15 +752,42 @@ login_with_retry() {
 }
 
 wait_ui_ready() {
+    local expected="${1:-}" answer=""
     [[ -f "$STATE_DIR/lab.json" ]] || return 0
     local deadline=$((SECONDS + UI_READY_WAIT))
-    until "$RELAY" --descriptor "$STATE_DIR/lab.json" probe --timeout 2 ping > /dev/null 2>&1; do
+    until answer=$("$RELAY" --descriptor "$STATE_DIR/lab.json" probe --timeout 2 ping 2> /dev/null); do
         if ((SECONDS >= deadline)); then
             echo "WARN: the in-world UI did not answer a relay ping within ${UI_READY_WAIT}s" >&2
             return 1
         fi
         "$SLEEP" 0.3
     done
+    # L14 (problem 2): `login --account COALABKOX Wrkox` once entered the world as the account's other
+    # character, Hfkox, with nothing noticing -- character-select navigation can fail silently and leave
+    # the client's own default-highlighted character in world instead of the one asked for.
+    # addons/CoaProbe/Relay.lua already stamps every relayed answer with `character = UnitName("player")`,
+    # the in-world player's own name, independent of whichever name this ping was addressed to -- this is
+    # the same ping this function already sent to confirm the UI is ready, read a second time instead of
+    # a second round trip. A relay too old to carry that field (or the UI-ready probe answering before this
+    # field existed) cannot be told apart from a genuine mismatch, so a missing field only warns; an actual
+    # mismatch between `character` and the requested name is always a hard failure, not something a caller's
+    # `wait_ui_ready || true` can swallow.
+    [[ -n "$expected" ]] || return 0
+    local actual
+    actual=$(python3 -c '
+import json, sys
+try:
+    print(json.loads(sys.argv[1]).get("character", ""))
+except ValueError:
+    print("")
+' "$answer")
+    if [[ -z "$actual" ]]; then
+        echo "WARN: relay probe ping named no character after login (raw answer: $answer); cannot confirm" \
+             "$expected is the one in world" >&2
+        return 0
+    fi
+    [[ "$actual" == "$expected" ]] \
+        || die "logged in as the wrong character: requested $expected, the relay reports $actual is in world"
 }
 
 # Waits up to $2 seconds (the same fixed sleep this replaces, kept as an upper bound) for glue state $1
@@ -1272,7 +1299,7 @@ cmd_login() {
                 glue_until in-world "$WORLD_WAIT" > /dev/null || true
                 echo "login sent for $account (in-place character switch, no login screen); check the world with: coa-client-lab screenshot"
                 write_descriptor "$account" "$character"
-                wait_ui_ready || true
+                wait_ui_ready "$character" || true
                 return
             fi
             echo "WARN: in-place switch to $character did not confirm (rc=$select_rc); falling back to the" \
@@ -1429,7 +1456,7 @@ cmd_login() {
     echo "login sent for $account; check the world with: coa-client-lab screenshot"
     if [[ -n "$character" ]]; then
         write_descriptor "$account" "$character"
-        wait_ui_ready || true
+        wait_ui_ready "$character" || true
     fi
 }
 
