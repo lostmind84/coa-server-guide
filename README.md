@@ -646,6 +646,45 @@ coa-client-lab probe evwatch ASCENSION_KNOWN_ENTRY_UPDATED   # log that game eve
 coa-client-lab stop                        # warns if your own client changed meanwhile
 ```
 
+**Sub-second capture (L15, 2026-10-27).** A single `screenshot` call is too coarse for an effect that is
+airborne or visible for well under a second (a projectile, a brief cast glow): each call is a fresh dispatch,
+and whatever drives this script pays its own overhead between two of them. `screenshot --burst N
+[--interval-ms MS] [--dir DIR] [--chat TEXT | --key KEY...]` and `screenshot --video-seconds S [--fps N]
+[--dir DIR] [--chat TEXT | --key KEY...]` capture several frames (or a short clip) inside *one* call;
+`--chat`/`--key` fire the triggering action first, in that same call, so no second dispatch sits between the
+action and the first frame. Both print the output directory (or the clip path) and write `DIR/timing.tsv`
+(nanoseconds since epoch: the action, and -- for `--burst` -- every frame's start/end).
+
+```bash
+coa-client-lab screenshot --video-seconds 3 --fps 20 --chat "/cast Fireball"   # prints DIR/clip.mp4
+coa-client-lab screenshot --burst 10 --interval-ms 100 --key 1                 # prints DIR with frame-000.png...
+```
+
+Measured live (slot 2, 2026-10-27, nested gamescope at 1920x1080): `--video-seconds` (ffmpeg x11grab) held a
+true, evenly spaced 20fps (50ms/frame, `ffprobe` confirmed `nb_frames=60` over an exact 3.000000s) with the
+action-to-capture-start gap around 1.6ms -- well inside the `<=100ms` this was built for. `--burst`
+(`magick import` per frame) did not: each frame took roughly 2.5s on this same display, regardless of
+`--interval-ms`, so **`--burst` cannot reach sub-second spacing here** -- use `--video-seconds` for that and
+extract frames from the clip (`ffmpeg -i clip.mp4 frame-%03d.png`) to inspect one. `--burst` still has a use:
+several *regular* screenshots (seconds apart is fine) in one dispatch, or environments where ffmpeg/x11grab
+is unavailable. Evidence: `~/CoaServer/client-lab/evidence/l15/` (a caster's hands glowing green through
+"Raise: Lesser Skeletal Warrior" (spell 500970), caught across roughly 40 of 60 frames; `--burst`'s own
+~2.5s/frame timing from a separate run).
+
+**Warden visibility (L15, 2026-10-27).** `coa-lab-mem`'s own guard (`check_warden_disabled`) hard-refuses
+every memory read while a slot's `worldserver.conf` does not have `Warden.Enabled = 0`. `coa-lab-packets`
+reads the server's own packet log (`.packetlog` over SOAP) and has no Warden check. A prior session only
+learned a slot had Warden on once a `coa-lab-mem` call had already failed. `coa-client-lab preflight N` and `start N` now print the slot's Warden state up front
+(`coa-lab-mem warden-status --slot N`, reusing `check_warden_disabled` directly instead of a second parser),
+and never block on it -- Warden is the slot's own configuration, reported here, not changed by this tool:
+
+```
+warden: off on slot 2 (coa-lab-mem usable)
+WARN: slot 4 has Warden.Enabled != 0: coa-lab-mem refuses every memory read on this slot's client (its own
+guard, see scripts/coa-lab-mem's docstring) until Warden is off. coa-lab-packets reads the server's own packet
+log and has no Warden check.
+```
+
 The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:
 `coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
 slot; `coa-client-lab character` (above) creates or updates one through the Ghost e2e harness in one command
@@ -654,6 +693,28 @@ It needs [`scripts/lab-character`](scripts/lab-character) (a Go module driven as
 harness is built around `*testing.T`) and a Ghost checkout (`COA_GHOST_REPO`, default
 `~/Projects/ConquestOfAzerothGhost`); the checkout path is supplied through a generated `go.work` `replace`
 at run time, so `scripts/lab-character/go.mod` never hard-codes one user's home.
+
+**`--spec ID` (L14, 2026-10-27).** Ghost's own `SetSpecialization` whispers `.localspec`, which server
+commit 2d13ffd73a (#5507, "talk to the client through native Extensions.dll packets only") removed along
+with every other `ASC_LOCAL_*` chat command; the whisper is now silently ignored, so that path stopped doing
+anything with no error at all. `--spec` instead writes the character's `character_settings` row for
+`core.ascension_active_spec` directly (`setActiveSpecialization`, `scripts/lab-character/character_test.go`)
+-- the same setting `AscensionCompat.cpp`'s `OnPlayerLogin` still reads on every login to populate the active
+specialization and grant its automatic (identity) entries, independent of the native 0x0727 packet #5507
+replaced the whisper with. This only *stages* the switch: the actual spellbook sync happens at the
+character's next login (the lab client's own `coa-client-lab login`, not `character`'s own session), exactly
+like `PlayerSettingsStore::UpdateSetting`'s own REPLACE-based design, which is meant to work for an offline
+character. Writing it only once was not enough in practice: `WorldSession::LogoutPlayer`'s own `SaveToDB`
+only *queues* a save onto `CharacterDatabase`'s async worker before sending `SMSG_LOGOUT_COMPLETE`, so a
+write made right after that packet arrives can still lose a race against that still-pending save and read
+back reverted a few seconds later (reproduced live, slot 2, 2026-10-27: one of three characters in a row).
+`--spec` logs the session out, then re-writes and re-reads the row until it holds across several checks in a
+row before giving up, instead of trusting a single read-back. Read the setting back from
+`character_settings` (or, once logged in through the lab client, `coa-client-lab probe ca`'s `activeSpec`
+field) to confirm it took -- there is no chat command any more to confirm it the way `.localspec` itself once
+did. The client-shown half (`probe ca`'s `activeSpec`) ran live for the first time in L14b (2026-10-27,
+slot 2): `character --spec 34` on a shared account's character, then `login`, then `probe ca` --
+`activeSpec` read back `34`, through the slot's own per-slot relay file (below).
 
 Without `--account`, `character` derives a dedicated account for that one character: `COALAB` plus the
 upper-cased character name, truncated to `MAX_ACCOUNT_STR` (17; `src/server/game/Accounts/AccountMgr.h:34`
@@ -888,6 +949,16 @@ coa-lab-mem glue --until in-world --timeout 45  # one process polls internally (
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 
+- **Relay configuration is per slot (L14b, 2026-10-27).** `relay-setup N` used to write one file,
+  `~/CoaServer/client-lab/relay.env`, shared by every slot and every lab instance; a `relay-setup` on one
+  slot silently broke another session's relay on a different slot, because the next read anywhere just
+  took whatever slot that single file last named. `relay-setup N` now writes
+  `~/CoaServer/client-lab/relay/slotN.env` instead, one file per slot, and never touches a pre-existing
+  shared `relay.env` -- every reader (`grant_instant_logout_rbac`, `kick_via_soap`, `write_descriptor`,
+  `coa-lab-relay soap`) resolves its own slot's file first and falls back to the legacy shared `relay.env`,
+  read only, only when that file's own `SLOT` line still matches. An old setup that never reruns
+  `relay-setup` keeps working through that fallback; a setup rerun on the new code gets its own file and
+  stops competing with every other slot's. See [ADR 0013](docs/adr/0013-per-slot-relay-configuration.md).
 - `COA_LAB_PROFILE=minimal` writes `gxResolution` and low-cost CVars (`maxFPS`, `farclip`, `baseMip`, ...) before
   every start and defaults to `COA_LAB_DISPLAY=headless` (gamescope `--backend headless`: no Hyprland window;
   `screenshot` and keyboard input still work). `COA_LAB_DISPLAY=nested` shows it on the workspace again.
@@ -912,6 +983,22 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
   8.6-14.9s. Sound is now silenced through `Config.wtf` at every `start`, not through post-login chat;
   `click_charselect_back_xtest`'s pre-existing unreliability (ADR 0005) is unchanged -- a failed click still
   falls back to `restart_client`, whose cost is the client's own relaunch, not glue polling.
+- `login CHARACTER` (and `login --account A C`) now confirms CHARACTER is the one actually in world, not just
+  that *a* character-select navigation ran (L14, 2026-10-27): `login --account COALABKOX Wrkox` once entered
+  the world as the account's other character, Hfkox, with nothing noticing -- `select_character_via_memory`
+  already guarded against a *mis-highlight* inside the list, but nothing after it checked the eventual
+  in-world name. `wait_ui_ready` (which every successful `login` already calls to confirm the UI is ready)
+  now also checks the `character` field every relayed probe answer carries (`addons/CoaProbe/Relay.lua`
+  stamps it with the in-world player's own name, independent of whichever name the ping was addressed to) and
+  dies if it does not match CHARACTER -- reusing that same ping instead of a second relay round trip. Only
+  runs when a relay is configured for this slot (`coa-client-lab relay-setup N`): without one there is no
+  reliable, non-visual way to read the in-world name back, same as `write_descriptor` already requires.
+  Live end-to-end (L14b, 2026-10-27, slot 2, shared account `COALABSHARE`, characters Sharea/Shareb):
+  `login --account COALABSHARE Shareb` / `Sharea` alternated 4 times each (8 switches total), the in-world
+  name confirmed correct every time by `probe ping`'s own `character` field. The negative case (the check
+  itself failing loudly) was proven without provoking an actual bad login: calling `wait_ui_ready` directly
+  with a wrong expected name against a real, correctly in-world session died with `logged in as the wrong
+  character: requested WrongCharacterName, the relay reports Sharea is in world`.
 - Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (reflink copy of the base lab and
   prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.

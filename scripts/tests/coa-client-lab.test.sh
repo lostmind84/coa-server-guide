@@ -66,6 +66,11 @@ make_user_client() {
 
 make_fakes() {
     mkdir -p "$WORK/bin"
+    # Default fake worldserver.conf: Warden off, matching every slot used elsewhere in this suite
+    # (slot 3 throughout). warden_status_line (L15) reads this through coa-lab-mem's own
+    # check_warden_disabled on every `preflight`/`start`, so it must exist before those run.
+    mkdir -p "$FAKE_ETC"
+    printf 'Warden.Enabled = 0\n' > "$FAKE_ETC/worldserver.conf"
     cat > "$WORK/bin/hyprctl" <<'EOF'
 #!/usr/bin/env bash
 printf 'hyprctl %s\n' "$*" >> "$FAKE_LOG"
@@ -122,6 +127,14 @@ if [[ "$*" == *-format* && "$*" == *pixel:p* ]]; then
     fi
     exit 0
 fi
+touch "${@: -1}"
+EOF
+    # Fake ffmpeg (L15 problem 1, --video-seconds): there is no real X server at the fake DISPLAY, so the
+    # real x11grab demuxer would fail here regardless of this change; this just logs the invocation and
+    # creates the output file, same convention as the magick fake above.
+    cat > "$WORK/bin/ffmpeg" <<'EOF'
+#!/usr/bin/env bash
+printf 'ffmpeg %s\n' "$*" >> "$FAKE_LOG"
 touch "${@: -1}"
 EOF
     cat > "$WORK/bin/coa-slot" <<'EOF'
@@ -370,6 +383,59 @@ assert_contains "screenshot uses the lab display" "$FAKE_LOG" "magick DISPLAY=:7
 
 run_lab screenshot
 assert_file "default screenshot written" "$(cat "$WORK/out")"
+
+# L15 problem 1: burst/video capture in one call, optionally after firing a trigger action first.
+: > "$FAKE_LOG"
+run_lab screenshot --burst 3 --interval-ms 10
+burst_rc=$?
+burst_dir=$(cat "$WORK/out")
+assert_eq "burst exits 0" "$burst_rc" "0"
+assert_file "burst frame 0 written" "$burst_dir/frame-000.png"
+assert_file "burst frame 1 written" "$burst_dir/frame-001.png"
+assert_file "burst frame 2 written" "$burst_dir/frame-002.png"
+assert_file "burst timing.tsv written" "$burst_dir/timing.tsv"
+assert_eq "burst captured exactly 3 frames" "$(grep -c '^frame	' "$burst_dir/timing.tsv")" "3"
+assert_contains "burst timing.tsv records the action timestamp" "$burst_dir/timing.tsv" "action_ns	"
+
+: > "$FAKE_LOG"
+run_lab screenshot --burst 2 --key 1
+assert_eq "burst with --key exits 0" "$?" "0"
+assert_contains "burst --key sends the key before capturing" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4242 1"
+
+: > "$FAKE_LOG"
+run_lab screenshot --burst 1 --chat "/cast Fireball"
+assert_eq "burst with --chat exits 0" "$?" "0"
+assert_contains "burst --chat sends Return, the text, then Return" "$FAKE_LOG" \
+    "xdotool DISPLAY=:77 type --window 4242 --delay 40 /cast Fireball"
+
+: > "$FAKE_LOG"
+run_lab screenshot --video-seconds 2 --fps 15
+video_rc=$?
+video=$(cat "$WORK/out")
+assert_eq "video exits 0" "$video_rc" "0"
+assert_file "video clip written" "$video"
+assert_contains "video runs ffmpeg with the lab window, display and fps" "$FAKE_LOG" \
+    "ffmpeg -y -loglevel warning -f x11grab -window_id 4242 -framerate 15 -i :77 -t 2"
+: > "$FAKE_LOG"
+run_lab screenshot --video-seconds 1
+assert_eq "video without --fps exits 0" "$?" "0"
+assert_contains "video defaults to 10 fps" "$FAKE_LOG" "-framerate 10 -i :77 -t 1"
+run_lab screenshot --video-seconds 1 --fps 0
+assert_eq "video rejects --fps 0" "$?" "1"
+run_lab screenshot --burst
+assert_eq "--burst without a value fails" "$?" "1"
+assert_contains "video timing.tsv records the action timestamp" "$(dirname "$video")/timing.tsv" "action_ns	"
+assert_contains "video timing.tsv records the capture start timestamp" "$(dirname "$video")/timing.tsv" \
+    "capture_start_ns	"
+
+if run_lab screenshot --burst 1 --video-seconds 1; then fail "burst+video refused"; else pass "burst+video refused"; fi
+assert_contains "burst+video message" "$WORK/out" "use --burst or --video-seconds, not both"
+
+if run_lab screenshot "$WORK/shot2.png" --burst 2; then fail "PATH+burst refused"; else pass "PATH+burst refused"; fi
+assert_contains "PATH+burst message" "$WORK/out" "write a directory"
+
+if run_lab screenshot --key 1; then fail "bare --key refused"; else pass "bare --key refused"; fi
+assert_contains "bare --key message" "$WORK/out" "need --burst or --video-seconds"
 
 : > "$FAKE_LOG"
 run_lab preflight 3
@@ -625,9 +691,11 @@ assert_absent "bogus display takes no lock" "$COA_LAB_ROOT/state/lock"
 if COA_LAB_PROFILE=fancy run_lab start 3; then fail "bogus profile refused"; else pass "bogus profile refused"; fi
 assert_contains "bogus profile message" "$WORK/out" "COA_LAB_PROFILE must be readable or minimal"
 
-# relay-setup: one line per key after two runs, relay.env with slot 3's SOAP port.
+# relay-setup: one line per key after two runs, relay/slot3.env with slot 3's SOAP port (L14b: one file
+# per slot under relay/, not the single shared relay.env every slot used to overwrite).
 mkdir -p "$FAKE_ETC/modules"
-printf 'Ra.Enable = 0\nSOAP.Enabled = 0\nSOAP.IP = "127.0.0.1"\nSOAP.Port = 7878\n' > "$FAKE_ETC/worldserver.conf"
+printf 'Ra.Enable = 0\nSOAP.Enabled = 0\nSOAP.IP = "127.0.0.1"\nSOAP.Port = 7878\nWarden.Enabled = 0\n' \
+    > "$FAKE_ETC/worldserver.conf"
 printf 'CoA.Enable = 1\n' > "$FAKE_ETC/modules/coa.conf"
 printf 'PW\n' > "$WORK/soap.password"
 run_lab relay-setup 3 --soap-account COALABSOAP --soap-password-file "$WORK/soap.password"
@@ -638,10 +706,11 @@ assert_eq "SOAP.Enabled once" "$(grep -c '^SOAP.Enabled = 1$' "$FAKE_ETC/worldse
 assert_eq "SOAP.IP once" "$(grep -c '^SOAP.IP = "0.0.0.0"$' "$FAKE_ETC/worldserver.conf")" "1"
 assert_eq "SOAP.Port untouched" "$(grep -c '^SOAP.Port = 7878$' "$FAKE_ETC/worldserver.conf")" "1"
 assert_eq "relay enabled once" "$(grep -c '^CoA.ProbeRelay.Enable = 1$' "$FAKE_ETC/modules/coa.conf")" "1"
-assert_contains "relay.env url" "$COA_LAB_ROOT/relay.env" "SOAP_URL=http://127.0.0.1:8078/"
-assert_contains "relay.env account" "$COA_LAB_ROOT/relay.env" "SOAP_ACCOUNT=COALABSOAP"
-assert_contains "relay.env password file" "$COA_LAB_ROOT/relay.env" "SOAP_PASSWORD_FILE=$WORK/soap.password"
-assert_eq "relay.env mode 600" "$(stat -c %a "$COA_LAB_ROOT/relay.env")" "600"
+assert_absent "relay-setup never writes the shared relay.env" "$COA_LAB_ROOT/relay.env"
+assert_contains "relay/slot3.env url" "$COA_LAB_ROOT/relay/slot3.env" "SOAP_URL=http://127.0.0.1:8078/"
+assert_contains "relay/slot3.env account" "$COA_LAB_ROOT/relay/slot3.env" "SOAP_ACCOUNT=COALABSOAP"
+assert_contains "relay/slot3.env password file" "$COA_LAB_ROOT/relay/slot3.env" "SOAP_PASSWORD_FILE=$WORK/soap.password"
+assert_eq "relay/slot3.env mode 600" "$(stat -c %a "$COA_LAB_ROOT/relay/slot3.env")" "600"
 if run_lab relay-setup 3 --soap-account COALABSOAP; then
     fail "relay-setup needs a password file"
 else
@@ -695,6 +764,42 @@ fi
 run_lab stop
 assert_absent "stop removes the descriptor" "$lab_json"
 assert_absent "stop clears the preflight record" "$COA_LAB_ROOT/state/preflight"
+
+# L14 (problem 2): `login --account COALABKOX Wrkox` once entered the world as the account's other
+# character, Hfkox, with nothing noticing. wait_ui_ready now reads `character` off the same relay ping it
+# already sends to confirm the UI is ready (addons/CoaProbe/Relay.lua stamps every relayed answer with
+# the in-world player's own name) and treats a match as success, a mismatch as a hard failure.
+run_lab start 3
+: > "$FAKE_LOG"
+printf '#!/usr/bin/env bash\nprintf "relay %%s\\n" "$*" >> "$FAKE_LOG"\necho %s\n' \
+    "'{\"pong\": true, \"character\": \"Coalabone\"}'" > "$WORK/bin/fake-relay"
+run_lab login coalab1 secretpw Coalabone
+assert_eq "login exits 0 when the relay confirms the requested character" "$?" "0"
+run_lab stop
+
+run_lab start 3
+run_lab login coalab1 secretpw coalabone
+assert_eq "the character check ignores case" "$?" "0"
+run_lab stop
+
+run_lab start 3
+: > "$FAKE_LOG"
+printf '#!/usr/bin/env bash\nprintf "relay %%s\\n" "$*" >> "$FAKE_LOG"\necho %s\n' \
+    "'{\"pong\": true, \"character\": \"Hfkox\"}'" > "$WORK/bin/fake-relay"
+if run_lab login coalab1 secretpw Coalabone; then
+    fail "login refuses when the relay reports a different in-world character"
+else
+    pass "login refuses when the relay reports a different in-world character"
+fi
+assert_contains "wrong-character message names both characters" "$WORK/out" \
+    "logged in as the wrong character: requested Coalabone, the relay reports Hfkox is in world"
+assert_contains "the descriptor names the character actually in world" "$lab_json" '"character": "Hfkox"'
+run_lab stop
+
+# A relay too old (or too fast) to carry the `character` field cannot be told apart from a genuine
+# mismatch, so this only warns and still lets the login through -- unchanged from before this field
+# existed (the very first assertion of this section, "login with character exits 0", already covers this
+# with the plain `{"pong": true, "via": "relay"}` fake).
 
 # A "disconnected" dialog that stays over the login fields stops login before any credential is typed.
 run_lab start 3
@@ -765,19 +870,46 @@ run_lab start 3
 assert_absent "start drops a preflight of another slot" "$COA_LAB_ROOT/state/preflight"
 run_lab stop
 
-# relay.env set up for another slot: no descriptor that mixes two slots.
-sed -i 's/^SLOT=3$/SLOT=2/' "$COA_LAB_ROOT/relay.env"
+# relay/slot3.env itself corrupted to claim another slot: no descriptor that mixes two slots. (This is
+# the per-slot file's own content disagreeing with its filename -- relay_env_for_slot already matches by
+# filename, so write_descriptor's own defensive SLOT check, inside the python heredoc, is what actually
+# catches this; a legacy relay.env with a mismatched SLOT never gets this far, since relay_env_for_slot
+# itself refuses it first -- covered separately below.)
+sed -i 's/^SLOT=3$/SLOT=2/' "$COA_LAB_ROOT/relay/slot3.env"
 run_lab start 3
 if run_lab login coalab1 secretpw Coalabone; then
-    fail "login refuses a relay.env of another slot"
+    fail "login refuses a relay/slot3.env claiming another slot"
 else
-    pass "login refuses a relay.env of another slot"
+    pass "login refuses a relay/slot3.env claiming another slot"
 fi
-assert_contains "relay.env slot mismatch message" "$WORK/out" "relay.env is set up for slot 2"
+assert_contains "relay/slot3.env slot mismatch message" "$WORK/out" "relay/slot3.env is set up for slot 2"
 assert_absent "no descriptor for a slot mismatch" "$lab_json"
 run_lab stop
-sed -i 's/^SLOT=2$/SLOT=3/' "$COA_LAB_ROOT/relay.env"
+sed -i 's/^SLOT=2$/SLOT=3/' "$COA_LAB_ROOT/relay/slot3.env"
+
+# A legacy relay.env left over for a different slot is never used instead of (or mixed with) slot 3's
+# own per-slot file: relay_env_for_slot prefers the per-slot file, so this legacy file is simply ignored.
+printf 'SLOT=9\nSOAP_URL=http://127.0.0.1:9999/\nSOAP_ACCOUNT=COALABOTHER\nSOAP_PASSWORD_FILE=%s\n' \
+    "$WORK/soap.password" > "$COA_LAB_ROOT/relay.env"
+# fake-relay still holds the previous section's "Hfkox" answer (the wrong-character case above); reset
+# it to the requested character so this login is not failed by that unrelated check instead.
+printf '#!/usr/bin/env bash\nprintf "relay %%s\\n" "$*" >> "$FAKE_LOG"\necho %s\n' \
+    "'{\"pong\": true, \"character\": \"Coalabone\"}'" > "$WORK/bin/fake-relay"
+run_lab start 3
+run_lab login coalab1 secretpw Coalabone
+assert_eq "login still succeeds with an unrelated legacy relay.env present" "$?" "0"
+assert_contains "descriptor still uses slot 3's own per-slot relay file" "$lab_json" '"soap_account": "COALABSOAP"'
+run_lab stop
+
 unset COA_LAB_RELAY
+# The relay sub-tests above are the only ones that want a relay configuration in COA_LAB_ROOT
+# (write_descriptor and, since L14, wait_ui_ready's character check both key off it). Removing it here
+# keeps every later login test (character-select focus, dedicated/shared account typing) relay-free, as
+# they already assumed before either of those existed: without this, those tests would start going
+# through $SCRIPT_DIR/coa-lab-relay (the real, un-mocked relay) against a server that was never set up
+# for them.
+rm -f "$COA_LAB_ROOT/relay.env"
+rm -rf "$COA_LAB_ROOT/relay"
 
 # Instances: separate client, prefix, state, lock and pid per COA_LAB_INSTANCE; the silent sink stays while any
 # other lab client still holds its lock.
@@ -1096,8 +1228,11 @@ source_lab_functions() {
 }
 
 KICK_TEST_DIR=$(mktemp -d "$WORK/kicktest.XXXXXX")
-mkdir -p "$KICK_TEST_DIR/lab"
-: > "$KICK_TEST_DIR/lab/relay.env"
+mkdir -p "$KICK_TEST_DIR/lab/relay"
+# L14b: kick_via_soap's slot is now explicit here too (its second argument), the same per-slot relay
+# path cmd_character's grant_instant_logout_rbac call already takes -- this isolated test never runs
+# `start` to leave a STATE_DIR/slot behind for the fallback to find.
+: > "$KICK_TEST_DIR/lab/relay/slot5.env"
 KICK_CALL_LOG="$KICK_TEST_DIR/calls.log"
 
 cat > "$KICK_TEST_DIR/relay_always_fails" <<'EOF'
@@ -1113,7 +1248,7 @@ FUNCS_FILE=$(source_lab_functions)
 out=$(KICK_CALL_LOG="$KICK_CALL_LOG" COA_LAB_ROOT="$KICK_TEST_DIR/lab" \
       COA_LAB_RELAY="$KICK_TEST_DIR/relay_always_fails" COA_LAB_SLEEP=true \
       COA_LAB_KICK_RETRY_ATTEMPTS=4 COA_LAB_KICK_RETRY_WAIT=0 \
-      bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres" 2>&1)
+      bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres 5" 2>&1)
 rc=$?
 assert_eq "kick_via_soap retries exactly KICK_RETRY_ATTEMPTS times" "$(wc -l < "$KICK_CALL_LOG")" "4"
 assert_eq "kick_via_soap returns 1 when every attempt fails" "$rc" "1"
@@ -1137,10 +1272,23 @@ rm -f "$KICK_CALL_LOG.once"
 KICK_CALL_LOG="$KICK_CALL_LOG" COA_LAB_ROOT="$KICK_TEST_DIR/lab" \
     COA_LAB_RELAY="$KICK_TEST_DIR/relay_second_try" COA_LAB_SLEEP=true \
     COA_LAB_KICK_RETRY_ATTEMPTS=4 COA_LAB_KICK_RETRY_WAIT=0 \
-    bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres"
+    bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres 5"
 rc=$?
 assert_eq "kick_via_soap stops retrying as soon as a call succeeds" "$(wc -l < "$KICK_CALL_LOG")" "2"
 assert_eq "kick_via_soap returns 0 once a call succeeds" "$rc" "0"
+
+# No relay configuration for the requested slot at all: silent return 1 (unchanged -- the caller falls
+# back to /camp without this being treated as a hard failure, so this stays a quiet skip, not a warning).
+: > "$KICK_CALL_LOG"
+out=$(KICK_CALL_LOG="$KICK_CALL_LOG" COA_LAB_ROOT="$KICK_TEST_DIR/lab" \
+      COA_LAB_RELAY="$KICK_TEST_DIR/relay_second_try" \
+      bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres 9" 2>&1)
+rc=$?
+assert_eq "kick_via_soap returns 1 with no relay configuration for the slot" "$rc" "1"
+assert_eq "kick_via_soap makes no relay call with no relay configuration for the slot" "$out" ""
+assert_eq "kick_via_soap makes no relay call with no relay configuration for the slot (log)" \
+    "$(wc -l < "$KICK_CALL_LOG")" "0"
+
 rm -f "$FUNCS_FILE"
 rm -rf "$KICK_TEST_DIR"
 
@@ -1151,19 +1299,23 @@ mkdir -p "$RBAC_TEST_DIR/lab"
 RBAC_CALL_LOG="$RBAC_TEST_DIR/calls.log"
 FUNCS_FILE=$(source_lab_functions)
 
-# No relay.env at all: skipped, not a hard failure, no relay invoked.
+# No relay configuration for slot 5 at all: skipped, not a hard failure, no relay invoked. (L14b: slot
+# is now an explicit argument here, same as cmd_character's own --slot call site, since this isolated
+# test never runs `start` to leave a STATE_DIR/slot behind.)
 : > "$RBAC_CALL_LOG"
 out=$(RBAC_CALL_LOG="$RBAC_CALL_LOG" COA_LAB_ROOT="$RBAC_TEST_DIR/lab" \
       COA_LAB_RELAY="$RBAC_TEST_DIR/should_not_run" \
-      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac COALABRES" 2>&1)
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac COALABRES 5" 2>&1)
 rc=$?
-assert_eq "grant_instant_logout_rbac returns 1 with no relay.env" "$rc" "1"
-[[ "$out" == *"no $RBAC_TEST_DIR/lab/relay.env"* ]] && pass "grant_instant_logout_rbac warns about the missing relay.env" \
-    || fail "grant_instant_logout_rbac warns about the missing relay.env: got [$out]"
-assert_eq "grant_instant_logout_rbac makes no relay call with no relay.env" "$(wc -l < "$RBAC_CALL_LOG")" "0"
+assert_eq "grant_instant_logout_rbac returns 1 with no relay configuration" "$rc" "1"
+[[ "$out" == *"no relay configuration for slot 5"* ]] && pass "grant_instant_logout_rbac warns about the missing relay configuration" \
+    || fail "grant_instant_logout_rbac warns about the missing relay configuration: got [$out]"
+assert_eq "grant_instant_logout_rbac makes no relay call with no relay configuration" "$(wc -l < "$RBAC_CALL_LOG")" "0"
 
-# Account name does not carry the lab prefix: refused (warn + return 1), never calls the relay.
-: > "$RBAC_TEST_DIR/lab/relay.env"
+# Account name does not carry the lab prefix: refused (warn + return 1), never calls the relay. (Slot 5's
+# relay configuration exists from here on, at its L14b per-slot path.)
+mkdir -p "$RBAC_TEST_DIR/lab/relay"
+printf 'SLOT=5\n' > "$RBAC_TEST_DIR/lab/relay/slot5.env"
 : > "$RBAC_CALL_LOG"
 cat > "$RBAC_TEST_DIR/relay_counts" <<EOF
 #!/usr/bin/env bash
@@ -1173,7 +1325,7 @@ EOF
 chmod +x "$RBAC_TEST_DIR/relay_counts"
 out=$(RBAC_CALL_LOG="$RBAC_CALL_LOG" COA_LAB_ROOT="$RBAC_TEST_DIR/lab" \
       COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
-      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac PLAYERONE" 2>&1)
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac PLAYERONE 5" 2>&1)
 rc=$?
 assert_eq "grant_instant_logout_rbac refuses a non-lab account" "$rc" "1"
 [[ "$out" == *"not a COALAB"* ]] && pass "grant_instant_logout_rbac refusal names the prefix" \
@@ -1183,7 +1335,7 @@ assert_eq "grant_instant_logout_rbac makes no relay call for a non-lab account" 
 # A COALAB* account (case-insensitive) succeeds on the first grant (acore_string 74 wording).
 : > "$RBAC_CALL_LOG"
 COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
-    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres"
+    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres 5"
 rc=$?
 assert_eq "grant_instant_logout_rbac succeeds for a COALAB* account" "$rc" "0"
 assert_contains "grant_instant_logout_rbac calls the relay with the grant command" "$RBAC_CALL_LOG" \
@@ -1196,7 +1348,7 @@ echo "Could not grant permission 1 (INSTANT_LOGOUT) realmId -1. Account 5 (COALA
 EOF
 chmod +x "$RBAC_TEST_DIR/relay_already"
 COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_already" \
-    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres"
+    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres 5"
 assert_eq "grant_instant_logout_rbac treats 'already has that permission' as success" "$?" "0"
 
 # An unexpected relay answer (neither granted nor already-granted wording) is reported, not silently OK.
@@ -1206,11 +1358,31 @@ echo "something else entirely"
 EOF
 chmod +x "$RBAC_TEST_DIR/relay_weird"
 out=$(COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_weird" \
-      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres" 2>&1)
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres 5" 2>&1)
 rc=$?
 assert_eq "grant_instant_logout_rbac fails on an unexpected relay answer" "$rc" "1"
 [[ "$out" == *"unexpected relay output"* ]] && pass "grant_instant_logout_rbac names the unexpected output" \
     || fail "grant_instant_logout_rbac names the unexpected output: got [$out]"
+
+# Legacy compatibility (L14b): a pre-L14b shared relay.env whose own SLOT matches is still read, read only.
+rm -rf "$RBAC_TEST_DIR/lab/relay"
+printf 'SLOT=5\n' > "$RBAC_TEST_DIR/lab/relay.env"
+: > "$RBAC_CALL_LOG"
+COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
+    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres 5"
+rc=$?
+assert_eq "grant_instant_logout_rbac still works from a legacy relay.env with a matching SLOT" "$rc" "0"
+assert_contains "legacy relay.env call reaches the relay" "$RBAC_CALL_LOG" "rbac account grant Coalabres 1"
+
+# A legacy relay.env for a different slot is not used (never silently crossing slots).
+printf 'SLOT=7\n' > "$RBAC_TEST_DIR/lab/relay.env"
+out=$(COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres 5" 2>&1)
+rc=$?
+assert_eq "grant_instant_logout_rbac ignores a legacy relay.env of a different slot" "$rc" "1"
+[[ "$out" == *"no relay configuration for slot 5"* ]] \
+    && pass "grant_instant_logout_rbac names the slot it could not find a relay for" \
+    || fail "grant_instant_logout_rbac names the slot it could not find a relay for: got [$out]"
 rm -rf "$RBAC_TEST_DIR"
 
 # L12: goto_charselect_via_memory -- the same-account fast path's logout-to-charselect step, with
@@ -1269,6 +1441,52 @@ assert_contains "clear_login_dialog_unconditionally clicks the standard dialog's
 assert_contains "clear_login_dialog_unconditionally also clicks the Connection-Help dialog's Okay point" \
     "$FAKE_LOG" "mousemove --sync 892 570"
 rm -f "$FUNCS_FILE"
+
+# L15 problem 2: warden_status_line (preflight/start) reports a slot's Warden state up front via the real
+# `coa-lab-mem warden-status --slot N` (test_coa_lab_mem.py already covers check_warden_disabled/
+# warden-status in isolation; this exercises the bash-side wiring against a FAKE conf -- AGENTS.md: never
+# change a real slot's configuration for a test). LAB_MEM is overridden because sourcing a tmp copy of the
+# script via source_lab_functions would otherwise resolve SCRIPT_DIR, and so LAB_MEM's default, to the tmp
+# file's own directory.
+REAL_LAB_MEM="$(dirname "$SCRIPT")/coa-lab-mem"
+WARDEN_ETC="$WORK/warden-etc"
+mkdir -p "$WARDEN_ETC"
+FUNCS_FILE=$(source_lab_functions)
+
+printf 'Warden.Enabled = 0\n' > "$WARDEN_ETC/worldserver.conf"
+FAKE_ETC="$WARDEN_ETC" bash -c "
+source \"$FUNCS_FILE\"
+LAB_MEM=\"$REAL_LAB_MEM\"
+warden_status_line 7
+" > "$WORK/out" 2>&1
+assert_eq "warden_status_line (off) exits 0" "$?" "0"
+assert_contains "warden off slot reports usable" "$WORK/out" "warden: off on slot 7"
+assert_contains "warden off slot names coa-lab-mem" "$WORK/out" "(coa-lab-mem usable)"
+
+printf 'Warden.Enabled = 1\n' > "$WARDEN_ETC/worldserver.conf"
+FAKE_ETC="$WARDEN_ETC" bash -c "
+source \"$FUNCS_FILE\"
+LAB_MEM=\"$REAL_LAB_MEM\"
+warden_status_line 7
+" > "$WORK/out" 2>&1
+rc=$?
+assert_eq "warden_status_line (on) still exits 0 (warning only, never blocking)" "$rc" "0"
+assert_contains "warden on slot warns" "$WORK/out" "WARN: slot 7 has Warden.Enabled != 0"
+assert_contains "warden on slot names coa-lab-mem's own guard" "$WORK/out" "coa-lab-mem refuses every memory read"
+assert_contains "warden on slot says coa-lab-packets has no Warden check" "$WORK/out" \
+    "coa-lab-packets reads the server's own packet log and has no Warden check"
+
+rm -f "$WARDEN_ETC/worldserver.conf"
+FAKE_ETC="$WARDEN_ETC" bash -c "
+source \"$FUNCS_FILE\"
+LAB_MEM=\"$REAL_LAB_MEM\"
+warden_status_line 7
+" > "$WORK/out" 2>&1
+assert_eq "warden_status_line (no conf) exits 0" "$?" "0"
+assert_contains "missing conf reports unknown, not Warden on" "$WORK/out" "warden: unknown for slot 7"
+
+rm -f "$FUNCS_FILE"
+rm -rf "$WARDEN_ETC"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

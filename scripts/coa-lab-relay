@@ -4,7 +4,8 @@ without /reload. Needs a slot prepared with `coa-client-lab relay-setup` and a l
 `coa-client-lab login ACCOUNT PASSWORD CHARACTER`.
 
     coa-lab-relay [--descriptor PATH] probe COMMAND [ARGS...]   prints the answer as JSON
-    coa-lab-relay soap COMMAND                                  prints the raw command output (uses relay.env)
+    coa-lab-relay soap COMMAND                                  prints the raw command output (uses this
+                                                                 instance's slot's relay configuration)
 """
 import argparse
 import base64
@@ -120,6 +121,31 @@ def read_env(path: Path) -> dict:
     return values
 
 
+def resolve_relay_env(lab_root: Path, state_dir: Path) -> Path:
+    """Finds this instance's relay configuration file (L14b): `coa-client-lab relay-setup N` writes
+    lab_root/relay/slotN.env, one per slot, instead of the single lab_root/relay.env every slot and every
+    instance used to share and overwrite. `coa-client-lab` (COA_LAB_RELAY_ENV) already resolved this once
+    and passes it straight through for its own internal `soap` calls; this path, reading state_dir/slot
+    (the running instance's own slot, written by `coa-client-lab start N`), is for a human (or anything
+    else) invoking `coa-lab-relay soap` directly, the same way the existing --descriptor default already
+    reads state_dir for `probe`. A pre-existing shared relay.env is still read, read only, when its own
+    SLOT line matches -- never rewritten, moved or deleted here."""
+    override = os.environ.get("COA_LAB_RELAY_ENV")
+    if override:
+        return Path(override)
+    slot = (state_dir / "slot").read_text().strip() if (state_dir / "slot").is_file() else ""
+    if not slot:
+        raise SystemExit(f"no slot recorded for this lab instance ({state_dir}/slot missing): "
+                          "coa-client-lab start N first")
+    per_slot = lab_root / "relay" / f"slot{slot}.env"
+    if per_slot.is_file():
+        return per_slot
+    legacy = lab_root / "relay.env"
+    if legacy.is_file() and read_env(legacy).get("SLOT") == slot:
+        return legacy
+    raise SystemExit(f"no relay configuration for slot {slot}: coa-client-lab relay-setup {slot} ...")
+
+
 def main(argv=None) -> int:
     lab_root = Path(os.environ.get("COA_LAB_ROOT", Path.home() / "CoaServer/client-lab"))
     instance = os.environ.get("COA_LAB_INSTANCE", "")
@@ -138,7 +164,7 @@ def main(argv=None) -> int:
             answer = probe(load_descriptor(args.descriptor), " ".join(args.words), timeout=args.timeout)
             print(json.dumps(answer, ensure_ascii=False, sort_keys=True))
         else:
-            env = read_env(lab_root / "relay.env")
+            env = read_env(resolve_relay_env(lab_root, state_dir))
             password = Path(env["SOAP_PASSWORD_FILE"]).read_text().strip()
             print(soap_execute(env["SOAP_URL"], env["SOAP_ACCOUNT"], password, " ".join(args.words)))
     except (SoapFault, TimeoutError, ValueError, OSError) as error:

@@ -55,16 +55,29 @@ twice), ask the question in the issue and stop with **inconclusive**.
 install) and returns the Lua error text and stack, not just the system line `probe log` already captures; a
 `/reload` empties the table, so read `previous` for the errors seen just before the last world entry. Still
 cannot observe: action-bar contents, 3D models, animations, anything purely visual. That is different from
-the red on-screen UI errors, which `probe log` does capture (section 4 below). Pure visuals are judged from
-screenshots and marked "visual, needs
-user confirmation"; the rest is **inconclusive** with the missing capability named.
+the red on-screen UI errors, which `probe log` does capture (section 4 below). A single `screenshot` can miss
+a sub-second effect (a projectile, a brief cast glow) between its own dispatch and the next one; for that,
+`screenshot --burst N --interval-ms MS [--chat TEXT|--key KEY...]` or `screenshot --video-seconds S [--fps N]
+[--chat TEXT|--key KEY...]` fire the triggering action and start capturing in the same call (L15,
+2026-10-27). `--burst` uses `magick import` per frame, measured at roughly 2.5s/frame on this environment's
+nested gamescope display (1920x1080) -- far above its own `--interval-ms` request, so it does not actually
+reach sub-second spacing; `--video-seconds` (ffmpeg x11grab) does: measured a true, evenly spaced 20fps
+(50ms/frame) over a 3s clip, first frame within roughly its own frame interval of the action. Prefer
+`--video-seconds` for anything sub-second; extract frames from the clip (`ffmpeg -i clip.mp4 frame-%03d.png`)
+to inspect one. Pure visuals too brief or ambiguous even for that are judged "visual, needs user
+confirmation"; the rest is **inconclusive** with the missing capability named.
 
 ## 3. Setup and action: Ghost first
 
-The Ghost e2e harness builds a character in seconds (race and class at login, `SetLevel`, `SetSpecialization`
-through `.localspec`, `Learn`, `AddItem`/`EquipEntry`, `Teleport`, `Spawn` for a fixture target) and can cast the
-spell itself, checking both the server's aura list and the one the client receives. Typing GM commands into the lab
-client is slower, blind and fails silently: use it only for a last tweak.
+The Ghost e2e harness builds a character in seconds (race and class at login, `SetLevel`, `Learn`,
+`AddItem`/`EquipEntry`, `Teleport`, `Spawn` for a fixture target) and can cast the spell itself, checking both
+the server's aura list and the one the client receives. Typing GM commands into the lab client is slower,
+blind and fails silently: use it only for a last tweak. Ghost's own `SetSpecialization` still whispers
+`.localspec`, which server commit 2d13ffd73a (#5507, "talk to the client through native Extensions.dll
+packets only") removed along with every other `ASC_LOCAL_*` chat command; the whisper is now silently
+ignored, so that helper no longer does anything. For the lab client, use `coa-client-lab character --spec ID`
+below instead: it writes the `core.ascension_active_spec` character_settings row the server's own
+`OnPlayerLogin` still reads, which the character's next login then applies.
 
 For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
 `coa-client-lab character --slot N --character C --race R --class K [--level N] [--spec ID]
@@ -92,8 +105,10 @@ folder.
 ## 4. Observe
 
 1. `coa-client-lab start N`, then `coa-client-lab login <character>` (about 90 s) for a character made with
-   `character`'s default dedicated account, or `coa-client-lab login <account> <password> [<character>]` for a
-   shared one. On a slot prepared with `coa-client-lab relay-setup N` (guide README, "Headless lab with relay
+   `character`'s default dedicated account, or `coa-client-lab login --account <account> <character>` for a
+   shared one (its password is generated/reused the same way as a dedicated account's — never type or pass one
+   on the command line). `coa-client-lab login <account> <password> [<character>]` still works for a password
+   held another way. On a slot prepared with `coa-client-lab relay-setup N` (guide README, "Headless lab with relay
    probes"), prefer `COA_LAB_PROFILE=minimal coa-client-lab start N`: with CHARACTER given either way, read-only
    probes then go through the server relay in a fraction of a second, without `/reload`.
 2. Drive the client with `chat` (slash and GM commands), `key`, `hold KEY MS` (walk with `w`/`s`, turn with
@@ -120,6 +135,9 @@ folder.
    show what the server actually sent. Both are read-only, lab-only, and need a slot with
    `Warden.Enabled = 0`; neither substitutes for a Ghost scenario or for `probe state`/`probe auras`, and
    both are a last resort when the display and the Lua view already disagree and the cause matters.
+   `coa-client-lab preflight N`/`start N` print the slot's Warden state up front (L15, 2026-10-27) --
+   `warden: off on slot N (coa-lab-mem and coa-lab-packets usable)`, or a `WARN:` naming both tools when it
+   is on -- so a Warden-on slot is known before either tool is tried, not from the first refusal.
 
 ## Getting the state you need, shortest route first
 
@@ -135,9 +153,13 @@ fixtures wander. Set the state instead, and record what you set.
 - GM cheats (`.cheat god|power|cooldown`) change how the game behaves, so they are a last resort: use one only
   when a captured error proves it is the blocker, and write in the report which one and why. A dummy that cannot
   kill you removes the need for `god`; `.modify` removes the need for `power`.
-- Prefer the normal player path for what the check is about: level, `.localspec`, `.localtalent <entry> <rank>`.
-  If a forced `.learn` was used and the issue does not reproduce, redo it through the talent path before
-  concluding: the acquisition method can be the difference. Talent entry ids come from
+- Prefer the normal player path for what the check is about: level, `coa-client-lab character --spec ID` for a
+  specialization. Neither `.localspec` nor `.localtalent <entry> <rank>` exists any more (server commit
+  2d13ffd73a, #5507): a specialization switch now has the DB-write path above, but a single talent rank has
+  no chat command or lab-level equivalent at all — only the native CMSG 0x0727 upload the client itself sends
+  (`.agents/docs/systems/ascension-talents.md` in the server repo). If a forced `.learn` was used and the
+  issue does not reproduce, redo it through the talent path before concluding: the acquisition method can be
+  the difference. Talent entry ids come from
   `/srv/coa/server-data/dbc/CharacterAdvancement.dbc` (field layout in
   `modules/mod-ascension-compat/src/AscensionCoATalentData.cpp`).
 

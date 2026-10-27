@@ -138,6 +138,17 @@ Running (one lab client per instance):
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
   screenshot [PATH]        save a PNG of the client window and print its path
+  screenshot --burst N [--interval-ms MS] [--dir DIR] [--chat TEXT | --key KEY...]
+                           capture N frames (default interval 100ms, at most that by design -- see
+                           docs/adr/0013) inside this one call, into DIR (default under
+                           screenshots/burst-<timestamp>-<pid>/, frame-000.png...); with --chat/--key, fires
+                           that action first, in the same call, then starts capturing immediately -- no
+                           second dispatch between the action and the first frame. Prints DIR; DIR/timing.tsv
+                           has the action and every frame's start/end (ns since epoch) for measuring the
+                           achieved interval and the action-to-first-frame delay
+  screenshot --video-seconds S [--fps N] [--dir DIR] [--chat TEXT | --key KEY...]
+                           same, but records DIR/clip.mp4 via ffmpeg x11grab for S seconds at --fps
+                           (default 10) instead of discrete frames
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
@@ -154,7 +165,7 @@ Running (one lab client per instance):
 Server relay:
   relay-setup N --soap-account NAME --soap-password-file PATH
                            enable SOAP (container 0.0.0.0, host loopback) and CoA.ProbeRelay.Enable in slot N's
-                           configuration and write relay.env; restart the worldserver afterwards
+                           configuration and write relay/slotN.env; restart the worldserver afterwards
 EOF
 }
 
@@ -348,6 +359,37 @@ require_running() {
     export DISPLAY
 }
 
+# L15 problem 2: `coa-lab-mem`'s own guard hard-refuses every read while a slot has Warden.Enabled != 0
+# (its own check_warden_disabled, reused here via `warden-status` rather than a second parser); a prior
+# session (batch 22, slot 4) only learned that once a `coa-lab-mem` call had already
+# failed. This prints the slot's Warden state up front, from `preflight` and from `start`, and never
+# blocks either: Warden is the slot's own configuration, reported here, not changed by this tool.
+warden_status_line() {
+    local n="$1" json enabled
+    if [[ ! -x "$LAB_MEM" ]] || ! command -v python3 > /dev/null 2>&1; then
+        echo "warden: unknown for slot $n (coa-lab-mem/python3 unavailable)"
+        return 0
+    fi
+    if ! json=$(python3 "$LAB_MEM" warden-status --slot "$n" 2>&1); then
+        echo "warden: unknown for slot $n (coa-lab-mem warden-status failed: $json)"
+        return 0
+    fi
+    enabled=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["warden_enabled"])' "$json" 2>/dev/null) || true
+    case "$enabled" in
+        False)
+            echo "warden: off on slot $n (coa-lab-mem usable)"
+            ;;
+        True)
+            echo "WARN: slot $n has Warden.Enabled != 0: coa-lab-mem refuses every memory read on this" \
+                 "slot's client (its own guard, see scripts/coa-lab-mem's docstring) until Warden is off." \
+                 "coa-lab-packets reads the server's own packet log and has no Warden check."
+            ;;
+        *)
+            echo "warden: unknown for slot $n ($(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("detail", ""))' "$json" 2>/dev/null))"
+            ;;
+    esac
+}
+
 cmd_start() {
     local n="${1:-}" auth pid display window waited
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab start N (a coa-slot slot number)"
@@ -370,6 +412,7 @@ cmd_start() {
     if [[ "$(awk 'NR == 1 { print $3 }' "$STATE_DIR/preflight" 2>/dev/null)" != "$n" ]]; then
         rm -f "$STATE_DIR/preflight"
     fi
+    warden_status_line "$n"
 
     apply_profile
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
@@ -535,6 +578,29 @@ ensure_lab_password() {
     cat "$file"
 }
 
+# Resolves the relay configuration file for SLOT (L14b: `relay.env` used to be one file under $LAB_ROOT
+# shared by every slot and every lab instance, so `relay-setup` on one slot silently broke another
+# session's relay on a different slot -- reports/l14-lab-fixes.md Concern 1). `relay-setup N` now writes
+# $LAB_ROOT/relay/slotN.env instead, tried first; a pre-existing shared $LAB_ROOT/relay.env is still read
+# (never rewritten, never deleted, never moved by this script) when its own SLOT line matches, so a setup
+# from before this change keeps working without rerunning relay-setup. Echoes the resolved path and
+# returns 0 on a match; prints nothing and returns 1 for an empty/unknown slot or no match either way.
+relay_env_for_slot() {
+    local slot="$1" candidate
+    [[ -n "$slot" ]] || return 1
+    candidate="$LAB_ROOT/relay/slot${slot}.env"
+    if [[ -f "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    if [[ -f "$LAB_ROOT/relay.env" ]] \
+        && [[ "$(sed -n 's/^SLOT=//p' "$LAB_ROOT/relay.env")" == "$slot" ]]; then
+        printf '%s\n' "$LAB_ROOT/relay.env"
+        return 0
+    fi
+    return 1
+}
+
 # Grants RBAC_PERM_INSTANT_LOGOUT (id 1, src/server/game/Accounts/RBAC.h:52) to a lab account over the
 # lab SOAP relay (`.rbac account grant ACCOUNT 1`, src/server/scripts/Commands/cs_rbac.cpp:85-117). This
 # is the only effective use of that permission found in the server source (grepped: a single read site,
@@ -547,20 +613,25 @@ ensure_lab_password() {
 # that permission"); both count as success here. Refuses any account that is not COALAB* (lab accounts
 # only, never a real player account) regardless of caller. Non-fatal to the caller by design (returns 1,
 # does not `die`): a slot without relay-setup yet should not block `character` from creating the account.
+# SLOT, when given (cmd_character already knows its own --slot before any `start`/STATE_DIR/slot exists
+# for it), picks the relay file directly; otherwise falls back to the running instance's own slot
+# (STATE_DIR/slot, written by `start`), same as every other reader below (L14b).
 grant_instant_logout_rbac() {
-    local account="$1" out upper
+    local account="$1" slot="${2:-}" out upper relay_env
     upper=$(tr '[:lower:]' '[:upper:]' <<<"$account")
     if [[ "$upper" != "${LAB_ACCOUNT_PREFIX}"* ]]; then
         echo "WARN: refusing to grant RBAC_PERM_INSTANT_LOGOUT to $account: not a $LAB_ACCOUNT_PREFIX*" \
              "lab account; it keeps the normal 20s /logout delay" >&2
         return 1
     fi
-    if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
-        echo "WARN: no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): RBAC_PERM_INSTANT_LOGOUT" \
-             "not granted to $account; /logout will keep the normal 20s delay for it" >&2
+    [[ -n "$slot" ]] || slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
+    if ! relay_env=$(relay_env_for_slot "$slot"); then
+        echo "WARN: no relay configuration for slot ${slot:-unknown} (coa-client-lab relay-setup" \
+             "${slot:-N} ...): RBAC_PERM_INSTANT_LOGOUT not granted to $account; /logout will keep the" \
+             "normal 20s delay for it" >&2
         return 1
     fi
-    out=$("$RELAY" soap "rbac account grant $account 1" 2>&1) || {
+    out=$(COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "rbac account grant $account 1" 2>&1) || {
         echo "WARN: rbac grant for $account failed: $out" >&2
         return 1
     }
@@ -615,7 +686,7 @@ cmd_character() {
         dedicated=1
     fi
     password=$(ensure_lab_password "$account")
-    grant_instant_logout_rbac "$account" \
+    grant_instant_logout_rbac "$account" "$slot" \
         || echo "WARN: $character's account ($account) may still see the normal 20s /logout delay" >&2
 
     local ghost_env
@@ -623,9 +694,11 @@ cmd_character() {
     [[ -n "$ghost_env" && -f "$ghost_env" ]] || die "coa-slot env $slot gave no readable GHOST_ENV (coa-slot create $slot first?)"
 
     local spec_json
-    spec_json=$(python3 -c '
+    spec_json=$(COA_LAB_CHARACTER_PASSWORD="$password" python3 -c '
 import json, sys
-account, character, race, klass, level, spec, gm, learn, items, password, dedicated = sys.argv[1:12]
+import os
+account, character, race, klass, level, spec, gm, learn, items, dedicated = sys.argv[1:11]
+password = os.environ["COA_LAB_CHARACTER_PASSWORD"]
 def ids(s):
     return [int(x) for x in s.split(",") if x.strip()]
 print(json.dumps({
@@ -633,7 +706,7 @@ print(json.dumps({
     "level": int(level), "spec": int(spec), "gm": int(gm), "learn": ids(learn), "items": ids(items),
     "password": password, "dedicated": dedicated == "1",
 }))
-' "$account" "$character" "$race" "$class" "$level" "$spec" "$gm" "$learn" "$items" "$password" "$dedicated") \
+' "$account" "$character" "$race" "$class" "$level" "$spec" "$gm" "$learn" "$items" "$dedicated") \
         || die "could not build the character request"
 
     local out status=0
@@ -752,15 +825,51 @@ login_with_retry() {
 }
 
 wait_ui_ready() {
+    local expected="${1:-}" answer=""
     [[ -f "$STATE_DIR/lab.json" ]] || return 0
     local deadline=$((SECONDS + UI_READY_WAIT))
-    until "$RELAY" --descriptor "$STATE_DIR/lab.json" probe --timeout 2 ping > /dev/null 2>&1; do
+    until answer=$("$RELAY" --descriptor "$STATE_DIR/lab.json" probe --timeout 2 ping 2> /dev/null); do
         if ((SECONDS >= deadline)); then
             echo "WARN: the in-world UI did not answer a relay ping within ${UI_READY_WAIT}s" >&2
             return 1
         fi
         "$SLEEP" 0.3
     done
+    # L14 (problem 2): `login --account COALABKOX Wrkox` once entered the world as the account's other
+    # character, Hfkox, with nothing noticing -- character-select navigation can fail silently and leave
+    # the client's own default-highlighted character in world instead of the one asked for.
+    # addons/CoaProbe/Relay.lua already stamps every relayed answer with `character = UnitName("player")`,
+    # the in-world player's own name, independent of whichever name this ping was addressed to -- this is
+    # the same ping this function already sent to confirm the UI is ready, read a second time instead of
+    # a second round trip. A relay too old to carry that field (or the UI-ready probe answering before this
+    # field existed) cannot be told apart from a genuine mismatch, so a missing field only warns; an actual
+    # mismatch between `character` and the requested name is always a hard failure, not something a caller's
+    # `wait_ui_ready || true` can swallow.
+    [[ -n "$expected" ]] || return 0
+    local actual
+    actual=$(python3 -c '
+import json, sys
+try:
+    print(json.loads(sys.argv[1]).get("character", ""))
+except ValueError:
+    print("")
+' "$answer")
+    if [[ -z "$actual" ]]; then
+        echo "WARN: relay probe ping named no character after login (raw answer: $answer); cannot confirm" \
+             "$expected is the one in world" >&2
+        return 0
+    fi
+    [[ "${actual,,}" == "${expected,,}" ]] && return 0
+    python3 -c '
+import json, sys
+path, actual = sys.argv[1:3]
+with open(path, encoding="utf-8") as handle:
+    descriptor = json.load(handle)
+descriptor["character"] = actual
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(descriptor, handle, indent=2)
+' "$STATE_DIR/lab.json" "$actual" || true
+    die "logged in as the wrong character: requested $expected, the relay reports $actual is in world"
 }
 
 # Waits up to $2 seconds (the same fixed sleep this replaces, kept as an upper bound) for glue state $1
@@ -879,18 +988,20 @@ except Exception:
 # succeeded in every reproduction this session. The previous 1-attempt-after-1s retry does not clear this
 # window reliably (observed failing on both attempt 1 at t+0s and attempt 2 at t+1.0s); KICK_RETRY_ATTEMPTS
 # and KICK_RETRY_WAIT widen it to as many attempts as that many seconds, still far cheaper than the ~45s
-# restart fallback this replaces when it lands. Advisory like every other memory/relay use in this script: a
-# missing relay.env (no relay-setup on this slot), an unknown character, or a kick still unsuccessful after
-# every attempt falls back to the caller's /camp path (and from there to restart_client) instead of being
-# treated as a hard failure.
+# restart fallback this replaces when it lands. Advisory like every other memory/relay use in this script: no
+# relay configuration for this slot (no relay-setup yet; L14b: STATE_DIR/slot names the slot, relay_env_for_slot
+# resolves its file), an unknown character, or a kick still unsuccessful after every attempt falls back to the
+# caller's /camp path (and from there to restart_client) instead of being treated as a hard failure.
 KICK_RETRY_WAIT="${COA_LAB_KICK_RETRY_WAIT:-1}"
 KICK_RETRY_ATTEMPTS="${COA_LAB_KICK_RETRY_ATTEMPTS:-4}"
 kick_via_soap() {
-    local character="$1" out err attempt
-    [[ -n "$character" && -f "$LAB_ROOT/relay.env" ]] || return 1
+    local character="$1" slot="${2:-}" out err attempt relay_env
+    [[ -n "$slot" ]] || slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
+    relay_env=$(relay_env_for_slot "$slot") || return 1
+    [[ -n "$character" ]] || return 1
     for ((attempt = 1; attempt <= KICK_RETRY_ATTEMPTS; attempt++)); do
         err=$(mktemp)
-        out=$("$RELAY" soap "kick $character" 2> "$err") || out=""
+        out=$(COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "kick $character" 2> "$err") || out=""
         if [[ "$out" == *kicked* ]]; then
             rm -f "$err"
             return 0
@@ -1272,7 +1383,7 @@ cmd_login() {
                 glue_until in-world "$WORLD_WAIT" > /dev/null || true
                 echo "login sent for $account (in-place character switch, no login screen); check the world with: coa-client-lab screenshot"
                 write_descriptor "$account" "$character"
-                wait_ui_ready || true
+                wait_ui_ready "$character" || true
                 return
             fi
             echo "WARN: in-place switch to $character did not confirm (rc=$select_rc); falling back to the" \
@@ -1429,7 +1540,7 @@ cmd_login() {
     echo "login sent for $account; check the world with: coa-client-lab screenshot"
     if [[ -n "$character" ]]; then
         write_descriptor "$account" "$character"
-        wait_ui_ready || true
+        wait_ui_ready "$character" || true
     fi
 }
 
@@ -1437,17 +1548,18 @@ cmd_login() {
 # `preflight` is "pass" only for a pass recorded for this slot after the slot's last deploy; an older or foreign
 # pass is "stale". The recorded slot and times are copied too, so the server check can apply the same rule.
 write_descriptor() {
-    local account="$1" character="$2" slot state_file etc
+    local account="$1" character="$2" slot state_file etc relay_env
     [[ "$character" =~ ^[A-Za-z]+$ ]] || die "character names are letters only, got: $character"
-    if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
-        echo "no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): no lab descriptor written"
+    slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
+    if ! relay_env=$(relay_env_for_slot "$slot"); then
+        echo "no relay configuration for slot ${slot:-unknown} (coa-client-lab relay-setup ${slot:-N} ...):" \
+             "no lab descriptor written"
         return 0
     fi
-    slot=$(cat "$STATE_DIR/slot" 2>/dev/null) || slot=""
     state_file=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^STATE_FILE=//p') || state_file=""
     etc=$(coa-slot env "$slot" 2>/dev/null | sed -n 's/^ETC=//p') || etc=""
     ( umask 077
-      python3 - "$LAB_ROOT/relay.env" "$STATE_DIR/lab.json" "${COA_LAB_INSTANCE:-}" "$slot" "$account" \
+      python3 - "$relay_env" "$STATE_DIR/lab.json" "${COA_LAB_INSTANCE:-}" "$slot" "$account" \
           "$character" "${state_file:-/nonexistent}" "$STATE_DIR/preflight" "$LAB_CLIENT" \
           "${etc:+$etc/worldserver.conf}" <<'PYEOF'
 import json
@@ -1479,7 +1591,7 @@ for line in open(env_path):
     if sep:
         env[key] = value
 if env.get("SLOT") != slot:
-    sys.exit(f"relay.env is set up for slot {env.get('SLOT')}, the lab client runs on slot {slot}: "
+    sys.exit(f"{env_path} is set up for slot {env.get('SLOT')}, the lab client runs on slot {slot}: "
              f"run coa-client-lab relay-setup {slot} ...")
 deploy = first_line(state_path)
 deployed_commit = deploy[1] if len(deploy) > 1 else "unknown"
@@ -1518,12 +1630,98 @@ cmd_hold() {
     xdotool keyup --window "$WINDOW" "$1"
 }
 
+#
+# L15 problem 1: a separate `screenshot` call per frame cannot catch a sub-second effect (e.g. a brief
+# projectile) -- each call is a fresh dispatch from whatever drives this script, so the gap between two
+# calls is that dispatch's own overhead, not anything this script controls. `--burst`/`--video-seconds`
+# capture several frames (or a short clip) inside ONE call, optionally after firing the trigger action
+# (`--chat`/`--key`) in that same call, so no second dispatch sits between the action and the first frame.
+# The legacy `screenshot [PATH]` form (no flags) is unchanged.
 cmd_screenshot() {
     require_running
-    local path="${1:-$LAB_ROOT/screenshots/lab-$(date +%Y%m%d-%H%M%S).png}"
-    mkdir -p "$(dirname "$path")"
-    magick import -window "$WINDOW" "$path"
-    echo "$path"
+    local path="" burst=0 interval_ms=100 video_seconds=0 fps="" outdir="" chat_text="" key_args=()
+    if [[ $# -gt 0 && "$1" != --* ]]; then
+        path="$1"
+        shift
+    fi
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --burst) [[ $# -ge 2 ]] || die "--burst needs a value"; burst="$2"; shift 2 ;;
+            --interval-ms) [[ $# -ge 2 ]] || die "--interval-ms needs a value"; interval_ms="$2"; shift 2 ;;
+            --video-seconds) [[ $# -ge 2 ]] || die "--video-seconds needs a value"; video_seconds="$2"; shift 2 ;;
+            --fps) [[ $# -ge 2 ]] || die "--fps needs a value"; fps="$2"; shift 2 ;;
+            --dir) [[ $# -ge 2 ]] || die "--dir needs a value"; outdir="$2"; shift 2 ;;
+            --chat) [[ $# -ge 2 ]] || die "--chat needs a value"; chat_text="$2"; shift 2 ;;
+            --key) [[ $# -ge 2 ]] || die "--key needs a value"; key_args+=("$2"); shift 2 ;;
+            *) die "unknown screenshot argument: $1" ;;
+        esac
+    done
+    [[ "$burst" =~ ^[0-9]+$ ]] || die "--burst needs a non-negative integer frame count"
+    [[ "$interval_ms" =~ ^[0-9]+$ ]] || die "--interval-ms needs a non-negative integer"
+    [[ "$video_seconds" =~ ^[0-9]+$ ]] || die "--video-seconds needs a non-negative integer"
+    [[ "$fps" == "" || "$fps" =~ ^[1-9][0-9]*$ ]] || die "--fps needs a positive integer"
+    [[ "$burst" == 0 || "$video_seconds" == 0 ]] || die "use --burst or --video-seconds, not both"
+
+    if [[ "$burst" == 0 && "$video_seconds" == 0 ]]; then
+        [[ ${#key_args[@]} -eq 0 && -z "$chat_text" ]] || die "--chat/--key need --burst or --video-seconds"
+        path="${path:-$LAB_ROOT/screenshots/lab-$(date +%Y%m%d-%H%M%S).png}"
+        mkdir -p "$(dirname "$path")"
+        magick import -window "$WINDOW" "$path"
+        echo "$path"
+        return 0
+    fi
+    [[ -z "$path" ]] || die "--burst/--video-seconds write a directory (--dir), not a single PATH"
+    outdir="${outdir:-$LAB_ROOT/screenshots/burst-$(date +%Y%m%d-%H%M%S)-$$}"
+    mkdir -p "$outdir"
+
+    # Fire the trigger action, if any, then start capture immediately: no second command dispatch, no
+    # extra round trip. action_ns is the timestamp of the LAST action sent (the one whose effect capture
+    # cares about), so a later reader can compute the delay to the first frame.
+    local action_ns
+    action_ns=$(date +%s%N)
+    if [[ -n "$chat_text" ]]; then
+        xdotool key --window "$WINDOW" Return
+        "$SLEEP" 0.5
+        xdotool type --window "$WINDOW" --delay 40 "$chat_text"
+        xdotool key --window "$WINDOW" Return
+        action_ns=$(date +%s%N)
+    fi
+    if [[ ${#key_args[@]} -gt 0 ]]; then
+        xdotool key --window "$WINDOW" "${key_args[@]}"
+        action_ns=$(date +%s%N)
+    fi
+
+    if [[ "$video_seconds" != 0 ]]; then
+        fps="${fps:-10}"
+        local video="$outdir/clip.mp4" capture_start_ns
+        printf 'action_ns\t%s\n' "$action_ns" > "$outdir/timing.tsv"
+        capture_start_ns=$(date +%s%N)
+        printf 'capture_start_ns\t%s\n' "$capture_start_ns" >> "$outdir/timing.tsv"
+        # x11grab's window_id option selects the window within the display given as -i; the display
+        # itself (not the window id) is the input, matching ffmpeg's own x11grab usage.
+        ffmpeg -y -loglevel warning -f x11grab -window_id "$WINDOW" -framerate "$fps" -i "$DISPLAY" \
+            -t "$video_seconds" "$video" > "$outdir/ffmpeg.log" 2>&1
+        echo "$video"
+        return 0
+    fi
+
+    : > "$outdir/timing.tsv"
+    printf 'action_ns\t%s\n' "$action_ns" >> "$outdir/timing.tsv"
+    local i frame_start frame_end elapsed_ms remaining_ms
+    for ((i = 0; i < burst; i++)); do
+        frame_start=$(date +%s%N)
+        magick import -window "$WINDOW" "$outdir/frame-$(printf '%03d' "$i").png" 2> /dev/null || true
+        frame_end=$(date +%s%N)
+        printf 'frame\t%s\t%s\t%s\n' "$i" "$frame_start" "$frame_end" >> "$outdir/timing.tsv"
+        if (( i < burst - 1 )); then
+            elapsed_ms=$(( (frame_end - frame_start) / 1000000 ))
+            remaining_ms=$(( interval_ms - elapsed_ms ))
+            if (( remaining_ms > 0 )); then
+                "$SLEEP" "$(printf '%d.%03d' "$((remaining_ms / 1000))" "$((remaining_ms % 1000))")"
+            fi
+        fi
+    done
+    echo "$outdir"
 }
 
 # The addon answers in SavedVariables, which the client writes on /reload (spike findings Q3).
@@ -1611,6 +1809,7 @@ cmd_preflight() {
     shift
     mkdir -p "$STATE_DIR"
     coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@" || status=$?
+    warden_status_line "$n"
     if [[ "$status" == 0 ]]; then
         echo "pass slot $n $(date -Is)" > "$STATE_DIR/preflight"
     else
@@ -1668,10 +1867,15 @@ cmd_relay_setup() {
       run_lab_character -run '^TestLabSoapAccount$' . ) || status=$?
     [[ "$status" == 0 ]] || die "could not create/update the SOAP account $account on slot $n (go test output above)"
 
-    mkdir -p "$LAB_ROOT"
+    # L14b: one file per slot under $LAB_ROOT/relay/, never the single shared $LAB_ROOT/relay.env every
+    # slot and every lab instance used to overwrite (reports/l14-lab-fixes.md Concern 1: a relay-setup on
+    # one slot silently broke another session's relay on a different slot). This never touches a
+    # pre-existing $LAB_ROOT/relay.env (relay_env_for_slot still reads it, read only, for a setup made
+    # before this change).
+    mkdir -p "$LAB_ROOT/relay"
     ( umask 077
       printf 'SLOT=%s\nSOAP_URL=http://127.0.0.1:%s/\nSOAP_ACCOUNT=%s\nSOAP_PASSWORD_FILE=%s\n' \
-          "$n" "$((7878 + (n - 1) * 100))" "$account" "$password_file" > "$LAB_ROOT/relay.env" )
+          "$n" "$((7878 + (n - 1) * 100))" "$account" "$password_file" > "$LAB_ROOT/relay/slot${n}.env" )
     echo "relay configured for slot $n; restart: coa-slot compose $n restart ac-worldserver"
 }
 
