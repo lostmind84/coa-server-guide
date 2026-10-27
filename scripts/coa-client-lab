@@ -531,6 +531,42 @@ ensure_lab_password() {
     cat "$file"
 }
 
+# Grants RBAC_PERM_INSTANT_LOGOUT (id 1, src/server/game/Accounts/RBAC.h:52) to a lab account over the
+# lab SOAP relay (`.rbac account grant ACCOUNT 1`, src/server/scripts/Commands/cs_rbac.cpp:85-117). This
+# is the only effective use of that permission found in the server source (grepped: a single read site,
+# src/server/game/Handlers/MiscHandler.cpp:535-536, HandleLogoutRequestOpcode) -- it only widens the
+# existing `instantLogout` condition (already true while resting or in flight) so `/logout`/`/camp`
+# always skips the normal 20s delay and calls `LogoutPlayer(true)` immediately, in the same world
+# session, with no `.kick`/new-auth/duplicate-session path involved (L12 idea, proven against source,
+# not a prior report's assumption). Idempotent: `.rbac account grant` reports success both the first time
+# (acore_string 74, "Granted permission ...") and every time after (acore_string 72, "... already has
+# that permission"); both count as success here. Refuses any account that is not COALAB* (lab accounts
+# only, never a real player account) regardless of caller. Non-fatal to the caller by design (returns 1,
+# does not `die`): a slot without relay-setup yet should not block `character` from creating the account.
+grant_instant_logout_rbac() {
+    local account="$1" out upper
+    upper=$(tr '[:lower:]' '[:upper:]' <<<"$account")
+    if [[ "$upper" != "${LAB_ACCOUNT_PREFIX}"* ]]; then
+        echo "WARN: refusing to grant RBAC_PERM_INSTANT_LOGOUT to $account: not a $LAB_ACCOUNT_PREFIX*" \
+             "lab account; it keeps the normal 20s /logout delay" >&2
+        return 1
+    fi
+    if [[ ! -f "$LAB_ROOT/relay.env" ]]; then
+        echo "WARN: no $LAB_ROOT/relay.env (coa-client-lab relay-setup N ...): RBAC_PERM_INSTANT_LOGOUT" \
+             "not granted to $account; /logout will keep the normal 20s delay for it" >&2
+        return 1
+    fi
+    out=$("$RELAY" soap "rbac account grant $account 1" 2>&1) || {
+        echo "WARN: rbac grant for $account failed: $out" >&2
+        return 1
+    }
+    if [[ "$out" == *"Granted permission"* || "$out" == *"already has that permission"* ]]; then
+        return 0
+    fi
+    echo "WARN: rbac grant for $account: unexpected relay output: $out" >&2
+    return 1
+}
+
 cmd_character() {
     local slot="" account="" character="" race="" class="" level="0" spec="0" gm="0" learn="" items=""
     while [[ $# -gt 0 ]]; do
@@ -575,6 +611,8 @@ cmd_character() {
         dedicated=1
     fi
     password=$(ensure_lab_password "$account")
+    grant_instant_logout_rbac "$account" \
+        || echo "WARN: $character's account ($account) may still see the normal 20s /logout delay" >&2
 
     local ghost_env
     ghost_env=$(coa-slot env "$slot" | sed -n 's/^GHOST_ENV=//p')
@@ -841,6 +879,12 @@ CHARSELECT_BACK_WAIT="${COA_LAB_CHARSELECT_BACK_WAIT:-10}"
 CAMP_WAIT="${COA_LAB_CAMP_WAIT:-15}"
 KICK_WAIT="${COA_LAB_KICK_WAIT:-8}"
 DIALOG_DISMISS_WAIT="${COA_LAB_DIALOG_DISMISS_WAIT:-5}"
+# L12: bound for /camp's own confirmation once the account holds RBAC_PERM_INSTANT_LOGOUT
+# (grant_instant_logout_rbac): MiscHandler.cpp:535-536/567-571 calls LogoutPlayer(true) immediately
+# instead of arming the normal 20s SetLogoutStartTime delay, so charselect-loaded should confirm in well
+# under this, not up to CAMP_WAIT's 15s. Kept well above a single round trip to absorb client-side scene
+# transition time (character-select load), not the server-side delay this permission removes.
+INSTANT_LOGOUT_WAIT="${COA_LAB_INSTANT_LOGOUT_WAIT:-8}"
 
 # True only for the one dialog trigger this session found a reliable memory signal for (L11, 2026-10-27):
 # the client's OWN login attempt was rejected (wrong password, already online, a duplicate-session force
@@ -900,6 +944,38 @@ clear_login_dialog_unconditionally() {
     glue_until login "$DIALOG_DISMISS_WAIT" > /dev/null
 }
 
+# Reaches character-select from world via /camp WITHOUT going on to the login screen, so cmd_login's
+# same-account character switch can skip retyping credentials entirely. Needs RBAC_PERM_INSTANT_LOGOUT
+# (grant_instant_logout_rbac): without it /camp arms the normal 20s delay instead of logging out at once
+# (MiscHandler.cpp:535-536/567-571), so this function does not fall back to a longer wait or to
+# kick_via_soap on its own -- a kick always lands on the login screen, not character-select (kick_via_soap's
+# own comment), so it cannot serve this same-session fast path; a timeout here just means the caller falls
+# back to the full goto_login_screen_via_memory recovery, which still logs the same character's account
+# back in, just via the login screen instead of staying in-session. Already at character-select (not in
+# world, not at the login screen) is a no-op success: nothing to log out of.
+#
+# L12, measured live, slot 2, 2026-10-27, Coalabshare's Sharea/Shareb: the permission is confirmed
+# granted (`.rbac account list`) and this path reliably never FAILS the overall switch (15/15 live
+# attempts across this session's runs succeeded, all via this function or its fallback), but /camp
+# itself only reached charselect-loaded within INSTANT_LOGOUT_WAIT on roughly 1 in 7-9 of those
+# attempts; raising the bound to 20s did not change the ratio (still ~1 fast in 6, the misses just
+# wasted more of it before falling back) -- not a mere timeout-too-short issue. The other attempts all
+# fell through to the full goto_login_screen_via_memory recovery (slower, but not a failure). No memory
+# field or source read this session explained why the same granted permission produces instant logout
+# inconsistently; not chased further (time budget). Flagged for whoever picks this up next.
+goto_charselect_via_memory() {
+    local json screen world
+    json=$(glue_state) || return 1
+    screen=$(glue_field "$json" current_screen)
+    world=$(glue_field "$json" in_world)
+    if [[ "$world" == "false" && -n "$screen" && "$screen" != "login" ]]; then
+        return 0
+    fi
+    [[ "$world" == "true" ]] || return 1
+    cmd_chat "/camp" || return 1
+    glue_until charselect-loaded "$INSTANT_LOGOUT_WAIT" > /dev/null
+}
+
 goto_login_screen_via_memory() {
     local json screen world character
     json=$(glue_state) || return 1
@@ -910,6 +986,20 @@ goto_login_screen_via_memory() {
         return
     fi
     if [[ "$world" == "true" ]]; then
+        # L12 tried making /camp itself (now instant via grant_instant_logout_rbac) the primary recovery
+        # here too, ahead of kick_via_soap, on the theory that it would avoid kick's own server-side
+        # session-registration race (that function's comment). Live, slot 2, 2026-10-27: the instant
+        # /camp DID land on character-select quickly (confirmed: charselect-loaded within well under
+        # INSTANT_LOGOUT_WAIT, even with a generous 25s bound to rule out a mere timeout), but the
+        # Back-click + different-account relogin that follows it then reproducibly failed
+        # (login_state=5/LOGIN_DISCONNECTED) every time tried (zero gap, a 2s pace, and a ~15s real gap
+        # alike) -- a short settle sleep before the Back click did not fix it either. kick_via_soap's own
+        # path (straight to the login screen, no charselect/Back leg) kept working in the same session
+        # immediately after. Root cause not established (not verified further, time budget): something
+        # about the graceful /camp->charselect->Back sequence specifically, not generic timing, breaks a
+        # different-account relogin here. Reverted to L11's kick-first order for this path; the instant
+        # permission's proven, tested use stays goto_charselect_via_memory's same-account fast path below
+        # (cmd_login), which never reaches the login screen or clicks Back at all.
         character=$(lab_last_character) || character=""
         if [[ -n "$character" ]] && kick_via_soap "$character" \
             && glue_until login "$KICK_WAIT" > /dev/null; then
@@ -1074,6 +1164,33 @@ cmd_login() {
         die "usage: coa-client-lab login ACCOUNT PASSWORD [CHARACTER] | login CHARACTER (dedicated account made by 'character' without --account) | login --account NAME CHARACTER (shared account made by 'character --account NAME ...')"
     fi
     require_running
+    # L12: a same-account character switch (the new character shares the account already logged in this
+    # session, per state/account) never needs to revisit the login screen at all: log out to
+    # character-select in place (goto_charselect_via_memory, RBAC_PERM_INSTANT_LOGOUT-backed /camp) and
+    # select the new character by name there, skipping the credential retype and its own confirmation
+    # steps entirely. Only attempted when a character was actually requested (nothing to select
+    # otherwise) and a prior login this session recorded the same account; any failure along this path
+    # (logout did not confirm charselect-loaded in time, memory unusable, name never highlighted) falls
+    # through to the full recovery path below exactly as if this block had not run -- goto_charselect_via_memory
+    # and select_character_via_memory are read-driven and re-check state themselves, so a partial attempt
+    # here is not assumed to have left the client anywhere unaccounted for.
+    if [[ -n "$character" && -f "$STATE_DIR/account" ]]; then
+        local prev_account=""
+        prev_account=$(cat "$STATE_DIR/account" 2>/dev/null) || prev_account=""
+        if [[ "$prev_account" == "$account" ]] && goto_charselect_via_memory; then
+            local select_rc=0
+            select_character_via_memory "$character" || select_rc=$?
+            if [[ "$select_rc" == 0 ]]; then
+                xdotool key --window "$WINDOW" Return
+                glue_until in-world "$WORLD_WAIT" > /dev/null || true
+                echo "login sent for $account (in-place character switch, no login screen); check the world with: coa-client-lab screenshot"
+                write_descriptor "$account" "$character"
+                return
+            fi
+            echo "WARN: in-place switch to $character did not confirm (rc=$select_rc); falling back to the" \
+                 "full login-screen path" >&2
+        fi
+    fi
     # Credentials are only ever typed onto a screen this command has just confirmed is the clean
     # account-login screen. Two ways to get that confirmation, tried in order:
     #
@@ -1400,6 +1517,24 @@ cmd_preflight() {
     return "$status"
 }
 
+# Idempotent helper for a lab account created before this change (or any lab account whose grant was
+# skipped, e.g. no relay.env at the time): grants RBAC_PERM_INSTANT_LOGOUT the same way `character` now
+# does automatically for new ones. Takes the account name as stored (derive_account upper-cases it;
+# accepted either case here and upper-cased before the lab-prefix check/grant).
+cmd_rbac_grant() {
+    local account=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --account) account="${2:-}"; shift 2 ;;
+            *) die "unknown rbac-grant argument: $1" ;;
+        esac
+    done
+    [[ -n "$account" ]] || die "usage: coa-client-lab rbac-grant --account NAME"
+    account=$(tr '[:lower:]' '[:upper:]' <<<"$account")
+    grant_instant_logout_rbac "$account" || die "RBAC_PERM_INSTANT_LOGOUT grant failed for $account"
+    echo "RBAC_PERM_INSTANT_LOGOUT granted to $account"
+}
+
 cmd_relay_setup() {
     local n="${1:-}" account="" password_file="" etc
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab relay-setup N --soap-account NAME --soap-password-file PATH"
@@ -1460,6 +1595,7 @@ main() {
         stop) cmd_stop ;;
         preflight) cmd_preflight "$@" ;;
         relay-setup) cmd_relay_setup "$@" ;;
+        rbac-grant) cmd_rbac_grant "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage >&2; exit 2 ;;
     esac

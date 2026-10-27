@@ -1120,5 +1120,112 @@ assert_eq "kick_via_soap returns 0 once a call succeeds" "$rc" "0"
 rm -f "$FUNCS_FILE"
 rm -rf "$KICK_TEST_DIR"
 
+# L12 (2026-10-27): grant_instant_logout_rbac (RBAC_PERM_INSTANT_LOGOUT, RBAC.h:52) -- same
+# source-and-stub-$RELAY pattern as kick_via_soap above.
+RBAC_TEST_DIR=$(mktemp -d "$HOME/.cache/coa-client-lab-rbactest.XXXXXX")
+mkdir -p "$RBAC_TEST_DIR/lab"
+RBAC_CALL_LOG="$RBAC_TEST_DIR/calls.log"
+FUNCS_FILE=$(source_lab_functions)
+
+# No relay.env at all: skipped, not a hard failure, no relay invoked.
+: > "$RBAC_CALL_LOG"
+out=$(RBAC_CALL_LOG="$RBAC_CALL_LOG" COA_LAB_ROOT="$RBAC_TEST_DIR/lab" \
+      COA_LAB_RELAY="$RBAC_TEST_DIR/should_not_run" \
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac COALABRES" 2>&1)
+rc=$?
+assert_eq "grant_instant_logout_rbac returns 1 with no relay.env" "$rc" "1"
+[[ "$out" == *"no $RBAC_TEST_DIR/lab/relay.env"* ]] && pass "grant_instant_logout_rbac warns about the missing relay.env" \
+    || fail "grant_instant_logout_rbac warns about the missing relay.env: got [$out]"
+assert_eq "grant_instant_logout_rbac makes no relay call with no relay.env" "$(wc -l < "$RBAC_CALL_LOG")" "0"
+
+# Account name does not carry the lab prefix: refused (warn + return 1), never calls the relay.
+: > "$RBAC_TEST_DIR/lab/relay.env"
+: > "$RBAC_CALL_LOG"
+cat > "$RBAC_TEST_DIR/relay_counts" <<EOF
+#!/usr/bin/env bash
+echo "call \$*" >> "$RBAC_CALL_LOG"
+echo "Granted permission 1 (INSTANT_LOGOUT) realmId -1 to account 5 (PLAYERONE)"
+EOF
+chmod +x "$RBAC_TEST_DIR/relay_counts"
+out=$(RBAC_CALL_LOG="$RBAC_CALL_LOG" COA_LAB_ROOT="$RBAC_TEST_DIR/lab" \
+      COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac PLAYERONE" 2>&1)
+rc=$?
+assert_eq "grant_instant_logout_rbac refuses a non-lab account" "$rc" "1"
+[[ "$out" == *"not a COALAB"* ]] && pass "grant_instant_logout_rbac refusal names the prefix" \
+    || fail "grant_instant_logout_rbac refusal names the prefix: got [$out]"
+assert_eq "grant_instant_logout_rbac makes no relay call for a non-lab account" "$(wc -l < "$RBAC_CALL_LOG")" "0"
+
+# A COALAB* account (case-insensitive) succeeds on the first grant (acore_string 74 wording).
+: > "$RBAC_CALL_LOG"
+COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
+    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres"
+rc=$?
+assert_eq "grant_instant_logout_rbac succeeds for a COALAB* account" "$rc" "0"
+assert_contains "grant_instant_logout_rbac calls the relay with the grant command" "$RBAC_CALL_LOG" \
+    "rbac account grant Coalabres 1"
+
+# Idempotent: already-granted (acore_string 72 wording) also counts as success, not a failure.
+cat > "$RBAC_TEST_DIR/relay_already" <<'EOF'
+#!/usr/bin/env bash
+echo "Could not grant permission 1 (INSTANT_LOGOUT) realmId -1. Account 5 (COALABRES) already has that permission"
+EOF
+chmod +x "$RBAC_TEST_DIR/relay_already"
+COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_already" \
+    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres"
+assert_eq "grant_instant_logout_rbac treats 'already has that permission' as success" "$?" "0"
+
+# An unexpected relay answer (neither granted nor already-granted wording) is reported, not silently OK.
+cat > "$RBAC_TEST_DIR/relay_weird" <<'EOF'
+#!/usr/bin/env bash
+echo "something else entirely"
+EOF
+chmod +x "$RBAC_TEST_DIR/relay_weird"
+out=$(COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_weird" \
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres" 2>&1)
+rc=$?
+assert_eq "grant_instant_logout_rbac fails on an unexpected relay answer" "$rc" "1"
+[[ "$out" == *"unexpected relay output"* ]] && pass "grant_instant_logout_rbac names the unexpected output" \
+    || fail "grant_instant_logout_rbac names the unexpected output: got [$out]"
+rm -rf "$RBAC_TEST_DIR"
+
+# L12: goto_charselect_via_memory -- the same-account fast path's logout-to-charselect step, with
+# glue_state/cmd_chat/glue_until stubbed by redefining them after sourcing (no real client needed).
+: > "$FAKE_LOG"
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { echo '{\"current_screen\": \"charselect\", \"in_world\": false}'; }
+cmd_chat() { echo 'should not be called'; return 1; }
+goto_charselect_via_memory
+")
+rc=$?
+assert_eq "goto_charselect_via_memory is a no-op already at character-select" "$rc" "0"
+
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { echo '{\"current_screen\": \"ingame\", \"in_world\": true}'; }
+cmd_chat() { [[ \"\$1\" == '/camp' ]]; }
+glue_until() { [[ \"\$1\" == 'charselect-loaded' ]]; }
+goto_charselect_via_memory
+")
+assert_eq "goto_charselect_via_memory logs out and confirms charselect-loaded from world" "$?" "0"
+
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { echo '{\"current_screen\": \"ingame\", \"in_world\": true}'; }
+cmd_chat() { return 0; }
+glue_until() { return 1; }
+goto_charselect_via_memory
+")
+assert_eq "goto_charselect_via_memory fails when charselect-loaded never confirms" "$?" "1"
+
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { return 1; }
+goto_charselect_via_memory
+")
+assert_eq "goto_charselect_via_memory fails when memory is unusable" "$?" "1"
+rm -f "$FUNCS_FILE"
+
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

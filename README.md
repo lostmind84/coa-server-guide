@@ -766,7 +766,47 @@ previous behavior is unchanged: the lookup still reports the character's index, 
 back to whatever the client already has highlighted (live on slot 2 the list wraps circularly instead of
 clamping at the top, so a fixed Up-then-Down sequence without reading the result back is not reliable; see the
 comment on `select_character` in `scripts/coa-client-lab`). This is moot for a dedicated account (nothing to
-pick between). Tests: `scripts/tests/coa-client-lab.test.sh`, `python3 -m unittest discover -s scripts/tests -p
+pick between).
+
+**`RBAC_PERM_INSTANT_LOGOUT` and the same-account in-place switch (L12, 2026-10-27).** `character` now grants
+RBAC permission 1 (`src/server/game/Accounts/RBAC.h:52`) to the account it just created or re-applied a password
+to, over the lab SOAP relay (`.rbac account grant ACCOUNT 1`); `rbac-grant --account NAME` is the same grant as
+a standalone, idempotent command for an account created before this change. Both refuse (warn, not die, for
+`character`'s own call; die for the standalone command) any account name that does not start with `COALAB`
+— this grant is scoped to lab accounts and never reaches a real player account. Grepping every
+`RBAC_PERM_INSTANT_LOGOUT`/`HasPermission(1` use confirmed this permission has exactly one effect:
+`HandleLogoutRequestOpcode` (`MiscHandler.cpp:535-536`) calls `LogoutPlayer(true)` immediately instead of
+arming the normal 20s delay. `login`'s same-account character switch (new character shares the account
+already logged in this session) uses this to skip the login screen entirely: `goto_charselect_via_memory`
+logs out to character-select via `/camp` (confirmed by a bounded poll, `COA_LAB_INSTANT_LOGOUT_WAIT`, 8s cap)
+without ever reaching the login screen, then `select_character_via_memory` picks the new character by name —
+no credential retype, no account-field click, no realm-connect round trip. Any failure along this path (the
+account differs from the one already logged in, the logout does not confirm in time, the name is never
+highlighted) falls through to the full different-account recovery below exactly as if this had not run.
+
+Measured live, slot 2, 2026-10-27, `Coalabshare`'s `Sharea`/`Shareb`: this path never failed the overall switch
+(15/15 live attempts across this session succeeded, whether via the fast path or its fallback) and reached
+6.3-8.6s when the fast path landed, against the ~18-37s a full relogin costs. It did not land reliably,
+though: only 1 fast switch in roughly every 7-9 attempts; the rest timed out waiting for `charselect-loaded`
+and fell through to the slower full recovery (still a success, just not faster). Raising the bound to 20s did
+not change the ratio (still about 1 fast in 6, the misses just spent more of it before falling back), so this
+is not a simple timeout-too-short problem. The permission was confirmed present in the account's DB row
+throughout (`.rbac account list ACCOUNT`); no memory field or source read this session explained the
+inconsistency, and it was not chased further (time budget) — flagged for whoever picks this up next.
+
+A second idea tried and reverted: making the same instant `/camp` the *primary* recovery for a **different**
+-account world switch too (ahead of `kick_via_soap`), reasoning that a graceful instant logout would avoid
+`kick_via_soap`'s own server-side registration race (previous paragraph). Live, slot 2: `/camp` did reach
+character-select quickly (confirmed even with a generous 25s bound, ruling out a mere timeout), but the
+Back-click + different-account relogin that follows it then reliably failed (`login_state`
+5/`LOGIN_DISCONNECTED`) on every attempt tried — zero gap, a 2s pace, and a ~15s real gap alike; a settle sleep
+before the Back click did not fix it. `kick_via_soap`'s own path (straight to the login screen, no
+character-select/Back leg) kept working immediately after, in the same session. Root cause not established
+(not verified further). Reverted: `goto_login_screen_via_memory`'s world-recovery order is unchanged from L11
+(`kick_via_soap` first, old full-length `/camp` as fallback) — the instant permission's only proven, tested use
+stays the same-account path above, which never reaches the login screen or clicks Back at all.
+
+Tests: `scripts/tests/coa-client-lab.test.sh`, `python3 -m unittest discover -s scripts/tests -p
 'test_*.py'` (covers `coa-lab-mem glue`) and, for the Go module, `go vet ./...` plus the DB-free tests
 (`go test -run '^(TestValidateClass|TestCharacterListOrder|TestDeriveAccount|TestDedicatedAccountConflict)$'`).
 Design and spike results: [`docs/design/`](docs/design/).
