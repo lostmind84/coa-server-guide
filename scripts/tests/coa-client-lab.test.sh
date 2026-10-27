@@ -329,8 +329,8 @@ assert_contains "mute without pactl message" "$WORK/out" "pactl not installed: c
 : > "$FAKE_LOG"
 run_lab login labspike secretpw
 assert_contains "login clicks the account field" "$FAKE_LOG" "mousemove --window 4242 640 378 click 1"
-assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 60 labspike"
-assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 60 secretpw"
+assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 40 labspike"
+assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 40 secretpw"
 # Two Returns reach the world (submit the password, then enter the world) on the FIRST login of a lab
 # session: no dismiss Return yet, since nothing can have left a leftover dialog before any login was
 # attempted (confirmed live on slot 2, 2026-10-26: an unconditional dismiss Return on an untouched login
@@ -354,7 +354,7 @@ assert_contains "second login's restart re-launches the client" "$FAKE_LOG" 'wor
 assert_contains "second login still clicks the account field after restarting" "$FAKE_LOG" \
     "mousemove --window 4242 640 378 click 1"
 assert_contains "second login still types the password after restarting" "$FAKE_LOG" \
-    "type --window 4242 --delay 60 secretpw"
+    "type --window 4242 --delay 40 secretpw"
 
 run_lab stop
 run_lab start 3
@@ -996,8 +996,8 @@ run_lab start 3
 : > "$FAKE_LOG"
 run_lab login Dedibot
 assert_eq "login CHARACTER (dedicated account) exits 0" "$?" "0"
-assert_contains "login CHARACTER types the derived account" "$FAKE_LOG" "type --window 4242 --delay 60 COALABDEDIBOT"
-assert_contains "login CHARACTER types the stored password" "$FAKE_LOG" "type --window 4242 --delay 60 $password1"
+assert_contains "login CHARACTER types the derived account" "$FAKE_LOG" "type --window 4242 --delay 40 COALABDEDIBOT"
+assert_contains "login CHARACTER types the stored password" "$FAKE_LOG" "type --window 4242 --delay 40 $password1"
 
 if run_lab login Nodedicatedaccount; then
     fail "login CHARACTER refuses when no dedicated account exists"

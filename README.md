@@ -677,25 +677,34 @@ screen from a leftover error dialog layered over it. On a fresh client (nothing 
 waits (now a bounded poll on memory, capped by `COA_LAB_LOGIN_WAIT`, falling back to the old fixed sleep when
 memory is unusable) and checks directly.
 
-On any other state, `login` now recovers **in place**, without restarting the client: in world, it sends
-`/camp` (confirmed by a bounded poll for character-select, `COA_LAB_CAMP_WAIT`, 15s cap); at character-select,
-it clicks the "Back" button via XTEST fake input (`xdotool windowactivate --sync`, then `mousemove --sync` /
-`click` with no `--window`), confirmed by a bounded poll for the login screen (`COA_LAB_CHARSELECT_BACK_WAIT`,
-10s cap). This is the XTEST form of the click — an earlier XSendEvent form (`xdotool mousemove --window
-"$WINDOW" ... click 1`) was tried twice, in two separate sessions, and failed to reach the login screen when
-driven inside one `login` process both times (4/4, then 2/2 after fixing a real bug in the second attempt —
-see [ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md)), even though the exact same XSendEvent
+On any other state, `login` now recovers **in place**, without restarting the client. In world, it first
+tries `kick_via_soap` (`.kick CHARACTER` over the lab SOAP relay, `coa-lab-relay soap`, reading `CHARACTER`
+from this session's own `state/lab.json`): confirmed live, slot 2, 2026-10-26, this lands directly on the
+login screen (no character-select leg) within `COA_LAB_KICK_WAIT` (8s cap, measured ~3-5s), dismissed by one
+XTEST click at the account field's own position (`click_login_dialog_dismiss`) for the resulting "disconnected"
+dialog. One retry after `COA_LAB_KICK_RETRY_WAIT` (1s) covers a brief registration race right at the
+world-entry boundary; any other kick failure (no SOAP relay set up for this slot, unknown character, SOAP
+fault) falls back to the older path: `/camp` (confirmed by a bounded poll for character-select,
+`COA_LAB_CAMP_WAIT`, 15s cap), then the character-select "Back" button via XTEST fake input (`xdotool
+windowactivate --sync`, then `mousemove --sync` / `click` with no `--window`), confirmed by a bounded poll for
+the login screen (`COA_LAB_CHARSELECT_BACK_WAIT`, 10s cap). This is the XTEST form of the click — an earlier
+XSendEvent form (`xdotool mousemove --window "$WINDOW" ... click 1`) was tried twice, in two separate
+sessions, and failed to reach the login screen when driven inside one `login` process both times (4/4, then
+2/2 after fixing a real bug in the second attempt — see
+[ADR 0004](docs/adr/0004-login-driven-by-memory-read-glue-state.md)), even though the exact same XSendEvent
 click succeeded every time it was run as a separate, external command against the same window. The XTEST form
-reached the login screen 4/4 driven in-process this session (XSendEvent's own exact failure mode) — see
+reached the login screen 4/4 driven in-process in that session (XSendEvent's own exact failure mode) — see
 [ADR 0005](docs/adr/0005-in-place-login-recovery-via-xtest-click.md). `restart_client` (stop then start on the
-same slot, same instance/profile/resolution) is kept as the fallback whenever the in-place recovery does not
-confirm its result within its bound, or memory is unusable at all — unchanged from
+same slot, same instance/profile/resolution) is kept as the final fallback whenever none of the above confirms
+its result within its bound, or memory is unusable at all — unchanged from
 [ADR 0003](docs/adr/0003-login-trusts-only-provable-screen-state.md); `coa-client-lab stop && start N` still
 reaches the same clean state manually, if needed. Measured live, slot 2, 2026-10-26: in-place switches between
-two in-world dedicated accounts took 43.4-46.0s (4 runs, no restart in any of them — same `gamescope` PID
-throughout), in the same band as the restart path's own 42.9-49.6s (ADR 0004) rather than a clear win; see
-[ADR 0005](docs/adr/0005-in-place-login-recovery-via-xtest-click.md) for the phase breakdown and why it is
-shipped anyway. A same-account character switch by name (below) also completed in place, 45.8s.
+two in-world dedicated accounts landed the kick 13.5-13.8s whenever it confirmed (repeatedly reproduced);
+`/camp`'s own completion time varied widely under this task's heavy test load (2.6s, ADR 0005, up to 60s+
+observed once), so a kick miss falls through to the same ~42-46s band the restart path has always measured —
+see [ADR 0007](docs/adr/0007-soap-kick-replaces-camp-for-in-world-recovery.md) for the full investigation,
+including the earlier `/camp`-timeout misdiagnosis and the shared-account (`Memdedi`/`Memtwo`) defect this task
+could not fix (blocked by the agent sandbox, not a code gap).
 
 `login`'s CHARACTER argument (both forms) picks that character on the character-select screen by name when
 `coa-lab-mem glue` is usable: `select_character_via_memory` presses Down and re-reads the highlighted name from
