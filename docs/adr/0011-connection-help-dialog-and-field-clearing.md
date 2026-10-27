@@ -115,3 +115,11 @@ Measured live on slot 2, zero gap, with the default path order:
   once more for that one error (`LOGIN_DISCONNECTED_EXIT`, `COA_LAB_LOGIN_ATTEMPTS`, default 2).
 - Result: 15/15 mixed switches reached the right character; 14 took 13-23 s, one took the restart retry
   (73 s). The cause of that disconnect is still open.
+- After a fresh `start`, switches failed 2 of 4 with LOGIN_DISCONNECTED in about 10 s: after a `.kick` the
+  "disconnected" dialog can appear once the client is already on the login screen, after the blind dismiss
+  clicks, and the credentials were typed under it. Memory shows no trace of that dialog, but its red Okay
+  button does: at (0.5, 0.514) of the window, srgb(67,1,0) to (230,1,0) with the dialog, srgb(29,27,19)
+  without. `login` now waits up to 3 s for that dialog after a kick, clicks Okay while it is visible and
+  refuses to type while it stays. A LOGIN_DISCONNECTED answer is retried once in place.
+- Measured from a fresh start, zero gap: 8/8, then 16/16 mixed switches (15 at 14-26 s, one restart retry at
+  74 s), then 6/6.

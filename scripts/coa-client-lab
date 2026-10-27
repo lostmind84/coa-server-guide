@@ -34,6 +34,7 @@ WORLD_WAIT="${COA_LAB_WORLD_WAIT:-45}"
 UI_READY_WAIT="${COA_LAB_UI_READY_WAIT:-30}"
 LOGIN_ATTEMPTS="${COA_LAB_LOGIN_ATTEMPTS:-2}"
 LOGIN_DISCONNECTED_EXIT=75
+LOGIN_REJECTED_EXIT=76
 GLUE_STATE_RETRY_ATTEMPTS="${COA_LAB_GLUE_STATE_RETRY_ATTEMPTS:-3}"
 GLUE_STATE_RETRY_WAIT="${COA_LAB_GLUE_STATE_RETRY_WAIT:-1}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -729,16 +730,24 @@ glue_state() {
 # The server sometimes ends the new session while the character list is shown, after a zero-gap
 # switch back to a shared account (slot 2, 2026-10-27: about 1 in 10 mixed switches; cause not
 # established, see ADR 0011). A second login from the same client state failed the same way each
-# time (3/3), so the retry restarts the client first. Only that disconnect is retried; every other
-# failure stops at once.
+# time (3/3), so the retry restarts the client first. A login answered LOGIN_DISCONNECTED leaves the
+# client on the login screen with the "disconnected" dialog, which the next attempt dismisses before
+# typing, so that one is retried in place. Every other failure stops at once.
 login_with_retry() {
     local attempt rc
+    [[ "$LOGIN_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "COA_LAB_LOGIN_ATTEMPTS must be a positive number"
     for ((attempt = 1; ; attempt++)); do
         rc=0
         ( cmd_login "$@" ) || rc=$?
-        [[ "$rc" == "$LOGIN_DISCONNECTED_EXIT" && "$attempt" -lt "$LOGIN_ATTEMPTS" ]] || return "$rc"
-        echo "WARN: the server disconnected the client during character selection; restarting it and logging in again" >&2
-        ( restart_client ) || return "$rc"
+        [[ "$attempt" -lt "$LOGIN_ATTEMPTS" ]] || return "$rc"
+        case "$rc" in
+            "$LOGIN_DISCONNECTED_EXIT")
+                echo "WARN: the server disconnected the client during character selection; restarting it and logging in again" >&2
+                ( restart_client ) || return "$rc" ;;
+            "$LOGIN_REJECTED_EXIT")
+                echo "WARN: the login was answered LOGIN_DISCONNECTED; logging in again" >&2 ;;
+            *) return "$rc" ;;
+        esac
     done
 }
 
@@ -795,26 +804,10 @@ except Exception:
 ' "$field" <<< "$json" 2> /dev/null
 }
 
-# Clicks the character-select screen's "Back" button (proportional to window size, same pattern as the
-# account-login field click in `cmd_login`; measured live, slot 2, 2026-10-26, 1024x768: pixel (966, 743) of
-# a (1024, 768) window, i.e. (0.943, 0.967) of width/height). Kept for reference, unused: this is the
-# `--window`-targeted `xdotool mousemove --window "$WINDOW" ... click 1` form (XSendEvent), which L3/L5 both
-# found registers reliably only as a separate, external invocation and not when driven from inside `login`'s
-# own process (cause never established). See `click_charselect_back_xtest` below for the form proven to work
-# in-process (L6).
-click_charselect_back() {
-    local geometry
-    geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || return 1
-    eval "$geometry"
-    xdotool mousemove --window "$WINDOW" $((WIDTH * 943 / 1000)) $((HEIGHT * 967 / 1000)) click 1
-}
-
-# Same click as click_charselect_back, delivered as XTEST fake input to the active window (activate the
-# window, then mousemove/click with no --window) instead of XSendEvent (mousemove --window ... click).
-# Measured live, slot 2, 2026-10-26, L6: this form registered the charselect-to-login transition 3/3 driven
-# from inside this script's own process (goto_login_screen_via_memory below), where the XSendEvent form above
-# had failed 2/2 in L5 and 4/4 in L3/ADR 0003. Why XTEST succeeds here and XSendEvent does not is not
-# established (not verified); recorded as the proven candidate per ADR 0004's follow-up list.
+# Clicks the character-select screen's "Back" button, at (0.943, 0.967) of the window (measured live,
+# slot 2, 2026-10-26, 1024x768: pixel (966, 743)), as XTEST fake input to the active window. The
+# XSendEvent form (`mousemove --window ... click`) failed 2/2 in L5 and 4/4 in L3/ADR 0003 when driven
+# from inside this script's process; this form registered 3/3 (L6, ADR 0005). Why is not established.
 click_charselect_back_xtest() {
     xtest_click_pct 943 967
 }
@@ -928,6 +921,7 @@ kick_via_soap() {
 CHARSELECT_BACK_WAIT="${COA_LAB_CHARSELECT_BACK_WAIT:-10}"
 CAMP_WAIT="${COA_LAB_CAMP_WAIT:-15}"
 KICK_WAIT="${COA_LAB_KICK_WAIT:-8}"
+KICK_DIALOG_WAIT="${COA_LAB_KICK_DIALOG_WAIT:-3}"
 DIALOG_DISMISS_WAIT="${COA_LAB_DIALOG_DISMISS_WAIT:-5}"
 # L12: bound for /camp's own confirmation once the account holds RBAC_PERM_INSTANT_LOGOUT
 # (grant_instant_logout_rbac): MiscHandler.cpp:535-536/567-571 calls LogoutPlayer(true) immediately
@@ -977,6 +971,7 @@ glue_login_dialog_present() {
 dismiss_login_dialog_via_memory() {
     glue_login_dialog_present || return 0
     click_login_dialog_dismiss || return 1
+    click_connection_help_dismiss || return 1
     glue_until login "$DIALOG_DISMISS_WAIT" > /dev/null
 }
 
@@ -1053,6 +1048,7 @@ goto_login_screen_via_memory() {
         character=$(lab_last_character) || character=""
         if [[ -n "$character" ]] && kick_via_soap "$character" \
             && glue_until login "$KICK_WAIT" > /dev/null; then
+            dismiss_kick_dialog || return 1
             clear_login_dialog_unconditionally
             return
         fi
@@ -1125,6 +1121,47 @@ except Exception:
 # 479); character-select srgb(0,56,56) (sum 112, the same point over the character-select scene's dark
 # background). LOGIN_SCREEN_BRIGHTNESS sits well between the two.
 LOGIN_SCREEN_BRIGHTNESS=300
+
+# The "You have been disconnected from the server." dialog covers the Username field with a red Okay
+# button at (0.5, 0.514) of the window; memory does not show it (see glue_login_dialog_present). Measured
+# at that point, 1024x768, slot 2, 2026-10-27: dialog srgb(67,1,0) to (230,1,0) (normal and highlighted
+# button), clean login screen srgb(29,27,19). After a `.kick` the dialog can appear after the client is
+# already on the login screen, so credentials typed at once went under it (2 of 4 switches after a fresh
+# start, LOGIN_DISCONNECTED).
+login_dialog_visible() {
+    local path px r g b geometry
+    geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || return 1
+    eval "$geometry"
+    path="$STATE_DIR/screen-check.png"
+    magick import -window "$WINDOW" "$path" 2> /dev/null || return 1
+    px=$(magick "$path" -format "%[pixel:p{$((WIDTH / 2)),$((HEIGHT * 514 / 1000))}]" info: 2> /dev/null) || return 1
+    IFS=',' read -r r g b _ <<< "${px#*(}"
+    r=${r//[^0-9]/}; g=${g//[^0-9]/}; b=${b//[^0-9]/}
+    [[ "$r" =~ ^[0-9]+$ && "$g" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ ]] || return 1
+    ((r > 50 && g < 15 && b < 15))
+}
+
+# Clicks Okay while the dialog is visible, then waits up to DIALOG_DISMISS_WAIT for it to go.
+dismiss_visible_login_dialog() {
+    login_dialog_visible || return 0
+    local deadline=$((SECONDS + DIALOG_DISMISS_WAIT))
+    xtest_click_pct 500 514 || return 1
+    while login_dialog_visible; do
+        ((SECONDS < deadline)) || return 1
+        "$SLEEP" 0.3
+    done
+}
+
+# A `.kick` always ends in that dialog: waits up to KICK_DIALOG_WAIT for it to appear, then dismisses it.
+dismiss_kick_dialog() {
+    local deadline=$((SECONDS + KICK_DIALOG_WAIT))
+    until login_dialog_visible; do
+        ((SECONDS < deadline)) || return 0
+        "$SLEEP" 0.3
+    done
+    dismiss_visible_login_dialog
+}
+
 screen_brightness() {
     local path px r g b
     path="$STATE_DIR/screen-check.png"
@@ -1306,6 +1343,9 @@ cmd_login() {
             || die "a result dialog is still on the account-login screen after trying to dismiss it" \
                    "(login_state stayed LOGIN_STATE_FAILED); see $STATE_DIR/screen-check.png."
     fi
+    dismiss_visible_login_dialog \
+        || die "the \"disconnected\" dialog is still over the login fields after clicking Okay;" \
+               "see $STATE_DIR/screen-check.png. Refusing to type credentials."
     echo "$account" > "$STATE_DIR/account"
     local geometry
     geometry=$(xdotool getwindowgeometry --shell "$WINDOW") || die "cannot read the size of window $WINDOW"
@@ -1344,7 +1384,9 @@ cmd_login() {
         settled_state=$(glue_field "$json" login_state)
         settled_result_name=$(glue_field "$json" login_result_name)
         if [[ "$settled_state" == "5" ]]; then
-            die "login failed: $settled_result_name" "(see $STATE_DIR/screen-check.png)"
+            printf 'ERROR: login failed: %s (see %s)\n' "$settled_result_name" "$STATE_DIR/screen-check.png" >&2
+            [[ "$settled_result_name" == LOGIN_DISCONNECTED ]] && exit "$LOGIN_REJECTED_EXIT"
+            exit 1
         fi
     fi
     if [[ -n "$character" ]]; then

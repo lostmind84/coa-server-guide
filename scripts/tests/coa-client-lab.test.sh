@@ -112,7 +112,10 @@ printf 'magick DISPLAY=%s %s\n' "$DISPLAY" "$*" >> "$FAKE_LOG"
 # bright (account-login-like) pixel by default, srgb(0,0,0) (character-select-like, LOGIN_SCREEN_BRIGHTNESS
 # or darker) when FAKE_SCREEN_DARK=1, so tests can exercise both the happy path and the refusal path.
 if [[ "$*" == *-format* && "$*" == *pixel:p* ]]; then
-    if [[ "${FAKE_SCREEN_DARK:-}" == 1 ]]; then
+    # login_dialog_visible samples (width/2, height*514/1000) = (640,370) of the fake 1280x720 window.
+    if [[ "${FAKE_DIALOG_STUCK:-}" == 1 && "$*" == *"p{640,370}"* ]]; then
+        echo 'srgb(150,1,0)'
+    elif [[ "${FAKE_SCREEN_DARK:-}" == 1 ]]; then
         echo 'srgb(0,0,0)'
     else
         echo 'srgb(200,200,200)'
@@ -693,6 +696,18 @@ run_lab stop
 assert_absent "stop removes the descriptor" "$lab_json"
 assert_absent "stop clears the preflight record" "$COA_LAB_ROOT/state/preflight"
 
+# A "disconnected" dialog that stays over the login fields stops login before any credential is typed.
+run_lab start 3
+: > "$FAKE_LOG"
+if FAKE_DIALOG_STUCK=1 COA_LAB_DIALOG_DISMISS_WAIT=0 run_lab login coalab1 secretpw Coalabone; then
+    fail "login refuses to type under a disconnected dialog that stays up"
+else
+    pass "login refuses to type under a disconnected dialog that stays up"
+fi
+assert_contains "login clicks the dialog's Okay" "$FAKE_LOG" "mousemove --sync 640 370"
+assert_not_contains "no credentials typed under the dialog" "$FAKE_LOG" "secretpw"
+run_lab stop
+
 # Routing: only the relay's read-only commands go through the relay once lab.json exists.
 export COA_LAB_RELAY="$WORK/bin/fake-relay"
 run_lab preflight 3
@@ -1080,7 +1095,7 @@ source_lab_functions() {
     printf '%s' "$tmp"
 }
 
-KICK_TEST_DIR=$(mktemp -d "$HOME/.cache/coa-client-lab-kicktest.XXXXXX")
+KICK_TEST_DIR=$(mktemp -d "$WORK/kicktest.XXXXXX")
 mkdir -p "$KICK_TEST_DIR/lab"
 : > "$KICK_TEST_DIR/lab/relay.env"
 KICK_CALL_LOG="$KICK_TEST_DIR/calls.log"
@@ -1131,7 +1146,7 @@ rm -rf "$KICK_TEST_DIR"
 
 # L12 (2026-10-27): grant_instant_logout_rbac (RBAC_PERM_INSTANT_LOGOUT, RBAC.h:52) -- same
 # source-and-stub-$RELAY pattern as kick_via_soap above.
-RBAC_TEST_DIR=$(mktemp -d "$HOME/.cache/coa-client-lab-rbactest.XXXXXX")
+RBAC_TEST_DIR=$(mktemp -d "$WORK/rbactest.XXXXXX")
 mkdir -p "$RBAC_TEST_DIR/lab"
 RBAC_CALL_LOG="$RBAC_TEST_DIR/calls.log"
 FUNCS_FILE=$(source_lab_functions)

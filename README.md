@@ -795,7 +795,9 @@ loading screen and lost. `login` now returns only once the addon answers a relay
 A zero-gap switch back to a shared account is sometimes disconnected by the server while the character list is
 shown (about 1 in 10; cause open). `login` then restarts the client and logs in once more
 (`COA_LAB_LOGIN_ATTEMPTS`, default 2): 15/15 mixed switches reached the right character, 13-23 s each, one at
-73 s through that retry (ADR 0011, addendum).
+73 s through that retry. After a `.kick`, `login` also waits for the "disconnected" dialog, found by the
+colour of its Okay button since memory does not show it, and dismisses it before typing: from a fresh start,
+16/16 mixed zero-gap switches, 15 at 14-26 s (ADR 0011, addendum).
 
 A second idea tried and reverted: making the same instant `/camp` the *primary* recovery for a **different**
 -account world switch too (ahead of `kick_via_soap`), reasoning that a graceful instant logout would avoid
