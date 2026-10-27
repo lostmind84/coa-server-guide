@@ -25,6 +25,7 @@ export COA_LAB_PREFIX="$WORK/lab-prefix"
 export COA_PROTONPATH="$WORK/proton"
 export COA_LAB_WINDOW_TIMEOUT=10
 export COA_LAB_SLEEP=true
+export COA_LAB_UI_READY_WAIT=0
 export FAKE_LOG="$WORK/fake.log"
 export FAKE_ETC="$WORK/etc"
 export FAKE_SLOT_STATE="$WORK/slot-state"
@@ -107,6 +108,20 @@ EOF
     cat > "$WORK/bin/magick" <<'EOF'
 #!/usr/bin/env bash
 printf 'magick DISPLAY=%s %s\n' "$DISPLAY" "$*" >> "$FAKE_LOG"
+# is_login_screen (coa-client-lab) samples one pixel via `-format "...p{X,Y}..." info:`. Answer with a
+# bright (account-login-like) pixel by default, srgb(0,0,0) (character-select-like, LOGIN_SCREEN_BRIGHTNESS
+# or darker) when FAKE_SCREEN_DARK=1, so tests can exercise both the happy path and the refusal path.
+if [[ "$*" == *-format* && "$*" == *pixel:p* ]]; then
+    # login_dialog_visible samples (width/2, height*514/1000) = (640,370) of the fake 1280x720 window.
+    if [[ "${FAKE_DIALOG_STUCK:-}" == 1 && "$*" == *"p{640,370}"* ]]; then
+        echo 'srgb(150,1,0)'
+    elif [[ "${FAKE_SCREEN_DARK:-}" == 1 ]]; then
+        echo 'srgb(0,0,0)'
+    else
+        echo 'srgb(200,200,200)'
+    fi
+    exit 0
+fi
 touch "${@: -1}"
 EOF
     cat > "$WORK/bin/coa-slot" <<'EOF'
@@ -249,6 +264,12 @@ assert_eq "start exits 0" "$?" "0"
 assert_contains "lab realmList" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" 'SET realmList "127.0.0.1:3924"'
 assert_contains "lab realmlist.wtf" "$COA_LAB_ROOT/ascension-lab/Data/enUS/realmlist.wtf" "set realmlist 127.0.0.1:3924"
 assert_contains "user realmList untouched" "$COA_USER_CLIENT/WTF/Config.wtf" 'SET realmList "127.0.0.1:3824"'
+# Sound is silenced at every start, readable profile included (reports/l7): the client rewrites Config.wtf
+# on exit, so this has to be reasserted every time, not only at `create`.
+for setting in 'Sound_EnableAllSound "0"' 'Sound_EnableSFX "0"' 'Sound_EnableAmbience "0"' \
+    'Sound_EnableMusic "0"' 'Sound_EnableErrorSpeech "0"' 'Sound_MasterVolume "0"'; do
+    assert_contains "start silences $setting" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" "SET $setting"
+done
 assert_contains "launched on workspace 9" "$FAKE_LOG" 'workspace = "9 silent"'
 assert_contains "gamescope size" "$FAKE_LOG" "gamescope -W 1920 -H 1080 -w 1920 -h 1080"
 assert_contains "lock holder" "$COA_LAB_ROOT/state/lock" "slot 3"
@@ -312,32 +333,35 @@ assert_contains "mute without pactl message" "$WORK/out" "pactl not installed: c
 : > "$FAKE_LOG"
 run_lab login labspike secretpw
 assert_contains "login clicks the account field" "$FAKE_LOG" "mousemove --window 4242 640 378 click 1"
-assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 60 labspike"
-assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 60 secretpw"
+assert_contains "login types account" "$FAKE_LOG" "type --window 4242 --delay 40 labspike"
+assert_contains "login types password" "$FAKE_LOG" "type --window 4242 --delay 40 secretpw"
 # Two Returns reach the world (submit the password, then enter the world) on the FIRST login of a lab
 # session: no dismiss Return yet, since nothing can have left a leftover dialog before any login was
 # attempted (confirmed live on slot 2, 2026-10-26: an unconditional dismiss Return on an untouched login
-# screen corrupted the account field instead of closing a dialog that was never there). The sound CVars
-# typed afterwards each open the chat with a Return of their own, so stop counting at the first /console
-# line and drop the Return that opened it.
+# screen corrupted the account field instead of closing a dialog that was never there). Sound is silenced
+# through Config.wtf at `start` (reports/l7), not through post-login /console chat any more, so these are
+# the only two Returns login itself ever sends.
 assert_eq "login's first attempt sends two Returns (submit, enter world), no dismiss yet" \
-    "$(awk '/--delay 40 \/console/ { print n - 1; found = 1; exit } /key --window 4242 Return$/ { n++ } END { if (!found) print n + 0 }' "$FAKE_LOG")" "2"
-assert_contains "login silences the client" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_EnableAllSound 0"
-assert_contains "login zeroes the master volume" "$FAKE_LOG" "type --window 4242 --delay 40 /console Sound_MasterVolume 0"
+    "$(grep -c 'key --window 4242 Return$' "$FAKE_LOG")" "2"
+assert_not_contains "login no longer silences the client over chat" "$FAKE_LOG" "/console Sound_"
 
-# A SECOND login in the same lab session (state/account already exists from the one above) does send the
-# dismiss Return, before the account field is clicked: only now could a leftover dialog exist.
+# A SECOND login in the same lab session (state/account already exists from the one above) no longer
+# tries to recover in place (an earlier /camp + character-select Back design, dropped: it failed to
+# reach the login screen 4/4 times driven inside one `login` process, cause never established; see
+# ADR 0003's follow-up decision). It restarts the lab client on the same slot instead, then takes the
+# same fresh-client path, so the second login succeeds rather than refusing.
 : > "$FAKE_LOG"
 run_lab login labspike secretpw
-assert_eq "login's second attempt sends three Returns (dismiss, submit, enter world)" \
-    "$(awk '/--delay 40 \/console/ { print n - 1; found = 1; exit } /key --window 4242 Return$/ { n++ } END { if (!found) print n + 0 }' "$FAKE_LOG")" "3"
-dismiss_line=$(awk '/key --window 4242 Return$/ { print NR; exit }' "$FAKE_LOG")
-click_line=$(awk '/mousemove --window 4242 640 378 click 1/ { print NR; exit }' "$FAKE_LOG")
-if [[ -n "$dismiss_line" && -n "$click_line" && "$dismiss_line" -lt "$click_line" ]]; then
-    pass "login's modal-dismiss Return happens before the account field click"
-else
-    fail "login's modal-dismiss Return happens before the account field click: dismiss=$dismiss_line click=$click_line"
-fi
+assert_eq "login's second attempt in the same session succeeds via a restart" "$?" "0"
+assert_contains "second login's restart re-reads the slot's env" "$FAKE_LOG" "coa-slot env 3"
+assert_contains "second login's restart re-launches the client" "$FAKE_LOG" 'workspace = "9 silent"'
+assert_contains "second login still clicks the account field after restarting" "$FAKE_LOG" \
+    "mousemove --window 4242 640 378 click 1"
+assert_contains "second login still types the password after restarting" "$FAKE_LOG" \
+    "type --window 4242 --delay 40 secretpw"
+
+run_lab stop
+run_lab start 3
 
 run_lab screenshot "$WORK/shot.png"
 assert_eq "screenshot prints path" "$(cat "$WORK/out")" "$WORK/shot.png"
@@ -562,16 +586,16 @@ config="$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf"
 : > "$FAKE_LOG"
 COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=nested run_lab start 3
 assert_eq "minimal start exits 0" "$?" "0"
-assert_contains "minimal resolution" "$config" 'SET gxResolution "800x600"'
+assert_contains "minimal resolution" "$config" 'SET gxResolution "1024x768"'
 for setting in 'maxFPS "10"' 'maxFPSBk "5"' 'farclip "177"' 'groundEffectDensity "16"' 'environmentDetail "0.5"' \
     'particleDensity "0.1"' 'weatherDensity "0"' 'spellEffectLevel "0"' 'specular "0"' 'projectedTextures "0"' \
     'textureFilteringMode "0"' 'baseMip "1"' 'ffxGlow "0"' 'ffxDeath "0"' 'showfootprints "0"'; do
     assert_contains "minimal sets $setting" "$config" "SET $setting"
 done
-assert_contains "minimal gamescope size" "$FAKE_LOG" "gamescope -W 800 -H 600 -w 800 -h 600"
+assert_contains "minimal gamescope size" "$FAKE_LOG" "gamescope -W 1024 -H 768 -w 1024 -h 768"
 run_lab stop
 COA_LAB_PROFILE=minimal run_lab start 3
-assert_contains "minimal defaults to headless" "$FAKE_LOG" "gamescope-argv --backend headless -W 800 -H 600"
+assert_contains "minimal defaults to headless" "$FAKE_LOG" "gamescope-argv --backend headless -W 1024 -H 768"
 run_lab stop
 assert_eq "minimal settings not duplicated" "$(grep -c '^SET maxFPS ' "$config")" "1"
 assert_eq "minimal resolution not duplicated" "$(grep -c '^SET gxResolution ' "$config")" "1"
@@ -588,7 +612,7 @@ run_lab stop
 COA_LAB_PROFILE=minimal COA_LAB_DISPLAY=headless run_lab start 3
 assert_eq "headless start exits 0" "$?" "0"
 assert_contains "headless backend" "$FAKE_LOG" \
-    "gamescope-argv --backend headless -W 800 -H 600 -w 800 -h 600 -r 10 -- umu-run Ascension.exe"
+    "gamescope-argv --backend headless -W 1024 -H 768 -w 1024 -h 768 -r 10 -- umu-run Ascension.exe"
 assert_not_contains "headless does not use hyprctl" "$FAKE_LOG" "hyprctl"
 run_lab status
 assert_contains "headless status shows the window" "$WORK/out" "window: 4242"
@@ -644,6 +668,7 @@ export COA_LAB_RELAY="$WORK/bin/fake-relay"
 run_lab start 3
 run_lab login coalab1 secretpw Coalabone
 assert_eq "login with character exits 0" "$?" "0"
+assert_contains "login waits for the in-world UI to answer a relay ping" "$FAKE_LOG" "probe --timeout 2 ping"
 lab_json="$COA_LAB_ROOT/state/lab.json"
 assert_file "descriptor written" "$lab_json"
 assert_eq "descriptor mode 600" "$(stat -c %a "$lab_json")" "600"
@@ -671,6 +696,18 @@ run_lab stop
 assert_absent "stop removes the descriptor" "$lab_json"
 assert_absent "stop clears the preflight record" "$COA_LAB_ROOT/state/preflight"
 
+# A "disconnected" dialog that stays over the login fields stops login before any credential is typed.
+run_lab start 3
+: > "$FAKE_LOG"
+if FAKE_DIALOG_STUCK=1 COA_LAB_DIALOG_DISMISS_WAIT=0 run_lab login coalab1 secretpw Coalabone; then
+    fail "login refuses to type under a disconnected dialog that stays up"
+else
+    pass "login refuses to type under a disconnected dialog that stays up"
+fi
+assert_contains "login clicks the dialog's Okay" "$FAKE_LOG" "mousemove --sync 640 370"
+assert_not_contains "no credentials typed under the dialog" "$FAKE_LOG" "secretpw"
+run_lab stop
+
 # Routing: only the relay's read-only commands go through the relay once lab.json exists.
 export COA_LAB_RELAY="$WORK/bin/fake-relay"
 run_lab preflight 3
@@ -693,17 +730,30 @@ done
 assert_contains "fresh pass for this slot is pass" "$lab_json" '"preflight": "pass"'
 assert_contains "descriptor records the preflight slot" "$lab_json" '"preflight_slot": 3'
 assert_contains "descriptor records the deploy time" "$lab_json" '"deployed_at": "2026-10-25T23:00:00+01:00"'
+run_lab login coalab1 secretpw Coalabone
+assert_contains "a login that restarts the client keeps the slot's preflight" "$lab_json" '"preflight": "pass"'
 
-# Stale preflight records never become "pass".
+# Stale preflight records never become "pass". Each scenario needs a fresh client first: login no
+# longer recovers in place on a second call in the same session, it restarts (cmd_stop removes
+# state/preflight), which would wipe the hand-written record below before write_descriptor ever read
+# it if the client were left running from the previous scenario.
+run_lab stop
+run_lab start 3
 printf 'pass slot 2 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "pass from another slot is stale" "$lab_json" '"preflight": "stale"'
+run_lab stop
+run_lab start 3
 printf 'pass slot 3 2026-10-25T22:00:00+01:00\n' > "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "pass older than the deploy is stale" "$lab_json" '"preflight": "stale"'
+run_lab stop
+run_lab start 3
 printf 'fail slot 3 %s\n' "$(date -Is)" > "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "fail stays fail" "$lab_json" '"preflight": "fail"'
+run_lab stop
+run_lab start 3
 rm -f "$COA_LAB_ROOT/state/preflight"
 run_lab login coalab1 secretpw Coalabone
 assert_contains "missing preflight is unknown" "$lab_json" '"preflight": "unknown"'
@@ -901,23 +951,31 @@ assert_eq "second call for the same character exits 0" "$?" "0"
 assert_eq "dedicated account password file is reused, not regenerated" "$(cat "$pwfile")" "$password1"
 assert_contains "second call sends the same reused password" "$FAKE_LOG" "\"password\": \"$password1\""
 
-# With an explicit --account, today's behavior is kept: empty password (e2eharness.DefaultPassword
-# applies), dedicated=false, and a warning once the account's final character count is 2+ (the Go
-# module reports this; the fake stands in for its account_characters field).
+# With an explicit --account (L9: shared accounts get the same treatment as dedicated ones), the
+# account's password is generated/reused through ensure_lab_password exactly like a dedicated
+# account, dedicated stays false, and a warning still fires once the account's final character count
+# is 2+ (the Go module reports this; the fake stands in for its account_characters field).
 : > "$FAKE_LOG"
 FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "Second", "class": 23, "created": true, "account_characters": ["First", "Second"]}' \
     run_lab character --slot 2 --account shared1 --character Second --race 5 --class 23
 assert_eq "character with explicit --account exits 0" "$?" "0"
-assert_contains "explicit --account request has no password override" "$FAKE_LOG" '"password": ""'
+shared_pwfile="$COA_LAB_ROOT/secrets/shared1.password"
+assert_file "explicit --account creates a secrets file too" "$shared_pwfile"
+assert_eq "explicit --account password file is mode 600" "$(stat -c %a "$shared_pwfile")" "600"
+shared_password1=$(cat "$shared_pwfile")
+[[ -n "$shared_password1" ]] && pass "explicit --account password file is non-empty" \
+    || fail "explicit --account password file is empty"
+assert_contains "explicit --account request carries the generated password" "$FAKE_LOG" \
+    "\"password\": \"$shared_password1\""
 assert_contains "explicit --account request is not dedicated" "$FAKE_LOG" '"dedicated": false'
 assert_contains "explicit --account warns once the account holds 2+ characters" "$WORK/out" \
     "account shared1 now holds 2 characters"
-assert_absent "explicit --account does not create a secrets file" "$COA_LAB_ROOT/secrets/shared1.password"
 
 : > "$FAKE_LOG"
 FAKE_GO_APPLY_OUT='{"account": "SHARED1", "character": "First", "class": 23, "created": true, "account_characters": ["First"]}' \
     run_lab character --slot 2 --account shared1 --character First --race 5 --class 23
 assert_not_contains "explicit --account with 1 character does not warn" "$WORK/out" "coa-client-lab login cannot"
+assert_eq "explicit --account password is reused, not regenerated" "$(cat "$shared_pwfile")" "$shared_password1"
 
 # --- login: character-select lookup (navigation itself is disabled; see select_character's comment:
 #     live on slot 2 the character list wraps circularly instead of clamping at the top, so a fixed
@@ -933,11 +991,22 @@ assert_not_contains "login does not send Down either" "$FAKE_LOG" "key --window 
 assert_contains "login reports the found index instead of acting on it" "$WORK/out" \
     "Coalabnecro is at character-list index 2"
 
+# A second `login` call in the same session (state/account already written by the one above) now
+# restarts the lab client rather than recovering in place (see cmd_login, ADR 0003's follow-up
+# decision). These tests are about the index-lookup fallback and the dedicated-account typing, not the
+# restart itself, so each restarts the fake lab client explicitly first, to keep FAKE_LOG free of the
+# restart's own launch lines (coa-slot env, hyprctl, gamescope) for the assertions that follow.
+run_lab stop
+run_lab start 3
+
 : > "$FAKE_LOG"
 FAKE_GO_INDEX_FAIL=1 run_lab login coalab1 secretpw Coalabnecro
 assert_eq "login still exits 0 when the index lookup fails" "$?" "0"
 assert_contains "login warns and falls back to the default highlight" "$WORK/out" \
     "could not find Coalabnecro in coalab1's character list"
+
+run_lab stop
+run_lab start 3
 
 : > "$FAKE_LOG"
 run_lab login coalab1 secretpw
@@ -946,11 +1015,21 @@ assert_not_contains "login without CHARACTER never looks up or navigates" "$FAKE
 # --- login CHARACTER: the dedicated-account form, resolving account and password the same way
 #     `character` derived and stored them (password1/pwfile from the character tests above) ---
 
+run_lab stop
+run_lab start 3
+
 : > "$FAKE_LOG"
 run_lab login Dedibot
 assert_eq "login CHARACTER (dedicated account) exits 0" "$?" "0"
-assert_contains "login CHARACTER types the derived account" "$FAKE_LOG" "type --window 4242 --delay 60 COALABDEDIBOT"
-assert_contains "login CHARACTER types the stored password" "$FAKE_LOG" "type --window 4242 --delay 60 $password1"
+assert_contains "login CHARACTER types the derived account" "$FAKE_LOG" "type --window 4242 --delay 40 COALABDEDIBOT"
+assert_contains "login CHARACTER types the stored password" "$FAKE_LOG" "type --window 4242 --delay 40 $password1"
+# L13: the credential fields are cleared with select-all + Delete, not a fixed BackSpace count -- a fixed
+# count left a previous, longer account's text only partly erased (reproduced live, slot 2, 2026-10-27:
+# "COALABCOALABRESLABS", the old account's text with the new one's tail appended) and the server/client
+# reject the resulting malformed username outright.
+assert_contains "login CHARACTER clears the username field with ctrl+a" "$FAKE_LOG" "key --window 4242 ctrl+a"
+assert_contains "login CHARACTER clears fields with Delete, not BackSpace" "$FAKE_LOG" "key --window 4242 Delete"
+assert_not_contains "login CHARACTER no longer sends a fixed BackSpace run" "$FAKE_LOG" "BackSpace"
 
 if run_lab login Nodedicatedaccount; then
     fail "login CHARACTER refuses when no dedicated account exists"
@@ -965,11 +1044,231 @@ else
     pass "login CHARACTER refuses a non-letters name"
 fi
 
+# --- login --account NAME CHARACTER: the shared-account form (L9), resolving NAME's generated
+#     password the same way (shared_password1/shared_pwfile from the character tests above), so no
+#     password is ever typed on this command line ---
+
+run_lab stop
+run_lab start 3
+
+: > "$FAKE_LOG"
+run_lab login --account shared1 Second
+assert_eq "login --account (shared account) exits 0" "$?" "0"
+assert_contains "login --account types the given account" "$FAKE_LOG" "type --window 4242 --delay 40 shared1"
+assert_contains "login --account types the stored shared password" "$FAKE_LOG" \
+    "type --window 4242 --delay 40 $shared_password1"
+
+if run_lab login --account nosuchaccount Second; then
+    fail "login --account refuses when no generated password exists"
+else
+    pass "login --account refuses when no generated password exists"
+fi
+assert_contains "login --account refusal names the missing account" "$WORK/out" \
+    "no generated password for account nosuchaccount"
+
+if run_lab login --account shared1 'Bad Name'; then
+    fail "login --account refuses a non-letters character name"
+else
+    pass "login --account refuses a non-letters character name"
+fi
+
+if run_lab login --account shared1; then
+    fail "login --account refuses without a character"
+else
+    pass "login --account refuses without a character"
+fi
+assert_contains "login --account usage names the missing character" "$WORK/out" \
+    "usage: coa-client-lab login --account NAME CHARACTER"
+
 if run_lab login one two three four; then
     fail "login refuses more than 3 arguments"
 else
     pass "login refuses more than 3 arguments"
 fi
+
+# L11 (2026-10-27): kick_via_soap's retry count/stop-on-success, by sourcing the script's function
+# definitions (the same `sed '$d'` trick as gamescope_starttime_from_script above) and stubbing $RELAY.
+source_lab_functions() {
+    local tmp
+    tmp=$(mktemp)
+    sed '$d' "$SCRIPT" > "$tmp"
+    printf '%s' "$tmp"
+}
+
+KICK_TEST_DIR=$(mktemp -d "$WORK/kicktest.XXXXXX")
+mkdir -p "$KICK_TEST_DIR/lab"
+: > "$KICK_TEST_DIR/lab/relay.env"
+KICK_CALL_LOG="$KICK_TEST_DIR/calls.log"
+
+cat > "$KICK_TEST_DIR/relay_always_fails" <<'EOF'
+#!/usr/bin/env bash
+echo "call" >> "$KICK_CALL_LOG"
+echo "coa-lab-relay: Syntax: .kick [\$charactername] [\$reason]" >&2
+exit 1
+EOF
+chmod +x "$KICK_TEST_DIR/relay_always_fails"
+
+FUNCS_FILE=$(source_lab_functions)
+: > "$KICK_CALL_LOG"
+out=$(KICK_CALL_LOG="$KICK_CALL_LOG" COA_LAB_ROOT="$KICK_TEST_DIR/lab" \
+      COA_LAB_RELAY="$KICK_TEST_DIR/relay_always_fails" COA_LAB_SLEEP=true \
+      COA_LAB_KICK_RETRY_ATTEMPTS=4 COA_LAB_KICK_RETRY_WAIT=0 \
+      bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres" 2>&1)
+rc=$?
+assert_eq "kick_via_soap retries exactly KICK_RETRY_ATTEMPTS times" "$(wc -l < "$KICK_CALL_LOG")" "4"
+assert_eq "kick_via_soap returns 1 when every attempt fails" "$rc" "1"
+[[ "$out" == *Syntax* ]] && pass "kick_via_soap reports stderr instead of discarding it" \
+    || fail "kick_via_soap reports stderr instead of discarding it: got [$out]"
+
+cat > "$KICK_TEST_DIR/relay_second_try" <<'EOF'
+#!/usr/bin/env bash
+echo "call" >> "$KICK_CALL_LOG"
+if [[ -f "$KICK_CALL_LOG.once" ]]; then
+    echo "Player Coalabres kicked."
+    exit 0
+fi
+: > "$KICK_CALL_LOG.once"
+exit 1
+EOF
+chmod +x "$KICK_TEST_DIR/relay_second_try"
+
+: > "$KICK_CALL_LOG"
+rm -f "$KICK_CALL_LOG.once"
+KICK_CALL_LOG="$KICK_CALL_LOG" COA_LAB_ROOT="$KICK_TEST_DIR/lab" \
+    COA_LAB_RELAY="$KICK_TEST_DIR/relay_second_try" COA_LAB_SLEEP=true \
+    COA_LAB_KICK_RETRY_ATTEMPTS=4 COA_LAB_KICK_RETRY_WAIT=0 \
+    bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres"
+rc=$?
+assert_eq "kick_via_soap stops retrying as soon as a call succeeds" "$(wc -l < "$KICK_CALL_LOG")" "2"
+assert_eq "kick_via_soap returns 0 once a call succeeds" "$rc" "0"
+rm -f "$FUNCS_FILE"
+rm -rf "$KICK_TEST_DIR"
+
+# L12 (2026-10-27): grant_instant_logout_rbac (RBAC_PERM_INSTANT_LOGOUT, RBAC.h:52) -- same
+# source-and-stub-$RELAY pattern as kick_via_soap above.
+RBAC_TEST_DIR=$(mktemp -d "$WORK/rbactest.XXXXXX")
+mkdir -p "$RBAC_TEST_DIR/lab"
+RBAC_CALL_LOG="$RBAC_TEST_DIR/calls.log"
+FUNCS_FILE=$(source_lab_functions)
+
+# No relay.env at all: skipped, not a hard failure, no relay invoked.
+: > "$RBAC_CALL_LOG"
+out=$(RBAC_CALL_LOG="$RBAC_CALL_LOG" COA_LAB_ROOT="$RBAC_TEST_DIR/lab" \
+      COA_LAB_RELAY="$RBAC_TEST_DIR/should_not_run" \
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac COALABRES" 2>&1)
+rc=$?
+assert_eq "grant_instant_logout_rbac returns 1 with no relay.env" "$rc" "1"
+[[ "$out" == *"no $RBAC_TEST_DIR/lab/relay.env"* ]] && pass "grant_instant_logout_rbac warns about the missing relay.env" \
+    || fail "grant_instant_logout_rbac warns about the missing relay.env: got [$out]"
+assert_eq "grant_instant_logout_rbac makes no relay call with no relay.env" "$(wc -l < "$RBAC_CALL_LOG")" "0"
+
+# Account name does not carry the lab prefix: refused (warn + return 1), never calls the relay.
+: > "$RBAC_TEST_DIR/lab/relay.env"
+: > "$RBAC_CALL_LOG"
+cat > "$RBAC_TEST_DIR/relay_counts" <<EOF
+#!/usr/bin/env bash
+echo "call \$*" >> "$RBAC_CALL_LOG"
+echo "Granted permission 1 (INSTANT_LOGOUT) realmId -1 to account 5 (PLAYERONE)"
+EOF
+chmod +x "$RBAC_TEST_DIR/relay_counts"
+out=$(RBAC_CALL_LOG="$RBAC_CALL_LOG" COA_LAB_ROOT="$RBAC_TEST_DIR/lab" \
+      COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac PLAYERONE" 2>&1)
+rc=$?
+assert_eq "grant_instant_logout_rbac refuses a non-lab account" "$rc" "1"
+[[ "$out" == *"not a COALAB"* ]] && pass "grant_instant_logout_rbac refusal names the prefix" \
+    || fail "grant_instant_logout_rbac refusal names the prefix: got [$out]"
+assert_eq "grant_instant_logout_rbac makes no relay call for a non-lab account" "$(wc -l < "$RBAC_CALL_LOG")" "0"
+
+# A COALAB* account (case-insensitive) succeeds on the first grant (acore_string 74 wording).
+: > "$RBAC_CALL_LOG"
+COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_counts" \
+    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres"
+rc=$?
+assert_eq "grant_instant_logout_rbac succeeds for a COALAB* account" "$rc" "0"
+assert_contains "grant_instant_logout_rbac calls the relay with the grant command" "$RBAC_CALL_LOG" \
+    "rbac account grant Coalabres 1"
+
+# Idempotent: already-granted (acore_string 72 wording) also counts as success, not a failure.
+cat > "$RBAC_TEST_DIR/relay_already" <<'EOF'
+#!/usr/bin/env bash
+echo "Could not grant permission 1 (INSTANT_LOGOUT) realmId -1. Account 5 (COALABRES) already has that permission"
+EOF
+chmod +x "$RBAC_TEST_DIR/relay_already"
+COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_already" \
+    bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres"
+assert_eq "grant_instant_logout_rbac treats 'already has that permission' as success" "$?" "0"
+
+# An unexpected relay answer (neither granted nor already-granted wording) is reported, not silently OK.
+cat > "$RBAC_TEST_DIR/relay_weird" <<'EOF'
+#!/usr/bin/env bash
+echo "something else entirely"
+EOF
+chmod +x "$RBAC_TEST_DIR/relay_weird"
+out=$(COA_LAB_ROOT="$RBAC_TEST_DIR/lab" COA_LAB_RELAY="$RBAC_TEST_DIR/relay_weird" \
+      bash -c "source \"$FUNCS_FILE\"; grant_instant_logout_rbac Coalabres" 2>&1)
+rc=$?
+assert_eq "grant_instant_logout_rbac fails on an unexpected relay answer" "$rc" "1"
+[[ "$out" == *"unexpected relay output"* ]] && pass "grant_instant_logout_rbac names the unexpected output" \
+    || fail "grant_instant_logout_rbac names the unexpected output: got [$out]"
+rm -rf "$RBAC_TEST_DIR"
+
+# L12: goto_charselect_via_memory -- the same-account fast path's logout-to-charselect step, with
+# glue_state/cmd_chat/glue_until stubbed by redefining them after sourcing (no real client needed).
+: > "$FAKE_LOG"
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { echo '{\"current_screen\": \"charselect\", \"in_world\": false}'; }
+cmd_chat() { echo 'should not be called'; return 1; }
+goto_charselect_via_memory
+")
+rc=$?
+assert_eq "goto_charselect_via_memory is a no-op already at character-select" "$rc" "0"
+
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { echo '{\"current_screen\": \"ingame\", \"in_world\": true}'; }
+cmd_chat() { [[ \"\$1\" == '/camp' ]]; }
+glue_until() { [[ \"\$1\" == 'charselect-loaded' ]]; }
+goto_charselect_via_memory
+")
+assert_eq "goto_charselect_via_memory logs out and confirms charselect-loaded from world" "$?" "0"
+
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { echo '{\"current_screen\": \"ingame\", \"in_world\": true}'; }
+cmd_chat() { return 0; }
+glue_until() { return 1; }
+goto_charselect_via_memory
+")
+assert_eq "goto_charselect_via_memory fails when charselect-loaded never confirms" "$?" "1"
+
+out=$(bash -c "
+source \"$FUNCS_FILE\"
+glue_state() { return 1; }
+goto_charselect_via_memory
+")
+assert_eq "goto_charselect_via_memory fails when memory is unusable" "$?" "1"
+
+# L13: clear_login_dialog_unconditionally must try BOTH dialogs' Okay buttons -- the standard Blizzard
+# disconnect popup (click_login_dialog_dismiss, (0.5, 0.517)) and the custom "Project Descension - Connection
+# Help" popup (click_connection_help_dismiss, (0.697, 0.792)) -- since current_screen alone cannot tell which,
+# if either, was actually showing (reproduced live, slot 2, 2026-10-27: the custom popup's Okay button sits
+# well outside click_login_dialog_dismiss's point, so only clicking that point never dismissed it).
+: > "$FAKE_LOG"
+out=$(WINDOW=4242 bash -c "
+source \"$FUNCS_FILE\"
+WINDOW=4242
+glue_until() { return 0; }
+clear_login_dialog_unconditionally
+")
+rc=$?
+assert_eq "clear_login_dialog_unconditionally exits 0" "$rc" "0"
+assert_contains "clear_login_dialog_unconditionally clicks the standard dialog's Okay point" "$FAKE_LOG" \
+    "mousemove --sync 640 372"
+assert_contains "clear_login_dialog_unconditionally also clicks the Connection-Help dialog's Okay point" \
+    "$FAKE_LOG" "mousemove --sync 892 570"
+rm -f "$FUNCS_FILE"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

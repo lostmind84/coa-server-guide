@@ -10,6 +10,21 @@ read-only `/proc/<pid>/mem` open) for every read; no write syscall, no ptrace at
     coa-lab-mem objects                      guid, type, entry, name for every object in the object manager
     coa-lab-mem spell-db                     g_spellDB summary: record count, min/max spell id
     coa-lab-mem spell ID                     the client's loaded Spell.dbc row for ID, or "not loaded"
+    coa-lab-mem glue                         glue screen state: current screen, in-world flag, character-select
+                                              selection index and character names
+    coa-lab-mem glue --until STATE --timeout S
+                                              runs the guards once, then polls internally (0.1s) for STATE
+                                              (login|charselect|charselect-loaded|in-world|login-clean|
+                                              login-settled), printing the final JSON and exiting non-zero on
+                                              timeout. Only `in-world` resolves the object manager (see
+                                              resolve_object_manager's comment); the other states read only
+                                              the cheap glue globals. `login-clean` is the account-login
+                                              screen on a client that has never recorded a failed login this
+                                              session (login_state is not LOGIN_STATE_FAILED) -- NOT a
+                                              reliable "dialog dismissed" signal, see glue_matches' own
+                                              comment; `login-settled` is reached once a login attempt either
+                                              loads the character list or fails (login_state ==
+                                              LOGIN_STATE_FAILED), whichever comes first.
 
 Global options: --pid (override discovery, still guarded), --instance (or COA_LAB_INSTANCE; state directory
 layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
@@ -64,6 +79,7 @@ import re
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 LIBC = ctypes.CDLL("libc.so.6", use_errno=True)
@@ -133,6 +149,109 @@ SPELLREC_DESCRIPTION_PTR_OFF = 0x228     # validated
 SPELLREC_TOOLTIP_PTR_OFF = 0x22C         # validated (not in the decompilation excerpt; found by pattern + file match)
 SPELLREC_SCHOOL_MASK_OFF = 0x284         # validated (file offset 900, shifted by the 256-byte string shrink)
 SPELLREC_STRING_MAXLEN = 1024
+
+# Glue (login/character-select) screen state. wowdecomp has no licence: addresses and layouts only, never
+# copied code. `CGlueMgr::m_currentScreen` (WoW/Source/Glue/CGlueMgr.h:55, address WoW/Source/Glue/CGlueMgr.cpp:152
+# "// STATIC: 0x00B6A9E0"): set by CGlueMgr::SetScreen on every glue screen transition ("login", "charselect",
+# "charcreate", ...) but, read live, is *not* cleared or updated on entering the world -- it keeps the last glue
+# screen's name (validated live: reads "charselect" while already in world after a character-select login). An
+# empty object-manager resolution (see `resolve_object_manager`) is the in-world signal instead, already used by
+# `check`/`player`/`unit`/`objects`.
+# `CCharacterSelection::s_selectionIndex` (WoW/Source/Glue/CharacterSelection.h:18, address
+# WoW/Source/Glue/CharacterSelection.cpp:47 "// STATIC: 0x00AC436C"): validated live -- -1 with no character
+# list loaded (account-login screen), 0 on a fresh character-select screen matching the first highlighted
+# character, and moves 0->1 after one Down keypress, matching the client's own highlight (screenshot-confirmed).
+# `CCharacterSelection::s_characterList` (WoW/Source/Glue/CharacterSelection.h:17, address
+# WoW/Source/Glue/CharacterSelection.cpp:62 "// STATIC: 0x00B6B238"): a TSGrowableArray<CharacterSelectionDisplay>
+# (Engine/Source/Storm/H/stpl.h:88-100, TSBaseArray<T>: alloc +0, count +4, data +8 -- the same base layout
+# already validated for the aura array's dynamic mode). Entry stride is sizeof(CharacterSelectionDisplay)
+# (WoW/Source/Glue/CharacterSelectionDisplay.h:14-18): m_characterInfo at +0, m_component (a pointer) at +0x188,
+# so sizeof(CHARACTER_INFO) == 0x188 and the stride including CharacterSelectionDisplay's own trailing fields
+# (m_petModel, m_petAlpha, unused_0194, the last ending at +0x198) is 0x198 -- validated live (not file-sourced):
+# with one character the list read exactly one entry whose name matched; with two, entry 0 and entry 1 (stride
+# 0x198 apart) read back the two distinct character names the screen showed, and after a Down keypress the
+# highlighted entry in the screenshot was exactly s_characterList[s_selectionIndex] by name. Name field
+# CHARACTER_INFO::m_name at +0x08 (WoW/Source/WowServices/RealmConnection.h:19 "char m_name [48]") -- validated
+# live against both characters' names. The list is cleared on entering the world (CharacterSelection.cpp:103,
+# `s_characterList.Clear()`; validated live: count reads 0 once in world).
+GLUE_CURRENT_SCREEN = 0x00B6A9E0    # CGlueMgr::m_currentScreen, char[64] -- validated
+GLUE_SELECTION_INDEX = 0x00AC436C  # CCharacterSelection::s_selectionIndex, int32_t -- validated
+GLUE_CHARACTER_LIST = 0x00B6B238   # CCharacterSelection::s_characterList, TSGrowableArray -- validated
+GLUE_CHARLIST_ALLOC_OFF = 0x00
+GLUE_CHARLIST_COUNT_OFF = 0x04
+GLUE_CHARLIST_DATA_OFF = 0x08
+GLUE_CHARLIST_ENTRY_SIZE = 0x198   # sizeof(CharacterSelectionDisplay) -- validated live, not in the decompilation
+GLUE_CHARLIST_NAME_OFF = 0x08      # CharacterSelectionDisplay::m_characterInfo.m_name -- validated
+
+# The client's own login state machine (L11, 2026-10-27), to detect and dismiss a leftover result dialog
+# (e.g. "You have been disconnected from the server") before typing credentials, and to fail fast on a
+# login failure instead of waiting out a fixed ceiling. wowdecomp has no licence: addresses, enum values and
+# layouts read, no code copied. Every `CGlueMgr::` static's address below is its own `// STATIC: 0x...`
+# comment, immediately preceding the field's definition, in `WoW/Source/Glue/CGlueMgr.cpp`:
+#   m_loginResult            line 103-104 (STATIC 0x00AC3DA0)
+#   m_loginState              line 106-107 (STATIC 0x00AC3DA4)
+#   m_lastLoginResult        line 109-110 (STATIC 0x00AC3DA8)
+#   m_lastLoginState          line 112-113 (STATIC 0x00AC3DAC)
+#   m_disconnectPending      line 166-167 (STATIC 0x00B6AA30)
+#   m_reconnect               line 169-170 (STATIC 0x00B6AA34)
+#   m_accountName            line 178-179 (STATIC 0x00B6AA40, char[1280])
+#   m_displayingQueueDialog  line 187-188 (STATIC 0x00B6AF48)
+#   m_showedDisconnect       line 256-257 (STATIC 0x00B6AFA0)
+#   m_serverAlert            line 139-140 (STATIC 0x00B6A190, char[2048])
+# All ten addresses are internally consistent with the already-validated GLUE_CURRENT_SCREEN (0xB6A9E0,
+# char[64], ends exactly at m_simpleTop/0xB6AA20) and with each other: m_accountName's 1280-byte span ends
+# exactly at m_matrixRemaining's own STATIC address (0xB6AA40 + 0x500 == 0xB6AF40), and the four
+# login-state/result int32_t's are each exactly 4 bytes apart, matching their declaration order.
+#
+# `LOGIN_STATE`/`LOGIN_RESULT` enum values are from `WoW/Source/WowServices/Types.h:30-71,75-94` (a file
+# unrelated to CGlueMgr.cpp). Validated live, slot 2, 2026-10-27, on the brief's own reproduction (login
+# screen with a "You have been disconnected from the server" dialog over the Username field): read
+# m_loginState == 5 and m_loginResult == 21, which independently decode via that enum to
+# LOGIN_STATE_FAILED and LOGIN_DISCONNECTED -- exactly the state/result pair for the dialog on screen.
+# m_lastLoginState/m_lastLoginResult read the same values in that case (the most recent login attempt).
+# m_disconnectPending and m_showedDisconnect both read 0 in that same, confirmed-dialog-visible state --
+# live-measured, but not usable as a dialog-presence signal (edge-triggered, already consumed by the time
+# the dialog is visible); login_state == LOGIN_STATE_FAILED is the field that stays true for as long as the
+# dialog is on screen, and is what this script's callers poll instead.
+# m_accountName, read live in that same state, held a 32-character hex-looking string, not the plaintext
+# account name shown in the (partly obscured) Username field; the cause is not established (not verified).
+# Reported here as a raw, honest read (never interpreted) for whichever future session investigates it.
+GLUE_LOGIN_RESULT = 0x00AC3DA0            # CGlueMgr::m_loginResult, int32_t -- validated (see above)
+GLUE_LOGIN_STATE = 0x00AC3DA4             # CGlueMgr::m_loginState, int32_t -- validated
+GLUE_LAST_LOGIN_RESULT = 0x00AC3DA8       # CGlueMgr::m_lastLoginResult, int32_t -- validated
+GLUE_LAST_LOGIN_STATE = 0x00AC3DAC        # CGlueMgr::m_lastLoginState, int32_t -- validated
+GLUE_DISCONNECT_PENDING = 0x00B6AA30      # CGlueMgr::m_disconnectPending, int32_t -- validated address,
+                                           # live value not usable as a level signal (see comment above)
+GLUE_RECONNECT = 0x00B6AA34               # CGlueMgr::m_reconnect, int32_t -- validated address, not yet
+                                           # exercised live (no reconnect scenario reproduced this session)
+GLUE_ACCOUNT_NAME = 0x00B6AA40            # CGlueMgr::m_accountName, char[1280] -- validated address,
+                                           # live content not yet explained (see comment above)
+GLUE_DISPLAYING_QUEUE_DIALOG = 0x00B6AF48  # CGlueMgr::m_displayingQueueDialog, int32_t -- validated address,
+                                            # not yet exercised live (no queue scenario reproduced this session)
+GLUE_SHOWED_DISCONNECT = 0x00B6AFA0       # CGlueMgr::m_showedDisconnect, int32_t -- validated address,
+                                           # live value not usable as a level signal (see comment above)
+GLUE_SERVER_ALERT = 0x00B6A190            # CGlueMgr::m_serverAlert, char[2048] -- validated address and
+                                           # content (the client's own MOTD HTML, read live, matches the
+                                           # "SERVERALERT:" tag format at WoW/Source/Glue/CGlueMgr.cpp:116)
+
+LOGIN_STATE_FAILED = 5   # WoW/Source/WowServices/Types.h:81 -- validated live (see comment above)
+
+# WoW/Source/WowServices/Types.h:30-71 -- read from source, not invented; not every value has been seen live.
+LOGIN_RESULT_NAMES = {
+    0: "LOGIN_OK", 1: "LOGIN_INVALID_CHALLENGE_MESSAGE", 2: "LOGIN_SRP_ERROR",
+    3: "LOGIN_INVALID_PROOF_MESSAGE", 4: "LOGIN_BAD_SERVER_PROOF", 5: "LOGIN_INVALID_RECODE_MESSAGE",
+    6: "LOGIN_BAD_SERVER_RECODE_PROOF", 7: "LOGIN_UNKNOWN_ACCOUNT", 8: "LOGIN_UNKNOWN_ACCOUNT_PIN",
+    9: "LOGIN_UNKNOWN_ACCOUNT_CALL", 10: "LOGIN_INCORRECT_PASSWORD", 11: "LOGIN_FAILED",
+    12: "LOGIN_SERVER_DOWN", 13: "LOGIN_BANNED", 14: "LOGIN_BADVERSION", 15: "LOGIN_ALREADYONLINE",
+    16: "LOGIN_NOTIME", 17: "LOGIN_DBBUSY", 18: "LOGIN_SUSPENDED", 19: "LOGIN_PARENTALCONTROL",
+    20: "LOGIN_LOCKED_ENFORCED", 21: "LOGIN_DISCONNECTED", 22: "LOGIN_ACCOUNT_CONVERTED",
+    23: "LOGIN_ANTI_INDULGENCE", 24: "LOGIN_EXPIRED", 25: "LOGIN_TRIAL_EXPIRED", 26: "LOGIN_NO_GAME_ACCOUNT",
+    27: "LOGIN_AUTH_OUTAGE", 28: "LOGIN_GAME_ACCOUNT_LOCKED", 29: "LOGIN_NO_BATTLENET_MANAGER",
+    30: "LOGIN_NO_BATTLENET_APPLICATION", 31: "LOGIN_MALFORMED_ACCOUNT_NAME", 32: "LOGIN_USE_GRUNT",
+    33: "LOGIN_TOO_FAST", 34: "LOGIN_CHARGEBACK", 35: "LOGIN_IGR_WITHOUT_BNET", 36: "LOGIN_UNLOCKABLE_LOCK",
+    37: "LOGIN_CONVERSION_REQUIRED", 38: "LOGIN_UNABLE_TO_DOWNLOAD_MODULE",
+    39: "LOGIN_NO_GAME_ACCOUNTS_IN_REGION", 40: "LOGIN_ACCOUNT_LOCKED",
+}
 
 USER_CLIENT_DEFAULT = Path.home() / "CoaServer/client/ascension-live"
 
@@ -437,9 +556,50 @@ def find_teb64_candidates(pid: int, regions=None) -> list:
 # Object manager resolution
 # ---------------------------------------------------------------------------
 
-def resolve_object_manager(pid: int, tls: dict) -> dict:
-    tls_index, delta = tls["tls_index"], tls["s_curmgr_delta"]
-    for teb64 in find_teb64_candidates(pid):
+# The TEB64 page-by-page scan in `find_teb64_candidates` is the expensive part of resolving the object
+# manager (measured: ~300k reads, ~1.5-2s). Once a (teb64, tls_array) pair is found whose tls_index slot
+# genuinely belongs to the game thread, that pair never moves for the life of the process: the thread and
+# its TEB are allocated once. `teb-cache.json` (one per state dir, so per lab slot/instance) remembers it,
+# keyed by (pid, process start time) so a restarted client (new pid, or the same pid reused after a crash)
+# never reuses a stale address. Caching is proven safe only by always re-deriving `mgr` itself (the actual
+# object-manager pointer) from the cached tls_array on every call -- a null `mgr` is a legitimate
+# "not in world right now" answer, not evidence the cache is stale.
+def _teb_cache_path(state_dir: Path) -> Path:
+    return state_dir / "teb-cache.json"
+
+
+def _proc_starttime(pid: int, proc_root: Path = Path("/proc")) -> int:
+    # Field 22 of /proc/<pid>/stat (clock ticks since boot); same parsing as coa-client-lab's own
+    # gamescope_starttime (split after the last ')' so a comm field cannot shift the fixed fields).
+    stat = (proc_root / str(pid) / "stat").read_text()
+    rest = stat[stat.rindex(")") + 2:].split()
+    return int(rest[19])
+
+
+def _load_teb_cache(state_dir: Path, pid: int, starttime: int) -> dict:
+    try:
+        data = json.loads(_teb_cache_path(state_dir).read_text())
+    except (OSError, ValueError):
+        return None
+    if data.get("pid") == pid and data.get("starttime") == starttime:
+        return data
+    return None
+
+
+def _save_teb_cache(state_dir: Path, pid: int, starttime: int, teb64: int, tls_array: int) -> None:
+    try:
+        _teb_cache_path(state_dir).write_text(
+            json.dumps({"pid": pid, "starttime": starttime, "teb64": teb64, "tls_array": tls_array}))
+    except OSError:
+        pass
+
+
+def _candidate_tls_arrays(pid: int, teb64_list) -> list:
+    """For every TEB64 candidate, resolve its (teb64, tls_array) pair -- a handful of reads each, cheap
+    next to the page scan that found the candidates. Kept separate from the final mgr read so a caller can
+    reuse this list across repeated polls without rescanning (see poll_glue_until)."""
+    candidates = []
+    for teb64 in teb64_list:
         teb32 = teb64 + 0x2000
         try:
             teb32_data = read_bytes(pid, teb32, 0x30)
@@ -450,28 +610,62 @@ def resolve_object_manager(pid: int, tls: dict) -> dict:
         tls_array = struct.unpack_from("<I", teb32_data, 0x2C)[0]
         if tls_array == 0:
             continue
+        candidates.append((teb64, tls_array))
+    return candidates
+
+
+def _mgr_from_tls_array(pid: int, tls_array: int, tls_index: int, delta: int) -> int:
+    """0 is a legitimate answer (this thread's s_curMgr is currently null, e.g. not in world); a bad or
+    unmapped address raises MemoryError_, the caller's signal that the candidate itself is no longer valid."""
+    tls_slot = read_u32(pid, tls_array + tls_index * 4)
+    if tls_slot == 0:
+        return 0
+    return read_u32(pid, tls_slot + delta)
+
+
+def resolve_object_manager(pid: int, tls: dict, state_dir: Path = None, scan_cache: dict = None) -> dict:
+    tls_index, delta = tls["tls_index"], tls["s_curmgr_delta"]
+    starttime = None
+    if state_dir is not None:
         try:
-            tls_slot = read_u32(pid, tls_array + tls_index * 4)
+            starttime = _proc_starttime(pid)
+        except (OSError, ValueError, IndexError):
+            starttime = None
+    if starttime is not None:
+        cached = _load_teb_cache(state_dir, pid, starttime)
+        if cached is not None:
+            try:
+                mgr = _mgr_from_tls_array(pid, cached["tls_array"], tls_index, delta)
+            except MemoryError_:
+                mgr = None  # cache entry no longer maps; fall through to a fresh scan below
+            if mgr is not None:
+                if mgr:
+                    return {"address": mgr, "via": "tls_cached", "teb64": cached["teb64"],
+                            "tls_array": cached["tls_array"], "validated": True}
+                raise MemoryError_("cached game thread's s_curMgr is null (not in world)")
+    if scan_cache is not None and scan_cache.get("candidates") is not None:
+        candidates = scan_cache["candidates"]
+    else:
+        candidates = _candidate_tls_arrays(pid, find_teb64_candidates(pid))
+        if scan_cache is not None:
+            scan_cache["candidates"] = candidates
+    for teb64, tls_array in candidates:
+        try:
+            mgr = _mgr_from_tls_array(pid, tls_array, tls_index, delta)
         except MemoryError_:
             continue
-        if tls_slot == 0:
-            continue
-        try:
-            mgr = read_u32(pid, tls_slot + delta)
-        except MemoryError_:
-            continue
-        if mgr == 0:
-            continue
-        return {"address": mgr, "via": "tls", "teb64": teb64, "teb32": teb32,
-                "tls_array": tls_array, "tls_slot": tls_slot, "validated": True}
+        if mgr:
+            if starttime is not None:
+                _save_teb_cache(state_dir, pid, starttime, teb64, tls_array)
+            return {"address": mgr, "via": "tls", "teb64": teb64, "tls_array": tls_array, "validated": True}
     try:
         saved = read_u32(pid, S_SAVED_OBJMGR)
     except MemoryError_:
         saved = 0
     if saved:
         return {"address": saved, "via": "s_savedObjMgr", "validated": False}
-    raise MemoryError_("could not resolve the object manager (no thread's TLS slot held a non-null "
-                        "s_curMgr, and the s_savedObjMgr backup is null)")
+    raise MemoryError_("could not resolve the object manager (no cached or candidate thread's s_curMgr "
+                        "was non-null, and the s_savedObjMgr backup is null)")
 
 
 def object_manager_summary(pid: int, mgr: int) -> dict:
@@ -685,10 +879,142 @@ def find_node_by_guid(pid: int, mgr: int, guid: int) -> int:
     raise MemoryError_(f"no object with guid {guid:#x} in the object manager")
 
 
-def cmd_check(pid: int, guards: dict) -> dict:
+def read_glue_character_list(pid: int) -> list:
+    alloc = read_u32(pid, GLUE_CHARACTER_LIST + GLUE_CHARLIST_ALLOC_OFF)
+    count = read_u32(pid, GLUE_CHARACTER_LIST + GLUE_CHARLIST_COUNT_OFF)
+    data = read_u32(pid, GLUE_CHARACTER_LIST + GLUE_CHARLIST_DATA_OFF)
+    if data == 0 or count == 0 or count > alloc:
+        return []
+    names = []
+    for index in range(count):
+        entry = data + index * GLUE_CHARLIST_ENTRY_SIZE
+        names.append(read_cstring(pid, entry + GLUE_CHARLIST_NAME_OFF, 48))
+    return names
+
+
+def cmd_glue(pid: int, state_dir: Path = None, need_world: bool = True, scan_cache: dict = None) -> dict:
+    screen = read_cstring(pid, GLUE_CURRENT_SCREEN, 64)
+    selection_index = read_i32(pid, GLUE_SELECTION_INDEX)
+    characters = read_glue_character_list(pid)
+    login_result = read_i32(pid, GLUE_LOGIN_RESULT)
+    login_state = read_i32(pid, GLUE_LOGIN_STATE)
+    last_login_result = read_i32(pid, GLUE_LAST_LOGIN_RESULT)
+    last_login_state = read_i32(pid, GLUE_LAST_LOGIN_STATE)
+    disconnect_pending = read_i32(pid, GLUE_DISCONNECT_PENDING)
+    reconnect = read_i32(pid, GLUE_RECONNECT)
+    account_name = read_cstring(pid, GLUE_ACCOUNT_NAME, 1280)
+    displaying_queue_dialog = read_i32(pid, GLUE_DISPLAYING_QUEUE_DIALOG)
+    showed_disconnect = read_i32(pid, GLUE_SHOWED_DISCONNECT)
+    server_alert = read_cstring(pid, GLUE_SERVER_ALERT, 2048)
+    in_world = False
+    # `need_world=False` skips the object-manager resolution entirely: a login/charselect/charselect-loaded
+    # wait only ever needs the three glue globals above, and resolving the object manager is the one
+    # expensive part of this command (a page scan, uncached) -- see resolve_object_manager's own comment.
+    # `current_screen == "charselect"` is on its own a reliable "not in world" signal for those waits
+    # (CGlueMgr::SetScreen runs on the charselect transition itself; only the forward transition *into*
+    # the world leaves it stale -- see GLUE_CURRENT_SCREEN's comment), so `in_world` stays an untouched
+    # False placeholder here rather than a half-answer.
+    if need_world:
+        try:
+            tls = parse_tls_directory(pid)
+            mgr = resolve_object_manager(pid, tls, state_dir=state_dir, scan_cache=scan_cache)
+            object_manager_summary(pid, mgr["address"])
+            in_world = True
+        except MemoryError_:
+            in_world = False
+    return {
+        "current_screen": screen,
+        "in_world": in_world,
+        "selection_index": selection_index,
+        "characters": characters,
+        "login_result": login_result,
+        "login_state": login_state,
+        "login_result_name": LOGIN_RESULT_NAMES.get(login_result, str(login_result)),
+        "last_login_result": last_login_result,
+        "last_login_state": last_login_state,
+        "disconnect_pending": disconnect_pending,
+        "reconnect": reconnect,
+        "account_name": account_name,
+        "displaying_queue_dialog": displaying_queue_dialog,
+        "showed_disconnect": showed_disconnect,
+        "server_alert": server_alert,
+        # in_world's own "validated" is False (not measured, a fixed placeholder) whenever need_world was
+        # False: a caller must not read "in_world": false from such a result as a measured fact.
+        "validated": {"current_screen": True, "in_world": need_world, "selection_index": True,
+                      "characters": True, "login_result": True, "login_state": True,
+                      "last_login_result": True, "last_login_state": True,
+                      # disconnect_pending/showed_disconnect: address validated, but the live value is not a
+                      # usable level signal (edge-triggered, see GLUE_DISCONNECT_PENDING's comment) -- callers
+                      # must not treat a read of these two as proof of dialog presence or absence.
+                      "disconnect_pending": False, "reconnect": False,
+                      "account_name": False,  # address validated, live content not yet explained
+                      "displaying_queue_dialog": False,  # not yet exercised live
+                      "showed_disconnect": False, "server_alert": True},
+    }
+
+
+GLUE_UNTIL_STATES = ("login", "charselect", "charselect-loaded", "in-world", "login-clean", "login-settled")
+GLUE_POLL_INTERVAL = 0.1
+
+
+def glue_matches(status: dict, until_state: str) -> bool:
+    if until_state == "login":
+        return status["current_screen"] == "login"
+    if until_state == "charselect":
+        return status["current_screen"] == "charselect" and not status["in_world"]
+    if until_state == "charselect-loaded":
+        return (status["current_screen"] == "charselect" and not status["in_world"]
+                and len(status["characters"]) > 0)
+    if until_state == "in-world":
+        return status["in_world"]
+    if until_state == "login-clean":
+        # The account-login screen where the client has not (yet, this session) recorded a failed login
+        # attempt: current_screen alone cannot tell whether a result dialog ("You have been disconnected
+        # from the server", a wrong password, ...) sits on top, since CGlueMgr::m_currentScreen only names
+        # the glue screen, not whether a modal is over it (see GLUE_CURRENT_SCREEN's comment).
+        # login_state != LOGIN_STATE_FAILED answers that for a client that has never failed a login yet
+        # (login_state stays its -1 initial value). CAUTION (L11, 2026-10-27, live-proven): login_state does
+        # NOT reset when a dialog is dismissed -- it is sticky until the *next* real login/connect attempt
+        # changes it. A screenshot taken right after successfully dismissing a dialog showed a genuinely
+        # clean login screen while login_state still read 5 (LOGIN_STATE_FAILED). This state is therefore
+        # reliable only to confirm a client has *never* failed a login this session, not to confirm a
+        # dialog was just dismissed -- callers wanting the latter poll for current_screen == "login" alone
+        # (coa-client-lab's dismiss_login_dialog_via_memory/clear_login_dialog_unconditionally).
+        return status["current_screen"] == "login" and status["login_state"] != LOGIN_STATE_FAILED
+    if until_state == "login-settled":
+        # Reached once a login attempt either loads the character list (success) or the client records a
+        # failure (login_state == LOGIN_STATE_FAILED), whichever comes first -- lets a caller fail fast with
+        # the client's own login_result_name instead of waiting out a fixed ceiling on every wrong password.
+        success = (status["current_screen"] == "charselect" and not status["in_world"]
+                   and len(status["characters"]) > 0)
+        failed = status["current_screen"] == "login" and status["login_state"] == LOGIN_STATE_FAILED
+        return success or failed
+    raise ValueError(f"unknown --until state: {until_state}")
+
+
+def poll_glue_until(pid: int, state_dir: Path, until_state: str, timeout: float):
+    """Runs the guards once (by the caller) and polls glue state internally at GLUE_POLL_INTERVAL, instead
+    of the caller shelling out to a fresh `coa-lab-mem glue` (and its own guard pass) every tick. Only
+    `in-world` needs the object manager, so only that state pays for it, and a shared `scan_cache` keeps a
+    single process-local candidate list across every tick of one poll (not just across separate
+    invocations, which teb-cache.json already covers) so a cold cache does not rescan on every 0.1s tick
+    while waiting for the world to load. Returns (status, matched)."""
+    need_world = until_state == "in-world"
+    scan_cache = {} if need_world else None
+    deadline = time.monotonic() + timeout
+    while True:
+        status = cmd_glue(pid, state_dir=state_dir, need_world=need_world, scan_cache=scan_cache)
+        if glue_matches(status, until_state):
+            return status, True
+        if time.monotonic() >= deadline:
+            return status, False
+        time.sleep(GLUE_POLL_INTERVAL)
+
+
+def cmd_check(pid: int, guards: dict, state_dir: Path = None) -> dict:
     build = check_build_identity(pid)
     tls = parse_tls_directory(pid)
-    mgr = resolve_object_manager(pid, tls)
+    mgr = resolve_object_manager(pid, tls, state_dir=state_dir)
     summary = object_manager_summary(pid, mgr["address"])
     return {"guards": guards, "build": build, "tls": tls, "object_manager": {**mgr, **summary}}
 
@@ -756,20 +1082,31 @@ def main(argv=None) -> int:
     sub.add_parser("spell-db")
     spell_parser = sub.add_parser("spell")
     spell_parser.add_argument("spell_id", type=int)
+    glue_parser = sub.add_parser("glue")
+    glue_parser.add_argument("--until", choices=GLUE_UNTIL_STATES, default=None,
+                              help="poll internally (0.1s) until this glue state holds, instead of one read")
+    glue_parser.add_argument("--timeout", type=float, default=20.0, help="seconds to poll for --until")
     args = parser.parse_args(argv)
+    state_dir = _state_dir(lab_root, args.instance)
 
+    matched = True
     try:
         guards = run_guards(args.pid, lab_root, args.instance)
         pid = guards["pid"]
         if args.command == "check":
-            result = cmd_check(pid, guards)
+            result = cmd_check(pid, guards, state_dir=state_dir)
         elif args.command == "spell-db":
             result = cmd_spell_db(pid)
         elif args.command == "spell":
             result = cmd_spell(pid, args.spell_id)
+        elif args.command == "glue":
+            if args.until:
+                result, matched = poll_glue_until(pid, state_dir, args.until, args.timeout)
+            else:
+                result = cmd_glue(pid, state_dir=state_dir)
         else:
             tls = parse_tls_directory(pid)
-            mgr = resolve_object_manager(pid, tls)
+            mgr = resolve_object_manager(pid, tls, state_dir=state_dir)
             if args.command == "player":
                 result = cmd_player(pid, mgr["address"])
             elif args.command == "unit":
@@ -781,7 +1118,7 @@ def main(argv=None) -> int:
         return 1
 
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 0 if matched else 1
 
 
 if __name__ == "__main__":

@@ -198,3 +198,133 @@ not necessarily the lab character — filter with `--guid` using a GUID obtained
 - `coa-lab-packets` proves what the server sent in one logged session, not what the client did with it.
 - An addon's own `seterrorhandler` callback is still dead on this client; only the passive read of
   `ERROR_HANDLER_DATABASE` works.
+
+## Addendum, 2026-10-26 (later session): login, relay-setup and the minimal profile's resolution
+
+Three follow-ups from the batch 19/20 reports, fixed in `scripts/coa-client-lab`, kept here because they touch
+numbers and assumptions this file states above rather than new design:
+
+- `login` no longer assumes the account-login screen; see
+  [ADR 0003](../adr/0003-login-trusts-only-provable-screen-state.md). The "Measurements" section's `login`
+  timings above are unaffected on a fresh client (same typing path); a second `login` in the same session now
+  behaves differently (originally: recovers from a proven in-world state, or refuses; see the next addendum
+  for why that recovery was replaced) and was not separately re-measured for a fresh-client timing figure here.
+- `relay-setup N` now creates or updates the SOAP account itself (`TestLabSoapAccount` in
+  `scripts/lab-character`), at `SEC_ADMINISTRATOR`. Previously it only wrote `worldserver.conf`/`coa.conf` and
+  `relay.env`; the account had to exist already in that slot's own auth DB (each slot has one), which is what
+  left slot 4 answering 401 on `.labprobe` until an agent created `COALABSOAP` by hand.
+- The minimal profile's default resolution is 1024x768, not 800x600 (above): at 800x600 the character pane's
+  Ranged block runs off the bottom of the window. 1024x768 shows more without letterboxing (which a
+  non-4:3 `COA_LAB_HEIGHT` does, confirmed live with 800x720); it is still not a complete fix, since the
+  character pane's attribute list is a scrollable Blizzard frame that did not fit unscrolled even at 1280x1024
+  with a smaller `/console uiScale`.
+
+## Addendum, 2026-10-26 (follow-up session): login's in-world recovery replaced by a restart
+
+The in-world recovery described in the addendum above (`/camp`, wait, click the character-select Back
+button, pixel check) was driven end-to-end inside one `login` process and reproducibly did not reach the
+login screen in 4/4 full runs (up to ~330s each); the same click performed as a separate manual step
+immediately afterward succeeded in under 20s every time (3/3). The cause of the in-process failure was never
+established (not verified) — click coordinates, click form, hover-state, rapid-repeat-click interference and
+raw elapsed time were all ruled out live without explaining it.
+
+`login` now restarts the lab client on the same slot (`restart_client` in `scripts/coa-client-lab`) whenever
+it is not called on a client that is fresh since `start`, then takes the already-proven fresh-client path
+(`LOGIN_WAIT`, pixel check, type). No relay probe ping is required for this any more. `CAMP_WAIT` and
+`recover_to_login_screen` are removed. See [ADR 0003](../adr/0003-login-trusts-only-provable-screen-state.md)
+for the updated decision and consequences.
+
+## Addendum, 2026-10-26 (L5 session): `login` driven by the client's own glue screen state, read from memory
+
+Addresses found in wowdecomp and validated live (slot 2): `CGlueMgr::m_currentScreen` (char[64], 0x00B6A9E0),
+`CCharacterSelection::s_selectionIndex` (int32_t, 0x00AC436C) and `s_characterList`
+(`TSGrowableArray<CharacterSelectionDisplay>`, 0x00B6B238; name at each entry's +0x08, entry stride 0x198).
+Full file:line provenance and live-validation evidence is in the code comment at each constant in
+`scripts/coa-lab-mem` and in [ADR 0004](../adr/0004-login-driven-by-memory-read-glue-state.md). New read-only
+command: `coa-lab-mem glue` (`current_screen`, `in_world`, `selection_index`, `characters`). `in_world` comes
+from the existing object-manager resolution (ADR 0001), not from the screen string: `m_currentScreen` is not
+cleared on entering the world (validated live: it keeps reading the last glue screen's name, e.g.
+`"charselect"`, well after the player is in world).
+
+`login` (`scripts/coa-client-lab`) now uses this to: (1) confirm the account-login screen before typing, ahead
+of the still-unconditional pixel check; (2) replace the fixed `LOGIN_WAIT`/`REALM_WAIT`/`WORLD_WAIT` sleeps
+with bounded polls on the real state, capped at the same constants as upper bounds; (3) navigate the
+character-select list to a named character (pressing Down, re-reading the highlighted name from memory until
+it matches, bounded by the list's own length) when `login ACCOUNT PASSWORD CHARACTER` is used on a shared
+account -- the "character-select navigation is not implemented yet" limitation from the first addendum above
+is now implemented when memory is available, with the old client-default-highlight fallback kept for when it
+is not.
+
+An in-place recovery from in-world/character-select back to the login screen (`/camp`, then a click on the
+character-select "Back" button, each step confirmed by a bounded poll instead of a fixed wait) was tried again
+this session, after fixing a real bug (`glue_field` printed Python's `"True"`/`"False"` instead of JSON's
+`"true"`/`"false"`, so the in-world branch never matched and the click was attempted from inside the world,
+before `/camp`). With the bug fixed, `/camp` reliably reached character-select (2/2), but the Back click still
+did not reach the login screen within a 30s bounded poll either time, even though the identical click run as a
+separate external command against the same window succeeded instantly both times it was tried standalone --
+the same 4/4-in-process-failure, 3/3-standalone-success split the first addendum above already documented, for
+a cause this session did not establish either. `login` therefore still restarts for every state memory cannot
+already confirm is the login screen (unchanged from the addendum above), but now reaches that restart
+immediately instead of spending a further 30s on a transition already shown not to complete in-process.
+
+Measured live, slot 2, 2026-10-26, `COA_LAB_PROFILE=minimal`: a restart-based switch between two dedicated,
+already-created, in-world characters took 42.9-49.6s end to end across 6 separate live runs (3 repeated
+switches, one fresh start, two shared-account selections by name), each confirmed by a relay probe ping naming
+the expected character -- down from 178-228s measured earlier the same session with the fixed sleeps (and the
+boolean bug) still in place.
+
+## Addendum (L6, 2026-10-26): the in-place recovery click works as XTEST, not XSendEvent
+
+A later session on the same date (user goal: master every login/logout step to restart or switch accounts as
+fast as possible, memory writes authorised but reads preferred; no write was needed) found the in-process click
+unreliability above was specific to how the click was delivered, not the click itself. Two candidates were
+tried at character-select, live, slot 2:
+
+- **Escape**: sends the key, but `current_screen`/`in_world` never change (5 polls over 5s, before and after).
+  A screenshot showed Escape instead opens the client's own Game Menu overlay (Options/Video/Sound/Manage
+  Account/Change Realm/Logout/Exit Game/Close) on top of the current glue screen -- not a glue transition.
+  Dropped.
+- **The same "Back" click, as XTEST fake input** (`xdotool windowactivate --sync "$WINDOW"`, then `mousemove
+  --sync X Y` / `click` with **no** `--window`) instead of XSendEvent (`mousemove --window "$WINDOW" ... click
+  1`, the form that failed in-process 4/4 in L3/ADR 0003 and 2/2 in L5/ADR 0004): reached the login screen
+  **4/4**, driven end to end inside `coa-client-lab login`'s own process -- the exact failure mode the earlier
+  sessions hit. See [ADR 0005](adr/0005-in-place-login-recovery-via-xtest-click.md) for the live table, the
+  1s-resolution phase breakdown, and why this is shipped even though the measured wall-clock times (43.4-46.0s,
+  in-place) landed in the same band as the restart path's own 42.9-49.6s rather than a clear win.
+
+`login` now recovers in place for every state except when the recovery's own bounded polls (`/camp` ->
+character-select, 15s cap; the XTEST click -> login screen, 10s cap) do not confirm their result, or memory is
+unusable at all -- `restart_client` is unchanged as that fallback.
+
+## Addendum (L11, 2026-10-27): the login state machine, a leftover dialog, and the real cause of three
+## misleading symptoms
+
+User goal (unchanged since L6): master every login/logout step well enough to switch accounts or restart the
+client as fast as possible. This session added ten `CGlueMgr` login-state fields to `coa-lab-mem glue`
+(addresses and `LOGIN_STATE`/`LOGIN_RESULT` enum values from wowdecomp, file:line cited in the script's own
+comment) and used them to close the reported bug (a leftover "disconnected" dialog from an external `.kick`
+typed into blindly) and to replace three misleading error messages with their real cause:
+
+- A kick's "empty output" (reports/l8/l10) is the `.kick` command's own usage text -- `HandleKickPlayerCommand`
+  (`src/server/scripts/Commands/cs_misc.cpp:1410-1418`) silently returns `false` when the target is not yet a
+  connected player, which AC's dispatcher reports as the command's syntax help. Its stderr was being
+  discarded; it no longer is. This is a real, reproducible server-side registration race in the ~1-2s right
+  after the *target* character's own world entry -- widening the retry (1 -> up to 4 attempts) closes it at a
+  realistic ~2s pace, not under true zero-gap scripted load.
+- The shared-account "could not highlight CHARACTER" failure is not a navigation defect: reproduced live with
+  a screenshot showing the SAME disconnected-dialog screen appearing mid-navigation (the glue session itself
+  dropped under the same race above), and separately, a single transient miss of the unrelated `glue_state`
+  usability check silently sent one switch to the no-confirmation fallback, which entered the world as the
+  wrong character. Both are now detected and reported distinctly instead of one generic message.
+- `login_state == LOGIN_STATE_FAILED` (5) detects only one of the two real triggers for the "disconnected"
+  dialog (the client's own rejected login attempt); a kicked in-world client's dialog reads `login_state ==
+  16` instead, identical to a genuinely clean login screen reached the normal way -- not distinguishable by
+  any field read this session. `login_state` is also sticky (does not reset on dismiss). Both are documented,
+  not hidden, in `coa-lab-mem`'s own comment and [ADR 0009](adr/0009-login-state-machine-reads-and-fail-fast.md).
+
+Measured live, slot 2, 2026-10-27, nested 1920x1080: a ~2s-paced dedicated-account switch
+(`Coalabres`/`Labswitch`) ran 8/8 consecutive with zero restarts, 17.8-22.1s each. The same pace on the shared
+account (`Coalabshare`, `Sharea`/`Shareb`) ran 4/8 before the session's time budget closed, each failure now
+correctly attributed (a `LOGIN_DISCONNECTED` fail-fast, or the new "disconnected during character selection"
+message) rather than misreported. True zero-gap (no pause) switching remains unreliable for both forms -- see
+ADR 0009's own "not fixed, honestly reported" section.

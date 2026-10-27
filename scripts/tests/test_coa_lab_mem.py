@@ -479,6 +479,85 @@ class SpellRecordTest(unittest.TestCase):
         self.assertIn("null", result["reason"])
 
 
+class GlueTest(unittest.TestCase):
+    def _write_character_list(self, fake, names):
+        data = 0x6000000
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_ALLOC_OFF, max(len(names), 1))
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_COUNT_OFF, len(names))
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_DATA_OFF, data if names else 0)
+        for index, name in enumerate(names):
+            entry = data + index * mem.GLUE_CHARLIST_ENTRY_SIZE
+            fake.write(entry + mem.GLUE_CHARLIST_NAME_OFF, (name.encode() + b"\x00").ljust(48, b"\x00"))
+
+    def _write_login_state(self, fake, login_result=-1, login_state=-1, last_login_result=-1,
+                            last_login_state=-1, disconnect_pending=0, reconnect=0, account_name="",
+                            displaying_queue_dialog=0, showed_disconnect=0, server_alert=""):
+        fake.write_u32(mem.GLUE_LOGIN_RESULT, login_result & 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_LOGIN_STATE, login_state & 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_LAST_LOGIN_RESULT, last_login_result & 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_LAST_LOGIN_STATE, last_login_state & 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_DISCONNECT_PENDING, disconnect_pending)
+        fake.write_u32(mem.GLUE_RECONNECT, reconnect)
+        fake.write(mem.GLUE_ACCOUNT_NAME, (account_name.encode() + b"\x00").ljust(1280, b"\x00"))
+        fake.write_u32(mem.GLUE_DISPLAYING_QUEUE_DIALOG, displaying_queue_dialog)
+        fake.write_u32(mem.GLUE_SHOWED_DISCONNECT, showed_disconnect)
+        fake.write(mem.GLUE_SERVER_ALERT, (server_alert.encode() + b"\x00").ljust(2048, b"\x00"))
+
+    def test_account_login_screen_not_in_world_empty_list(self):
+        fake = FakeMemory()
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"login\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 0xFFFFFFFF)  # -1 as i32
+        self._write_character_list(fake, [])
+        self._write_login_state(fake)
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", side_effect=mem.MemoryError_("no tls")):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["current_screen"], "login")
+        self.assertFalse(result["in_world"])
+        self.assertEqual(result["selection_index"], -1)
+        self.assertEqual(result["characters"], [])
+
+    def test_character_select_screen_lists_names_and_index(self):
+        fake = FakeMemory()
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"charselect\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 1)
+        self._write_character_list(fake, ["Memdedi", "Memtwo"])
+        self._write_login_state(fake)
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", side_effect=mem.MemoryError_("no tls")):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["current_screen"], "charselect")
+        self.assertFalse(result["in_world"])
+        self.assertEqual(result["selection_index"], 1)
+        self.assertEqual(result["characters"], ["Memdedi", "Memtwo"])
+
+    def test_in_world_flag_true_when_object_manager_resolves(self):
+        fake = FakeMemory()
+        # m_currentScreen is not cleared on entering the world (validated live): it keeps the stale
+        # glue screen name, which is exactly why `in_world` must come from the object manager, not
+        # from the screen string.
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"charselect\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 0)
+        self._write_character_list(fake, [])  # cleared on entering the world, validated live
+        self._write_login_state(fake)
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", return_value={"tls_index": 0, "s_curmgr_delta": 0}), \
+             unittest.mock.patch.object(mem, "resolve_object_manager", return_value={"address": 0x3000000}), \
+             unittest.mock.patch.object(mem, "object_manager_summary", return_value={"active_player_guid": 7}):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["current_screen"], "charselect")
+        self.assertTrue(result["in_world"])
+        self.assertEqual(result["characters"], [])
+
+    def test_character_list_not_read_when_data_pointer_is_null(self):
+        fake = FakeMemory()
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_ALLOC_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_COUNT_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_DATA_OFF, 0)
+        patch_memory(self, fake)
+        self.assertEqual(mem.read_glue_character_list(None), [])
+
+
 class GuardsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -530,6 +609,224 @@ class GuardsTest(unittest.TestCase):
             f"00400000-00401000 r-xp 00000000 08:01 1 {lab_exe_dir}/Ascension.exe\n")
         result = mem.check_pid_is_lab_client(123, lab_root, proc_root)
         self.assertEqual(result, (lab_exe_dir / "Ascension.exe").resolve())
+
+
+class TebCacheTest(unittest.TestCase):
+    """resolve_object_manager's persistent cache (reports/l7): a candidate found once must not be
+    rescanned on a later call for the same (pid, process start time), and a null mgr -- "not in world
+    right now" -- must neither be cached as a failure nor trigger a rescan on its own."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state_dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.tls = {"tls_index": 0, "s_curmgr_delta": 0}
+
+    def test_second_call_uses_cache_without_rescanning(self):
+        scans = []
+        with unittest.mock.patch.object(mem, "find_teb64_candidates", side_effect=lambda *a, **k: scans.append(1)), \
+             unittest.mock.patch.object(mem, "_proc_starttime", return_value=111), \
+             unittest.mock.patch.object(mem, "_candidate_tls_arrays", return_value=[(0x200000, 0x300000)]), \
+             unittest.mock.patch.object(mem, "_mgr_from_tls_array", return_value=0x400000):
+            first = mem.resolve_object_manager(1234, self.tls, state_dir=self.state_dir)
+            self.assertEqual(first["via"], "tls")
+            self.assertTrue(mem._teb_cache_path(self.state_dir).exists())
+            second = mem.resolve_object_manager(1234, self.tls, state_dir=self.state_dir)
+        self.assertEqual(second["via"], "tls_cached")
+        self.assertEqual(second["address"], 0x400000)
+        self.assertEqual(len(scans), 1)
+
+    def test_null_mgr_is_not_cached(self):
+        with unittest.mock.patch.object(mem, "find_teb64_candidates", return_value=[0x200000]), \
+             unittest.mock.patch.object(mem, "_proc_starttime", return_value=111), \
+             unittest.mock.patch.object(mem, "_candidate_tls_arrays", return_value=[(0x200000, 0x300000)]), \
+             unittest.mock.patch.object(mem, "_mgr_from_tls_array", return_value=0):
+            with self.assertRaises(mem.MemoryError_):
+                mem.resolve_object_manager(1234, self.tls, state_dir=self.state_dir)
+        self.assertFalse(mem._teb_cache_path(self.state_dir).exists())
+
+    def test_cached_candidate_mgr_null_raises_without_rescanning(self):
+        mem._save_teb_cache(self.state_dir, 1234, 111, 0x200000, 0x300000)
+        scans = []
+        with unittest.mock.patch.object(mem, "find_teb64_candidates", side_effect=lambda *a, **k: scans.append(1)), \
+             unittest.mock.patch.object(mem, "_proc_starttime", return_value=111), \
+             unittest.mock.patch.object(mem, "_mgr_from_tls_array", return_value=0):
+            with self.assertRaises(mem.MemoryError_):
+                mem.resolve_object_manager(1234, self.tls, state_dir=self.state_dir)
+        self.assertEqual(scans, [])
+
+    def test_cache_for_different_starttime_is_ignored(self):
+        mem._save_teb_cache(self.state_dir, 1234, 111, 0x200000, 0x300000)
+        with unittest.mock.patch.object(mem, "find_teb64_candidates", return_value=[0x500000]), \
+             unittest.mock.patch.object(mem, "_proc_starttime", return_value=222), \
+             unittest.mock.patch.object(mem, "_candidate_tls_arrays", return_value=[(0x500000, 0x600000)]), \
+             unittest.mock.patch.object(mem, "_mgr_from_tls_array", return_value=0x700000):
+            result = mem.resolve_object_manager(1234, self.tls, state_dir=self.state_dir)
+        self.assertEqual(result["teb64"], 0x500000)
+
+
+class GlueMatchesTest(unittest.TestCase):
+    def test_login_needs_the_login_screen(self):
+        self.assertTrue(mem.glue_matches(
+            {"current_screen": "login", "in_world": False, "characters": []}, "login"))
+        self.assertFalse(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": False, "characters": []}, "login"))
+
+    def test_charselect_requires_not_in_world(self):
+        self.assertFalse(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": True, "characters": []}, "charselect"))
+        self.assertTrue(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": False, "characters": []}, "charselect"))
+
+    def test_charselect_loaded_requires_a_character_list(self):
+        self.assertFalse(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": False, "characters": []}, "charselect-loaded"))
+        self.assertTrue(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": False, "characters": ["Coalabone"]},
+            "charselect-loaded"))
+
+    def test_in_world_ignores_the_stale_screen_name(self):
+        self.assertTrue(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": True, "characters": []}, "in-world"))
+
+    def test_unknown_state_raises(self):
+        with self.assertRaises(ValueError):
+            mem.glue_matches({"current_screen": "login", "in_world": False, "characters": []}, "bogus")
+
+    def test_login_clean_requires_no_recorded_failure(self):
+        self.assertTrue(mem.glue_matches(
+            {"current_screen": "login", "in_world": False, "characters": [], "login_state": -1},
+            "login-clean"))
+        self.assertFalse(mem.glue_matches(
+            {"current_screen": "login", "in_world": False, "characters": [], "login_state": mem.LOGIN_STATE_FAILED},
+            "login-clean"))
+        self.assertFalse(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": False, "characters": [], "login_state": -1},
+            "login-clean"))
+
+    def test_login_settled_on_charselect_loaded_or_login_failed(self):
+        self.assertTrue(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": False, "characters": ["Coalabone"],
+             "login_state": 4}, "login-settled"))
+        self.assertTrue(mem.glue_matches(
+            {"current_screen": "login", "in_world": False, "characters": [],
+             "login_state": mem.LOGIN_STATE_FAILED}, "login-settled"))
+        self.assertFalse(mem.glue_matches(
+            {"current_screen": "login", "in_world": False, "characters": [], "login_state": 3},
+            "login-settled"))
+        self.assertFalse(mem.glue_matches(
+            {"current_screen": "charselect", "in_world": False, "characters": [], "login_state": 4},
+            "login-settled"))
+
+
+class GlueLoginStateTest(unittest.TestCase):
+    """L11 (2026-10-27): m_loginResult/m_loginState/... fields, live-validated against
+    WoW/Source/WowServices/Types.h's LOGIN_STATE/LOGIN_RESULT enums (see coa-lab-mem's own comment)."""
+
+    def test_fresh_client_reads_minus_one(self):
+        fake = FakeMemory()
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"login\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_ALLOC_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_COUNT_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_DATA_OFF, 0)
+        fake.write_u32(mem.GLUE_LOGIN_RESULT, 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_LOGIN_STATE, 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_LAST_LOGIN_RESULT, 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_LAST_LOGIN_STATE, 0xFFFFFFFF)
+        fake.write_u32(mem.GLUE_DISCONNECT_PENDING, 0)
+        fake.write_u32(mem.GLUE_RECONNECT, 0)
+        fake.write(mem.GLUE_ACCOUNT_NAME, b"\x00" * 1280)
+        fake.write_u32(mem.GLUE_DISPLAYING_QUEUE_DIALOG, 0)
+        fake.write_u32(mem.GLUE_SHOWED_DISCONNECT, 0)
+        fake.write(mem.GLUE_SERVER_ALERT, b"\x00" * 2048)
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", side_effect=mem.MemoryError_("no tls")):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["login_state"], -1)
+        self.assertEqual(result["login_result"], -1)
+        self.assertEqual(result["login_result_name"], "-1")
+
+    def test_disconnected_dialog_decodes_login_disconnected(self):
+        # Live, slot 2, 2026-10-27: a duplicate-session disconnect during a login attempt read
+        # login_state=5, login_result=21 on a confirmed "You have been disconnected from the server" dialog.
+        fake = FakeMemory()
+        fake.write(mem.GLUE_CURRENT_SCREEN, b"login\x00".ljust(64, b"\x00"))
+        fake.write_u32(mem.GLUE_SELECTION_INDEX, 1)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_ALLOC_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_COUNT_OFF, 0)
+        fake.write_u32(mem.GLUE_CHARACTER_LIST + mem.GLUE_CHARLIST_DATA_OFF, 0)
+        fake.write_u32(mem.GLUE_LOGIN_RESULT, 21)
+        fake.write_u32(mem.GLUE_LOGIN_STATE, 5)
+        fake.write_u32(mem.GLUE_LAST_LOGIN_RESULT, 21)
+        fake.write_u32(mem.GLUE_LAST_LOGIN_STATE, 5)
+        fake.write_u32(mem.GLUE_DISCONNECT_PENDING, 0)
+        fake.write_u32(mem.GLUE_RECONNECT, 0)
+        fake.write(mem.GLUE_ACCOUNT_NAME, b"\x00" * 1280)
+        fake.write_u32(mem.GLUE_DISPLAYING_QUEUE_DIALOG, 0)
+        fake.write_u32(mem.GLUE_SHOWED_DISCONNECT, 0)
+        fake.write(mem.GLUE_SERVER_ALERT, b"\x00" * 2048)
+        patch_memory(self, fake)
+        with unittest.mock.patch.object(mem, "parse_tls_directory", side_effect=mem.MemoryError_("no tls")):
+            result = mem.cmd_glue(None)
+        self.assertEqual(result["login_state"], mem.LOGIN_STATE_FAILED)
+        self.assertEqual(result["login_result_name"], "LOGIN_DISCONNECTED")
+        self.assertFalse(mem.glue_matches(result, "login-clean"))
+        self.assertTrue(mem.glue_matches(result, "login-settled"))
+
+
+class PollGlueUntilTest(unittest.TestCase):
+    def test_returns_as_soon_as_the_state_matches(self):
+        statuses = iter([
+            {"current_screen": "charselect", "in_world": False, "selection_index": 0, "characters": []},
+            {"current_screen": "login", "in_world": False, "selection_index": -1, "characters": []},
+        ])
+        with unittest.mock.patch.object(mem, "cmd_glue", side_effect=lambda *a, **k: next(statuses)), \
+             unittest.mock.patch.object(mem.time, "sleep"):
+            result, matched = mem.poll_glue_until(1234, None, "login", timeout=5)
+        self.assertTrue(matched)
+        self.assertEqual(result["current_screen"], "login")
+
+    def test_timeout_returns_the_last_status_unmatched(self):
+        status = {"current_screen": "charselect", "in_world": False, "selection_index": 0, "characters": []}
+        times = iter([0, 0, 10])
+        with unittest.mock.patch.object(mem, "cmd_glue", return_value=status), \
+             unittest.mock.patch.object(mem.time, "sleep"), \
+             unittest.mock.patch.object(mem.time, "monotonic", side_effect=lambda: next(times)):
+            result, matched = mem.poll_glue_until(1234, None, "login", timeout=5)
+        self.assertFalse(matched)
+        self.assertEqual(result, status)
+
+    def test_in_world_wait_shares_one_scan_cache_across_ticks(self):
+        statuses = [
+            {"current_screen": "charselect", "in_world": False, "selection_index": 0, "characters": []},
+            {"current_screen": "charselect", "in_world": True, "selection_index": 0, "characters": []},
+        ]
+        seen_scan_caches = []
+
+        def fake_cmd_glue(pid, state_dir=None, need_world=True, scan_cache=None):
+            seen_scan_caches.append(scan_cache)
+            return statuses.pop(0)
+
+        with unittest.mock.patch.object(mem, "cmd_glue", side_effect=fake_cmd_glue), \
+             unittest.mock.patch.object(mem.time, "sleep"):
+            mem.poll_glue_until(1234, None, "in-world", timeout=5)
+        self.assertEqual(len(seen_scan_caches), 2)
+        self.assertIsNotNone(seen_scan_caches[0])
+        self.assertIs(seen_scan_caches[0], seen_scan_caches[1])
+
+    def test_login_charselect_wait_passes_no_scan_cache(self):
+        status = {"current_screen": "login", "in_world": False, "selection_index": -1, "characters": []}
+        seen = []
+
+        def fake_cmd_glue(pid, state_dir=None, need_world=True, scan_cache=None):
+            seen.append(scan_cache)
+            return status
+
+        with unittest.mock.patch.object(mem, "cmd_glue", side_effect=fake_cmd_glue), \
+             unittest.mock.patch.object(mem.time, "sleep"):
+            mem.poll_glue_until(1234, None, "login", timeout=5)
+        self.assertEqual(seen, [None])
 
 
 if __name__ == "__main__":
