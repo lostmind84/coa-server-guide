@@ -122,6 +122,15 @@ folder.
    path writes its answer through `/reload`, which clears the target selection, so two such probes never describe
    the same situation. Relay probes keep the target and the chat: several of them can describe one moment, and
    answers with the same `loadId` prove no reload happened between them.
+4b. **`eval`, `pksend`, the watches (`pkwatch`/`pkmeta`/`pkfind`/`evwatch`/`evunwatch`), and any probe forced
+    through `COA_LAB_TRANSPORT=reload`, always reload the UI** — by design, not a bug: the relay only runs
+    read-only commands (guide ADR 0006), and these either run arbitrary Lua or install persistent hooks a
+    stateless relay request cannot. A `/reload` tears down and rebuilds every Lua frame: it closes whatever
+    frame is open under test (Spellbook, Character pane, ...), clears the target (point 4 above) and empties
+    the chat (point 3 above) — `probe eval` closing an open Spellbook frame mid-test (L16, 2026-10-27) is this,
+    not a defect in `eval` itself. Read every piece of UI state the test still needs with a relay probe
+    (`frame`, `ca`, `state`, `spellbook`, `auras`) **before** calling `eval`/`pksend`/a watch, not after: there
+    is no way to recover what the reload just closed.
 5. **Snapshot inside the effect window.** Many auras last seconds: send the probe immediately after the action,
    without waiting. An empty aura list after a finished cast proves nothing.
 6. Useful facts the client hides: the displayed bar is not always the resource a spell charges (`probe state`

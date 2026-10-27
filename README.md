@@ -969,9 +969,19 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
   wheel reaches the rest at any resolution). Keep `COA_LAB_WIDTH`/`COA_LAB_HEIGHT` at the same 4:3 ratio: a
   taller-than-4:3 pair (800x720 was tried) letterboxes the whole client, including the login-screen pixel check
   `login` now does (next paragraph).
-- Only read-only commands go through the relay (`ping spell item auras spellbook known log state ca frame errors`);
-  `eval`, `pksend` and the watches keep the `/reload` path (`COA_LAB_TRANSPORT=reload` forces it for any command).
-  Every relay answer carries `loadId` (changes on each UI load) and the answering `character`.
+- Only read-only commands go through the relay (`ping spell item auras spellbook known log state ca frame
+  errors`); every relay answer carries `loadId` (changes on each UI load) and the answering `character`.
+  **Everything else reloads the UI** — `eval`, `pksend`, `pkwatch`/`pkmeta`/`pkfind`/`evwatch`/`evunwatch` (the
+  watches), and any command at all once `COA_LAB_TRANSPORT=reload` forces that path (useful to debug a relay
+  answer against the `/reload` one for the same request). This is by design, not an oversight: the relay only
+  runs read-only commands (ADR 0006), so `eval` (it can run arbitrary Lua, not read-only) and the watches (they
+  install persistent hooks a stateless relay request cannot set up) stay on `/reload`.
+  **A `/reload` always costs the client's current UI state** — it tears down and rebuilds every Lua frame:
+  an open Spellbook, Character pane or any other frame under test closes, the current target is cleared, and
+  the chat window's scrollback is gone (L16, 2026-10-27: a `probe eval` mid-test closed an open Spellbook frame
+  the test still needed). None of that is restored afterward. Read UI state you still need with a relay probe
+  (`frame`, `ca`, `state`, `spellbook`, `auras`) **before** any `eval`/`pksend`/watch call in the same test, not
+  after — there is no "undo" for what the reload just closed.
 - `login` waits up to 20 + 25 + 45 s by default (`COA_LAB_LOGIN_WAIT`, `COA_LAB_REALM_WAIT`,
   `COA_LAB_WORLD_WAIT`, each an upper bound, not a fixed sleep: each wait is one `coa-lab-mem glue --until`
   call that ends as soon as memory confirms the real state, or at the bound if memory cannot confirm it).
