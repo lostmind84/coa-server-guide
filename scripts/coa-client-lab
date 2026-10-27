@@ -31,6 +31,7 @@ RELOAD_WAIT="${COA_LAB_RELOAD_WAIT:-10}"
 LOGIN_WAIT="${COA_LAB_LOGIN_WAIT:-20}"
 REALM_WAIT="${COA_LAB_REALM_WAIT:-25}"
 WORLD_WAIT="${COA_LAB_WORLD_WAIT:-45}"
+UI_READY_WAIT="${COA_LAB_UI_READY_WAIT:-30}"
 GLUE_STATE_RETRY_ATTEMPTS="${COA_LAB_GLUE_STATE_RETRY_ATTEMPTS:-3}"
 GLUE_STATE_RETRY_WAIT="${COA_LAB_GLUE_STATE_RETRY_WAIT:-1}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -718,6 +719,23 @@ glue_state() {
     python3 "$LAB_MEM" glue 2> /dev/null
 }
 
+# Memory reports in_world about 9 s before the in-world UI takes input (measured live, slot 2,
+# 2026-10-27: `probe ping` first answered 9 s after `glue --until in-world` returned, 4/4). A command
+# typed in that window, such as the next login's /camp, is lost. login therefore returns only once
+# the addon answers a relay ping, which needs the UI loaded; without a relay descriptor it keeps the
+# memory signal alone.
+wait_ui_ready() {
+    [[ -f "$STATE_DIR/lab.json" ]] || return 0
+    local deadline=$((SECONDS + UI_READY_WAIT))
+    until "$RELAY" --descriptor "$STATE_DIR/lab.json" probe --timeout 2 ping > /dev/null 2>&1; do
+        if ((SECONDS >= deadline)); then
+            echo "WARN: the in-world UI did not answer a relay ping within ${UI_READY_WAIT}s" >&2
+            return 1
+        fi
+        "$SLEEP" 0.3
+    done
+}
+
 # Waits up to $2 seconds (the same fixed sleep this replaces, kept as an upper bound) for glue state $1
 # (login|charselect|charselect-loaded|in-world) to hold, polling inside a single `coa-lab-mem glue --until`
 # process (reports/l7: that process runs the guards once and polls internally at 0.1s, instead of this file
@@ -954,15 +972,10 @@ clear_login_dialog_unconditionally() {
 # back in, just via the login screen instead of staying in-session. Already at character-select (not in
 # world, not at the login screen) is a no-op success: nothing to log out of.
 #
-# L12, measured live, slot 2, 2026-10-27, Coalabshare's Sharea/Shareb: the permission is confirmed
-# granted (`.rbac account list`) and this path reliably never FAILS the overall switch (15/15 live
-# attempts across this session's runs succeeded, all via this function or its fallback), but /camp
-# itself only reached charselect-loaded within INSTANT_LOGOUT_WAIT on roughly 1 in 7-9 of those
-# attempts; raising the bound to 20s did not change the ratio (still ~1 fast in 6, the misses just
-# wasted more of it before falling back) -- not a mere timeout-too-short issue. The other attempts all
-# fell through to the full goto_login_screen_via_memory recovery (slower, but not a failure). No memory
-# field or source read this session explained why the same granted permission produces instant logout
-# inconsistently; not chased further (time budget). Flagged for whoever picks this up next.
+# L12 saw /camp reach charselect-loaded on only about 1 in 7-9 attempts. Cause, measured afterwards
+# (slot 2, 2026-10-27): the previous login returned as soon as memory reported in_world, about 9 s
+# before the in-world UI takes input, so this /camp was typed into the loading screen and lost.
+# With login waiting for the UI (wait_ui_ready), 5/5 zero-gap same-account switches took this path.
 goto_charselect_via_memory() {
     local json screen world
     json=$(glue_state) || return 1
@@ -973,7 +986,9 @@ goto_charselect_via_memory() {
     fi
     [[ "$world" == "true" ]] || return 1
     cmd_chat "/camp" || return 1
-    glue_until charselect-loaded "$INSTANT_LOGOUT_WAIT" > /dev/null
+    glue_until charselect-loaded "$INSTANT_LOGOUT_WAIT" > /dev/null && return 0
+    echo "WARN: /camp did not reach character-select within ${INSTANT_LOGOUT_WAIT}s; using the login screen" >&2
+    return 1
 }
 
 goto_login_screen_via_memory() {
@@ -1185,6 +1200,7 @@ cmd_login() {
                 glue_until in-world "$WORLD_WAIT" > /dev/null || true
                 echo "login sent for $account (in-place character switch, no login screen); check the world with: coa-client-lab screenshot"
                 write_descriptor "$account" "$character"
+                wait_ui_ready || true
                 return
             fi
             echo "WARN: in-place switch to $character did not confirm (rc=$select_rc); falling back to the" \
@@ -1328,6 +1344,7 @@ cmd_login() {
     echo "login sent for $account; check the world with: coa-client-lab screenshot"
     if [[ -n "$character" ]]; then
         write_descriptor "$account" "$character"
+        wait_ui_ready || true
     fi
 }
 

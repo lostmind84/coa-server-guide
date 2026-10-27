@@ -25,6 +25,7 @@ export COA_LAB_PREFIX="$WORK/lab-prefix"
 export COA_PROTONPATH="$WORK/proton"
 export COA_LAB_WINDOW_TIMEOUT=10
 export COA_LAB_SLEEP=true
+export COA_LAB_UI_READY_WAIT=0
 export FAKE_LOG="$WORK/fake.log"
 export FAKE_ETC="$WORK/etc"
 export FAKE_SLOT_STATE="$WORK/slot-state"
@@ -664,6 +665,7 @@ export COA_LAB_RELAY="$WORK/bin/fake-relay"
 run_lab start 3
 run_lab login coalab1 secretpw Coalabone
 assert_eq "login with character exits 0" "$?" "0"
+assert_contains "login waits for the in-world UI to answer a relay ping" "$FAKE_LOG" "probe --timeout 2 ping"
 lab_json="$COA_LAB_ROOT/state/lab.json"
 assert_file "descriptor written" "$lab_json"
 assert_eq "descriptor mode 600" "$(stat -c %a "$lab_json")" "600"

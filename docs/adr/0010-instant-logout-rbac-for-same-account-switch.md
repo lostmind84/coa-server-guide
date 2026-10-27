@@ -89,6 +89,14 @@ world-recovery order is unchanged from L11 (`kick_via_soap` first, the old full-
   already-working different-account paths.
 - The permission is granted to every `COALAB*` lab account going forward, and `rbac-grant` lets an
   operator backfill accounts created before this change; both are refused for any non-`COALAB*` name.
-- Two open items for whoever continues this: why the same-account fast path's own `/camp` is only
-  instant about 1 attempt in 7-9 despite the permission being confirmed present throughout, and the root
-  cause of the different-account `/camp`+Back relogin failure found and reverted above.
+- Open item for whoever continues this: the root cause of the different-account `/camp`+Back relogin
+  failure found and reverted above.
+
+## Addendum (2026-10-27): why the fast path missed
+
+The 1-in-7-9 ratio was not the permission. Memory reports `in_world` about 9 s before the in-world UI
+takes input: measured live, `probe ping` first answered 9 s after `glue --until in-world` returned, 4/4.
+`login` returned at the memory signal, so the next switch typed `/camp` into the loading screen, where it
+was lost, and fell back. `login` now returns only once the addon answers a relay ping (`wait_ui_ready`,
+bounded by `COA_LAB_UI_READY_WAIT`, 30 s). Zero-gap same-account switches afterwards: 5/5 on the fast
+path, 14-15 s each, the UI wait included.

@@ -787,12 +787,10 @@ highlighted) falls through to the full different-account recovery below exactly 
 Measured live, slot 2, 2026-10-27, `Coalabshare`'s `Sharea`/`Shareb`: this path never failed the overall switch
 (15/15 live attempts across this session succeeded, whether via the fast path or its fallback) and reached
 6.3-8.6s when the fast path landed, against the ~18-37s a full relogin costs. It did not land reliably,
-though: only 1 fast switch in roughly every 7-9 attempts; the rest timed out waiting for `charselect-loaded`
-and fell through to the slower full recovery (still a success, just not faster). Raising the bound to 20s did
-not change the ratio (still about 1 fast in 6, the misses just spent more of it before falling back), so this
-is not a simple timeout-too-short problem. The permission was confirmed present in the account's DB row
-throughout (`.rbac account list ACCOUNT`); no memory field or source read this session explained the
-inconsistency, and it was not chased further (time budget) — flagged for whoever picks this up next.
+though: only 1 fast switch in roughly every 7-9 attempts. The cause was the previous `login` returning at the
+memory `in_world` signal, about 9 s before the in-world UI takes input, so the next `/camp` was typed into the
+loading screen and lost. `login` now returns only once the addon answers a relay ping (`COA_LAB_UI_READY_WAIT`,
+30 s): zero-gap same-account switches then took the fast path 5/5, 14-15 s each (ADR 0010, addendum).
 
 A second idea tried and reverted: making the same instant `/camp` the *primary* recovery for a **different**
 -account world switch too (ahead of `kick_via_soap`), reasoning that a graceful instant logout would avoid
