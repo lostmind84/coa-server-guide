@@ -512,7 +512,7 @@ and made configurable afterwards: defaults assume the layout of Part 1 (`~/Proje
 
 ```bash
 git clone https://github.com/lostmind84/coa-server-guide.git ~/Projects/coa-server-guide
-ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint} ~/.local/bin/
+ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint,coa-worktree-cleanup} ~/.local/bin/
 ```
 
 ## Prerequisites
@@ -1071,6 +1071,12 @@ parallel; mutations to a shared slot, client lab, database, harness image, or wo
 a gameplay scenario as the default proof for each issue, Ghost bots for what that harness does not cover (client
 packets, experience, RDF/LFG, duels, real relogs, quest-giver interaction), and the client lab for client-only
 symptoms. Claiming and closing issues adapt to the permissions your account actually has.
+
+When an agent has pushed the PR of a worktree, it runs
+[`scripts/coa-worktree-cleanup`](scripts/coa-worktree-cleanup) `<worktree>` (dry run) and then with `--yes`: the
+worktree's world caches leave the in-RAM test MySQL, then the worktree and its local branch go. The script
+refuses unpublished, in-use or leased work; see [`agents/git-safety.md`](agents/git-safety.md) for the full
+cleanup rule and [ADR 0016](docs/adr/0016-clean-up-worktrees-after-publishing.md).
 
 Claude Code uses the command file directly or through a symlink:
 

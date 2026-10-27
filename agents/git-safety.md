@@ -43,6 +43,23 @@ other path.
 Serena's root stays the main checkout and it has no `activate_project` in this setup, so files inside a worktree
 are reached through that worktree's absolute paths.
 
+## Clean up once the work is published
+
+When the PR (or the last PR) of a worktree is pushed and nothing is left to do in it, the agent removes what it
+made, in the same task, without asking:
+
+1. `coa-worktree-cleanup <worktree>` (dry run), then `coa-worktree-cleanup <worktree> --yes`. It drops the
+   worktree's gameplay world caches from the in-RAM test MySQL (`coa-test-mysql`, 12 GB, about 1.3 GB per cache),
+   removes the worktree and deletes its local branch. It refuses, and changes nothing, while the worktree has
+   uncommitted or untracked work, an unpushed HEAD (unless it is the head of a merged PR), a leased or in-use
+   cache, or a process running inside it. A refusal is reported, never forced.
+2. `coa-client-lab stop` for the agent's own lab instance, then erase its throwaway accounts and characters.
+3. `coa-slot stop N` (unless the user wants the server up) and `coa-slot release N`.
+
+Review follow-ups do not need the old worktree: `git worktree add -b <branch> <path> fork/<branch>` recreates it
+from the pushed branch. Worktrees whose PR is merged are removed the same way by whoever finds them. Never
+remove another agent's worktree while its work is unpublished or in use; the script's refusals enforce that.
+
 ## Recovery is configured, not guaranteed
 
 Set, once per clone:
