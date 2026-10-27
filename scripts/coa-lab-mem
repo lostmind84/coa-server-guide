@@ -14,10 +14,17 @@ read-only `/proc/<pid>/mem` open) for every read; no write syscall, no ptrace at
                                               selection index and character names
     coa-lab-mem glue --until STATE --timeout S
                                               runs the guards once, then polls internally (0.1s) for STATE
-                                              (login|charselect|charselect-loaded|in-world), printing the final
-                                              JSON and exiting non-zero on timeout. Only `in-world` resolves
-                                              the object manager (see resolve_object_manager's comment); the
-                                              other three states read only the cheap glue globals.
+                                              (login|charselect|charselect-loaded|in-world|login-clean|
+                                              login-settled), printing the final JSON and exiting non-zero on
+                                              timeout. Only `in-world` resolves the object manager (see
+                                              resolve_object_manager's comment); the other states read only
+                                              the cheap glue globals. `login-clean` is the account-login
+                                              screen on a client that has never recorded a failed login this
+                                              session (login_state is not LOGIN_STATE_FAILED) -- NOT a
+                                              reliable "dialog dismissed" signal, see glue_matches' own
+                                              comment; `login-settled` is reached once a login attempt either
+                                              loads the character list or fails (login_state ==
+                                              LOGIN_STATE_FAILED), whichever comes first.
 
 Global options: --pid (override discovery, still guarded), --instance (or COA_LAB_INSTANCE; state directory
 layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
@@ -175,6 +182,76 @@ GLUE_CHARLIST_COUNT_OFF = 0x04
 GLUE_CHARLIST_DATA_OFF = 0x08
 GLUE_CHARLIST_ENTRY_SIZE = 0x198   # sizeof(CharacterSelectionDisplay) -- validated live, not in the decompilation
 GLUE_CHARLIST_NAME_OFF = 0x08      # CharacterSelectionDisplay::m_characterInfo.m_name -- validated
+
+# The client's own login state machine (L11, 2026-10-27), to detect and dismiss a leftover result dialog
+# (e.g. "You have been disconnected from the server") before typing credentials, and to fail fast on a
+# login failure instead of waiting out a fixed ceiling. wowdecomp has no licence: addresses, enum values and
+# layouts read, no code copied. Every `CGlueMgr::` static's address below is its own `// STATIC: 0x...`
+# comment, immediately preceding the field's definition, in `WoW/Source/Glue/CGlueMgr.cpp`:
+#   m_loginResult            line 103-104 (STATIC 0x00AC3DA0)
+#   m_loginState              line 106-107 (STATIC 0x00AC3DA4)
+#   m_lastLoginResult        line 109-110 (STATIC 0x00AC3DA8)
+#   m_lastLoginState          line 112-113 (STATIC 0x00AC3DAC)
+#   m_disconnectPending      line 166-167 (STATIC 0x00B6AA30)
+#   m_reconnect               line 169-170 (STATIC 0x00B6AA34)
+#   m_accountName            line 178-179 (STATIC 0x00B6AA40, char[1280])
+#   m_displayingQueueDialog  line 187-188 (STATIC 0x00B6AF48)
+#   m_showedDisconnect       line 256-257 (STATIC 0x00B6AFA0)
+#   m_serverAlert            line 139-140 (STATIC 0x00B6A190, char[2048])
+# All ten addresses are internally consistent with the already-validated GLUE_CURRENT_SCREEN (0xB6A9E0,
+# char[64], ends exactly at m_simpleTop/0xB6AA20) and with each other: m_accountName's 1280-byte span ends
+# exactly at m_matrixRemaining's own STATIC address (0xB6AA40 + 0x500 == 0xB6AF40), and the four
+# login-state/result int32_t's are each exactly 4 bytes apart, matching their declaration order.
+#
+# `LOGIN_STATE`/`LOGIN_RESULT` enum values are from `WoW/Source/WowServices/Types.h:30-71,75-94` (a file
+# unrelated to CGlueMgr.cpp). Validated live, slot 2, 2026-10-27, on the brief's own reproduction (login
+# screen with a "You have been disconnected from the server" dialog over the Username field): read
+# m_loginState == 5 and m_loginResult == 21, which independently decode via that enum to
+# LOGIN_STATE_FAILED and LOGIN_DISCONNECTED -- exactly the state/result pair for the dialog on screen.
+# m_lastLoginState/m_lastLoginResult read the same values in that case (the most recent login attempt).
+# m_disconnectPending and m_showedDisconnect both read 0 in that same, confirmed-dialog-visible state --
+# live-measured, but not usable as a dialog-presence signal (edge-triggered, already consumed by the time
+# the dialog is visible); login_state == LOGIN_STATE_FAILED is the field that stays true for as long as the
+# dialog is on screen, and is what this script's callers poll instead.
+# m_accountName, read live in that same state, held a 32-character hex-looking string, not the plaintext
+# account name shown in the (partly obscured) Username field; the cause is not established (not verified).
+# Reported here as a raw, honest read (never interpreted) for whichever future session investigates it.
+GLUE_LOGIN_RESULT = 0x00AC3DA0            # CGlueMgr::m_loginResult, int32_t -- validated (see above)
+GLUE_LOGIN_STATE = 0x00AC3DA4             # CGlueMgr::m_loginState, int32_t -- validated
+GLUE_LAST_LOGIN_RESULT = 0x00AC3DA8       # CGlueMgr::m_lastLoginResult, int32_t -- validated
+GLUE_LAST_LOGIN_STATE = 0x00AC3DAC        # CGlueMgr::m_lastLoginState, int32_t -- validated
+GLUE_DISCONNECT_PENDING = 0x00B6AA30      # CGlueMgr::m_disconnectPending, int32_t -- validated address,
+                                           # live value not usable as a level signal (see comment above)
+GLUE_RECONNECT = 0x00B6AA34               # CGlueMgr::m_reconnect, int32_t -- validated address, not yet
+                                           # exercised live (no reconnect scenario reproduced this session)
+GLUE_ACCOUNT_NAME = 0x00B6AA40            # CGlueMgr::m_accountName, char[1280] -- validated address,
+                                           # live content not yet explained (see comment above)
+GLUE_DISPLAYING_QUEUE_DIALOG = 0x00B6AF48  # CGlueMgr::m_displayingQueueDialog, int32_t -- validated address,
+                                            # not yet exercised live (no queue scenario reproduced this session)
+GLUE_SHOWED_DISCONNECT = 0x00B6AFA0       # CGlueMgr::m_showedDisconnect, int32_t -- validated address,
+                                           # live value not usable as a level signal (see comment above)
+GLUE_SERVER_ALERT = 0x00B6A190            # CGlueMgr::m_serverAlert, char[2048] -- validated address and
+                                           # content (the client's own MOTD HTML, read live, matches the
+                                           # "SERVERALERT:" tag format at WoW/Source/Glue/CGlueMgr.cpp:116)
+
+LOGIN_STATE_FAILED = 5   # WoW/Source/WowServices/Types.h:81 -- validated live (see comment above)
+
+# WoW/Source/WowServices/Types.h:30-71 -- read from source, not invented; not every value has been seen live.
+LOGIN_RESULT_NAMES = {
+    0: "LOGIN_OK", 1: "LOGIN_INVALID_CHALLENGE_MESSAGE", 2: "LOGIN_SRP_ERROR",
+    3: "LOGIN_INVALID_PROOF_MESSAGE", 4: "LOGIN_BAD_SERVER_PROOF", 5: "LOGIN_INVALID_RECODE_MESSAGE",
+    6: "LOGIN_BAD_SERVER_RECODE_PROOF", 7: "LOGIN_UNKNOWN_ACCOUNT", 8: "LOGIN_UNKNOWN_ACCOUNT_PIN",
+    9: "LOGIN_UNKNOWN_ACCOUNT_CALL", 10: "LOGIN_INCORRECT_PASSWORD", 11: "LOGIN_FAILED",
+    12: "LOGIN_SERVER_DOWN", 13: "LOGIN_BANNED", 14: "LOGIN_BADVERSION", 15: "LOGIN_ALREADYONLINE",
+    16: "LOGIN_NOTIME", 17: "LOGIN_DBBUSY", 18: "LOGIN_SUSPENDED", 19: "LOGIN_PARENTALCONTROL",
+    20: "LOGIN_LOCKED_ENFORCED", 21: "LOGIN_DISCONNECTED", 22: "LOGIN_ACCOUNT_CONVERTED",
+    23: "LOGIN_ANTI_INDULGENCE", 24: "LOGIN_EXPIRED", 25: "LOGIN_TRIAL_EXPIRED", 26: "LOGIN_NO_GAME_ACCOUNT",
+    27: "LOGIN_AUTH_OUTAGE", 28: "LOGIN_GAME_ACCOUNT_LOCKED", 29: "LOGIN_NO_BATTLENET_MANAGER",
+    30: "LOGIN_NO_BATTLENET_APPLICATION", 31: "LOGIN_MALFORMED_ACCOUNT_NAME", 32: "LOGIN_USE_GRUNT",
+    33: "LOGIN_TOO_FAST", 34: "LOGIN_CHARGEBACK", 35: "LOGIN_IGR_WITHOUT_BNET", 36: "LOGIN_UNLOCKABLE_LOCK",
+    37: "LOGIN_CONVERSION_REQUIRED", 38: "LOGIN_UNABLE_TO_DOWNLOAD_MODULE",
+    39: "LOGIN_NO_GAME_ACCOUNTS_IN_REGION", 40: "LOGIN_ACCOUNT_LOCKED",
+}
 
 USER_CLIENT_DEFAULT = Path.home() / "CoaServer/client/ascension-live"
 
@@ -819,6 +896,16 @@ def cmd_glue(pid: int, state_dir: Path = None, need_world: bool = True, scan_cac
     screen = read_cstring(pid, GLUE_CURRENT_SCREEN, 64)
     selection_index = read_i32(pid, GLUE_SELECTION_INDEX)
     characters = read_glue_character_list(pid)
+    login_result = read_i32(pid, GLUE_LOGIN_RESULT)
+    login_state = read_i32(pid, GLUE_LOGIN_STATE)
+    last_login_result = read_i32(pid, GLUE_LAST_LOGIN_RESULT)
+    last_login_state = read_i32(pid, GLUE_LAST_LOGIN_STATE)
+    disconnect_pending = read_i32(pid, GLUE_DISCONNECT_PENDING)
+    reconnect = read_i32(pid, GLUE_RECONNECT)
+    account_name = read_cstring(pid, GLUE_ACCOUNT_NAME, 1280)
+    displaying_queue_dialog = read_i32(pid, GLUE_DISPLAYING_QUEUE_DIALOG)
+    showed_disconnect = read_i32(pid, GLUE_SHOWED_DISCONNECT)
+    server_alert = read_cstring(pid, GLUE_SERVER_ALERT, 2048)
     in_world = False
     # `need_world=False` skips the object-manager resolution entirely: a login/charselect/charselect-loaded
     # wait only ever needs the three glue globals above, and resolving the object manager is the one
@@ -840,14 +927,33 @@ def cmd_glue(pid: int, state_dir: Path = None, need_world: bool = True, scan_cac
         "in_world": in_world,
         "selection_index": selection_index,
         "characters": characters,
+        "login_result": login_result,
+        "login_state": login_state,
+        "login_result_name": LOGIN_RESULT_NAMES.get(login_result, str(login_result)),
+        "last_login_result": last_login_result,
+        "last_login_state": last_login_state,
+        "disconnect_pending": disconnect_pending,
+        "reconnect": reconnect,
+        "account_name": account_name,
+        "displaying_queue_dialog": displaying_queue_dialog,
+        "showed_disconnect": showed_disconnect,
+        "server_alert": server_alert,
         # in_world's own "validated" is False (not measured, a fixed placeholder) whenever need_world was
         # False: a caller must not read "in_world": false from such a result as a measured fact.
         "validated": {"current_screen": True, "in_world": need_world, "selection_index": True,
-                      "characters": True},
+                      "characters": True, "login_result": True, "login_state": True,
+                      "last_login_result": True, "last_login_state": True,
+                      # disconnect_pending/showed_disconnect: address validated, but the live value is not a
+                      # usable level signal (edge-triggered, see GLUE_DISCONNECT_PENDING's comment) -- callers
+                      # must not treat a read of these two as proof of dialog presence or absence.
+                      "disconnect_pending": False, "reconnect": False,
+                      "account_name": False,  # address validated, live content not yet explained
+                      "displaying_queue_dialog": False,  # not yet exercised live
+                      "showed_disconnect": False, "server_alert": True},
     }
 
 
-GLUE_UNTIL_STATES = ("login", "charselect", "charselect-loaded", "in-world")
+GLUE_UNTIL_STATES = ("login", "charselect", "charselect-loaded", "in-world", "login-clean", "login-settled")
 GLUE_POLL_INTERVAL = 0.1
 
 
@@ -861,6 +967,28 @@ def glue_matches(status: dict, until_state: str) -> bool:
                 and len(status["characters"]) > 0)
     if until_state == "in-world":
         return status["in_world"]
+    if until_state == "login-clean":
+        # The account-login screen where the client has not (yet, this session) recorded a failed login
+        # attempt: current_screen alone cannot tell whether a result dialog ("You have been disconnected
+        # from the server", a wrong password, ...) sits on top, since CGlueMgr::m_currentScreen only names
+        # the glue screen, not whether a modal is over it (see GLUE_CURRENT_SCREEN's comment).
+        # login_state != LOGIN_STATE_FAILED answers that for a client that has never failed a login yet
+        # (login_state stays its -1 initial value). CAUTION (L11, 2026-10-27, live-proven): login_state does
+        # NOT reset when a dialog is dismissed -- it is sticky until the *next* real login/connect attempt
+        # changes it. A screenshot taken right after successfully dismissing a dialog showed a genuinely
+        # clean login screen while login_state still read 5 (LOGIN_STATE_FAILED). This state is therefore
+        # reliable only to confirm a client has *never* failed a login this session, not to confirm a
+        # dialog was just dismissed -- callers wanting the latter poll for current_screen == "login" alone
+        # (coa-client-lab's dismiss_login_dialog_via_memory/clear_login_dialog_unconditionally).
+        return status["current_screen"] == "login" and status["login_state"] != LOGIN_STATE_FAILED
+    if until_state == "login-settled":
+        # Reached once a login attempt either loads the character list (success) or the client records a
+        # failure (login_state == LOGIN_STATE_FAILED), whichever comes first -- lets a caller fail fast with
+        # the client's own login_result_name instead of waiting out a fixed ceiling on every wrong password.
+        success = (status["current_screen"] == "charselect" and not status["in_world"]
+                   and len(status["characters"]) > 0)
+        failed = status["current_screen"] == "login" and status["login_state"] == LOGIN_STATE_FAILED
+        return success or failed
     raise ValueError(f"unknown --until state: {until_state}")
 
 

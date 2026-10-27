@@ -713,6 +713,50 @@ see [ADR 0007](docs/adr/0007-soap-kick-replaces-camp-for-in-world-recovery.md) f
 including the earlier `/camp`-timeout misdiagnosis and the shared-account (`Memdedi`/`Memtwo`) defect this task
 could not fix (blocked by the agent sandbox, not a code gap).
 
+**The client's own login state machine (L11, 2026-10-27).** `coa-lab-mem glue` also reads ten
+`CGlueMgr` statics (`m_loginResult`, `m_loginState`, `m_lastLoginResult`, `m_lastLoginState`,
+`m_disconnectPending`, `m_reconnect`, `m_accountName`, `m_displayingQueueDialog`, `m_showedDisconnect`,
+`m_serverAlert`; addresses and the `LOGIN_STATE`/`LOGIN_RESULT` enum names are wowdecomp file:line citations
+in `scripts/coa-lab-mem`'s own comment) and two new `--until` states, `login-clean` and `login-settled`. Two
+real, live-measured limits, not fixed by this session (documented honestly rather than papered over):
+`login_state == LOGIN_STATE_FAILED` (5) reliably detects only one of the two triggers for the "You have been
+disconnected from the server" dialog — the client's own login attempt rejected (wrong password, already
+online, a duplicate-session disconnect during realm-connect) — not the other (an already-in-world client
+kicked, by this script or anyone else: measured `login_state == 16` on both a kicked-and-dialog-showing
+client and a genuinely clean login screen reached by `/camp` + Back, identically); and `login_state` is
+sticky, not reset by dismissing the dialog, so it cannot confirm a dismiss succeeded either (only
+`current_screen == "login"` can, the same bar the pre-L11 code already used). `login` dismisses the
+detectable case before typing (`dismiss_login_dialog_via_memory`) and the undetectable one unconditionally,
+reconfirmed by memory afterward, at the one place that already needed to run unconditionally
+(`goto_login_screen_via_memory`'s own entry and in-world-kick branches — `clear_login_dialog_unconditionally`,
+proven harmless on a dialog-free screen); after submitting credentials it polls `login-settled` and fails
+fast with the client's own `login_result_name` (`LOGIN_DISCONNECTED`, `LOGIN_INCORRECT_PASSWORD`, ...)
+instead of waiting out `COA_LAB_REALM_WAIT` on every failure.
+
+`kick_via_soap`'s stderr is no longer discarded, and retries widened from 1 to `COA_LAB_KICK_RETRY_ATTEMPTS`
+(4, 1s apart): under a true zero-gap switch this now surfaces the kick's real answer — the `.kick` command's
+own usage/syntax text, from `HandleKickPlayerCommand` (`src/server/scripts/Commands/cs_misc.cpp:1410-1418`)
+returning `false` with no message when the target does not resolve to a connected player, which
+`ns1__executeCommand` (`src/server/apps/worldserver/ACSoap/ACSoap.cpp:140-146`) turns into a SOAP fault
+carrying that text — not empty output as reports/l8/l10 described (their own call discarded stderr). This
+reads as a short-lived server-side name/connected-flag registration race in the ~1-2s right after the
+*target* character's own world entry; the same call always succeeded a few seconds later in every
+reproduction this session. Widening the retry closed it at a realistic ~2s operator pace (dedicated-account
+proof: 8/8 consecutive switches, 0 restarts) but not under true zero-gap scripted load, where it can persist
+well past 4 attempts and, once one login is rejected (`LOGIN_DISCONNECTED`), every subsequent attempt on the
+same client connection fails the same way — even for an unrelated account — until the client is restarted;
+not established further at the worldserver/socket level (time budget).
+
+`select_character_via_memory` now tells a genuine "never matched while still on character-select" apart from
+"the client was disconnected back to the login screen mid-navigation" (return 1 vs. 2, checked each poll
+tick): live-reproduced, slot 2, a shared-account switch under sustained load hit the latter (screenshot:
+the "disconnected" dialog, mid-`Down`-press) and the pre-L11 code reported the misleading "could not
+highlight CHARACTER" either way. `cmd_login` also retries the (separate, expensive) `glue_state` usability
+check up to `COA_LAB_GLUE_STATE_RETRY_ATTEMPTS` (3, 1s apart) before falling back to `select_character`
+(no name confirmation): live-reproduced once, a single transient `glue_state` miss at this exact point sent
+a switch to that fallback, which silently entered the world as the wrong character (asked for `Shareb`, got
+`Sharea`) with only a `WARN`, not a failure.
+
 `login`'s CHARACTER argument (both forms) picks that character on the character-select screen by name when
 `coa-lab-mem glue` is usable: `select_character_via_memory` presses Down and re-reads the highlighted name from
 memory until it matches, bounded by the list's own length, and refuses (dies) rather than entering the world as

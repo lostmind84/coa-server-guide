@@ -1062,5 +1062,63 @@ else
     pass "login refuses more than 3 arguments"
 fi
 
+# L11 (2026-10-27): kick_via_soap's retry count/stop-on-success, by sourcing the script's function
+# definitions (the same `sed '$d'` trick as gamescope_starttime_from_script above) and stubbing $RELAY.
+source_lab_functions() {
+    local tmp
+    tmp=$(mktemp)
+    sed '$d' "$SCRIPT" > "$tmp"
+    printf '%s' "$tmp"
+}
+
+KICK_TEST_DIR=$(mktemp -d "$HOME/.cache/coa-client-lab-kicktest.XXXXXX")
+mkdir -p "$KICK_TEST_DIR/lab"
+: > "$KICK_TEST_DIR/lab/relay.env"
+KICK_CALL_LOG="$KICK_TEST_DIR/calls.log"
+
+cat > "$KICK_TEST_DIR/relay_always_fails" <<'EOF'
+#!/usr/bin/env bash
+echo "call" >> "$KICK_CALL_LOG"
+echo "coa-lab-relay: Syntax: .kick [\$charactername] [\$reason]" >&2
+exit 1
+EOF
+chmod +x "$KICK_TEST_DIR/relay_always_fails"
+
+FUNCS_FILE=$(source_lab_functions)
+: > "$KICK_CALL_LOG"
+out=$(KICK_CALL_LOG="$KICK_CALL_LOG" COA_LAB_ROOT="$KICK_TEST_DIR/lab" \
+      COA_LAB_RELAY="$KICK_TEST_DIR/relay_always_fails" COA_LAB_SLEEP=true \
+      COA_LAB_KICK_RETRY_ATTEMPTS=4 COA_LAB_KICK_RETRY_WAIT=0 \
+      bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres" 2>&1)
+rc=$?
+assert_eq "kick_via_soap retries exactly KICK_RETRY_ATTEMPTS times" "$(wc -l < "$KICK_CALL_LOG")" "4"
+assert_eq "kick_via_soap returns 1 when every attempt fails" "$rc" "1"
+[[ "$out" == *Syntax* ]] && pass "kick_via_soap reports stderr instead of discarding it" \
+    || fail "kick_via_soap reports stderr instead of discarding it: got [$out]"
+
+cat > "$KICK_TEST_DIR/relay_second_try" <<'EOF'
+#!/usr/bin/env bash
+echo "call" >> "$KICK_CALL_LOG"
+if [[ -f "$KICK_CALL_LOG.once" ]]; then
+    echo "Player Coalabres kicked."
+    exit 0
+fi
+: > "$KICK_CALL_LOG.once"
+exit 1
+EOF
+chmod +x "$KICK_TEST_DIR/relay_second_try"
+
+: > "$KICK_CALL_LOG"
+rm -f "$KICK_CALL_LOG.once"
+KICK_CALL_LOG="$KICK_CALL_LOG" COA_LAB_ROOT="$KICK_TEST_DIR/lab" \
+    COA_LAB_RELAY="$KICK_TEST_DIR/relay_second_try" COA_LAB_SLEEP=true \
+    COA_LAB_KICK_RETRY_ATTEMPTS=4 COA_LAB_KICK_RETRY_WAIT=0 \
+    bash -c "source \"$FUNCS_FILE\"; kick_via_soap Coalabres"
+rc=$?
+assert_eq "kick_via_soap stops retrying as soon as a call succeeds" "$(wc -l < "$KICK_CALL_LOG")" "2"
+assert_eq "kick_via_soap returns 0 once a call succeeds" "$rc" "0"
+rm -f "$FUNCS_FILE"
+rm -rf "$KICK_TEST_DIR"
+
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

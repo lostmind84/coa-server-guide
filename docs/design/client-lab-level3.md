@@ -295,3 +295,36 @@ tried at character-select, live, slot 2:
 `login` now recovers in place for every state except when the recovery's own bounded polls (`/camp` ->
 character-select, 15s cap; the XTEST click -> login screen, 10s cap) do not confirm their result, or memory is
 unusable at all -- `restart_client` is unchanged as that fallback.
+
+## Addendum (L11, 2026-10-27): the login state machine, a leftover dialog, and the real cause of three
+## misleading symptoms
+
+User goal (unchanged since L6): master every login/logout step well enough to switch accounts or restart the
+client as fast as possible. This session added ten `CGlueMgr` login-state fields to `coa-lab-mem glue`
+(addresses and `LOGIN_STATE`/`LOGIN_RESULT` enum values from wowdecomp, file:line cited in the script's own
+comment) and used them to close the reported bug (a leftover "disconnected" dialog from an external `.kick`
+typed into blindly) and to replace three misleading error messages with their real cause:
+
+- A kick's "empty output" (reports/l8/l10) is the `.kick` command's own usage text -- `HandleKickPlayerCommand`
+  (`src/server/scripts/Commands/cs_misc.cpp:1410-1418`) silently returns `false` when the target is not yet a
+  connected player, which AC's dispatcher reports as the command's syntax help. Its stderr was being
+  discarded; it no longer is. This is a real, reproducible server-side registration race in the ~1-2s right
+  after the *target* character's own world entry -- widening the retry (1 -> up to 4 attempts) closes it at a
+  realistic ~2s pace, not under true zero-gap scripted load.
+- The shared-account "could not highlight CHARACTER" failure is not a navigation defect: reproduced live with
+  a screenshot showing the SAME disconnected-dialog screen appearing mid-navigation (the glue session itself
+  dropped under the same race above), and separately, a single transient miss of the unrelated `glue_state`
+  usability check silently sent one switch to the no-confirmation fallback, which entered the world as the
+  wrong character. Both are now detected and reported distinctly instead of one generic message.
+- `login_state == LOGIN_STATE_FAILED` (5) detects only one of the two real triggers for the "disconnected"
+  dialog (the client's own rejected login attempt); a kicked in-world client's dialog reads `login_state ==
+  16` instead, identical to a genuinely clean login screen reached the normal way -- not distinguishable by
+  any field read this session. `login_state` is also sticky (does not reset on dismiss). Both are documented,
+  not hidden, in `coa-lab-mem`'s own comment and [ADR 0009](adr/0009-login-state-machine-reads-and-fail-fast.md).
+
+Measured live, slot 2, 2026-10-27, nested 1920x1080: a ~2s-paced dedicated-account switch
+(`Coalabres`/`Labswitch`) ran 8/8 consecutive with zero restarts, 17.8-22.1s each. The same pace on the shared
+account (`Coalabshare`, `Sharea`/`Shareb`) ran 4/8 before the session's time budget closed, each failure now
+correctly attributed (a `LOGIN_DISCONNECTED` fail-fast, or the new "disconnected during character selection"
+message) rather than misreported. True zero-gap (no pause) switching remains unreliable for both forms -- see
+ADR 0009's own "not fixed, honestly reported" section.

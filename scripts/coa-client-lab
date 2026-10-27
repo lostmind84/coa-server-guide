@@ -31,6 +31,8 @@ RELOAD_WAIT="${COA_LAB_RELOAD_WAIT:-10}"
 LOGIN_WAIT="${COA_LAB_LOGIN_WAIT:-20}"
 REALM_WAIT="${COA_LAB_REALM_WAIT:-25}"
 WORLD_WAIT="${COA_LAB_WORLD_WAIT:-45}"
+GLUE_STATE_RETRY_ATTEMPTS="${COA_LAB_GLUE_STATE_RETRY_ATTEMPTS:-3}"
+GLUE_STATE_RETRY_WAIT="${COA_LAB_GLUE_STATE_RETRY_WAIT:-1}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ADDON_SRC="$SCRIPT_DIR/../addons/CoaProbe"
 PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
@@ -781,26 +783,44 @@ except Exception:
 
 # Ends a character's world session server-side over the lab SOAP relay (reports/l8: live, slot 2,
 # 2026-10-26, ".kick CHARACTER" -> "Player CHARACTER kicked.", confirmed in memory within ~3s: in_world
-# false, then current_screen "login" directly -- no character-select leg at all, unlike /camp). One retry
-# after a short, fixed wait: isolated, spaced-out SOAP calls answered in ~0.09s every time measured, but
-# under sustained back-to-back `login` calls (this task's own test loops, well beyond a human operator's
-# pace) a kick attempt occasionally returned nothing at all from the relay process itself -- not a SOAP
-# fault or a slow reply, so this reads as host-level contention from the test loop's own concurrent
-# gamescope/client/relay processes, not established further (not verified) in this task's time budget.
-# The retry does not chase that case (a second call under the same contention is no more likely to land);
-# it only covers a brief, already-observed registration race right at the world-entry boundary. Advisory
-# like every other memory/relay use in this script: a missing relay.env (no relay-setup on this slot), an
-# unknown character, or any SOAP fault after the retry falls back to the caller's /camp path (and from
-# there to restart_client) instead of being treated as a hard failure -- confirmed live: every kick miss in
-# this task's own heaviest back-to-back runs still reached world through that fallback chain.
+# false, then current_screen "login" directly -- no character-select leg at all, unlike /camp).
+#
+# L11 (2026-10-27) found the actual cause of the "empty output" symptom reports/l8/l10 described (previously
+# hidden: the relay call's stderr was discarded, `2>/dev/null`): under a truly zero-gap switch (this script's
+# own back-to-back proof runs, 7/8 and 8/8 reproductions), the kick attempt made immediately after the
+# *target* character's own world entry gets back the `.kick` command's own usage/syntax text, not a real
+# argument error -- `HandleKickPlayerCommand` (src/server/scripts/Commands/cs_misc.cpp:1410-1418) returns
+# `false` with no message whenever `target` does not resolve to a connected player, which AC's command
+# dispatcher then reports as that command's syntax help; `ACSoap.cpp`'s `ns1__executeCommand` turns any
+# `false` return into a SOAP fault carrying that same text (ACSoap.cpp:140-146). This reads as a short-lived
+# server-side name/connected-flag registration race in the ~1-2s right after that character's own world
+# entry: the same `kick CHARACTER` call, made again a few seconds later with nothing else changed, always
+# succeeded in every reproduction this session. The previous 1-attempt-after-1s retry does not clear this
+# window reliably (observed failing on both attempt 1 at t+0s and attempt 2 at t+1.0s); KICK_RETRY_ATTEMPTS
+# and KICK_RETRY_WAIT widen it to as many attempts as that many seconds, still far cheaper than the ~45s
+# restart fallback this replaces when it lands. Advisory like every other memory/relay use in this script: a
+# missing relay.env (no relay-setup on this slot), an unknown character, or a kick still unsuccessful after
+# every attempt falls back to the caller's /camp path (and from there to restart_client) instead of being
+# treated as a hard failure.
 KICK_RETRY_WAIT="${COA_LAB_KICK_RETRY_WAIT:-1}"
+KICK_RETRY_ATTEMPTS="${COA_LAB_KICK_RETRY_ATTEMPTS:-4}"
 kick_via_soap() {
-    local character="$1" out attempt
+    local character="$1" out err attempt
     [[ -n "$character" && -f "$LAB_ROOT/relay.env" ]] || return 1
-    for attempt in 1 2; do
-        out=$("$RELAY" soap "kick $character" 2>/dev/null) || out=""
-        [[ "$out" == *kicked* ]] && return 0
-        [[ "$attempt" -eq 1 ]] && "$SLEEP" "$KICK_RETRY_WAIT"
+    for ((attempt = 1; attempt <= KICK_RETRY_ATTEMPTS; attempt++)); do
+        err=$(mktemp)
+        out=$("$RELAY" soap "kick $character" 2> "$err") || out=""
+        if [[ "$out" == *kicked* ]]; then
+            rm -f "$err"
+            return 0
+        fi
+        if [[ -s "$err" ]]; then
+            echo "kick_via_soap: attempt $attempt for $character: $(cat "$err")" >&2
+        elif [[ -z "$out" ]]; then
+            echo "kick_via_soap: attempt $attempt for $character: empty output, no stderr" >&2
+        fi
+        rm -f "$err"
+        [[ "$attempt" -lt "$KICK_RETRY_ATTEMPTS" ]] && "$SLEEP" "$KICK_RETRY_WAIT"
     done
     return 1
 }
@@ -820,19 +840,80 @@ kick_via_soap() {
 CHARSELECT_BACK_WAIT="${COA_LAB_CHARSELECT_BACK_WAIT:-10}"
 CAMP_WAIT="${COA_LAB_CAMP_WAIT:-15}"
 KICK_WAIT="${COA_LAB_KICK_WAIT:-8}"
+DIALOG_DISMISS_WAIT="${COA_LAB_DIALOG_DISMISS_WAIT:-5}"
+
+# True only for the one dialog trigger this session found a reliable memory signal for (L11, 2026-10-27):
+# the client's OWN login attempt was rejected (wrong password, already online, a duplicate-session force
+# disconnect during realm-connect, ...) -- current_screen == "login" and login_state == LOGIN_STATE_FAILED
+# (5, WoW/Source/WowServices/Types.h:81). Validated live, slot 2, 2026-10-27, on the brief's own
+# reproduction (a duplicate-session disconnect during a login attempt left the client on a "You have been
+# disconnected from the server" dialog): login_state=5, login_result=21 (LOGIN_DISCONNECTED).
+#
+# This does NOT detect the *other* trigger for the same dialog text: an already-in-world client kicked
+# (`.kick`, this script's own or anyone else's) or disconnected. Also tried live this session, same slot,
+# same dialog (screenshot-confirmed both times): login_state read 16 (LOGIN_STATE_DISCONNECTED, the value
+# already held while legitimately in world) on BOTH a kicked client showing the dialog AND a client that had
+# just reached a genuinely clean login screen through the existing graceful `/camp` + Back-click recovery
+# (screenshot-confirmed clean: Username field visible, no dialog) -- identical reading either way.
+# disconnect_pending and showed_disconnect also both read 0 in the kicked-dialog case (edge-triggered,
+# already consumed by the time the dialog is visible; see their own comments in coa-lab-mem). No field this
+# session read distinguishes a kick-caused dialog from a clean login screen reached the same way. Not fixed
+# here (not verified further, time budget); flagged for whoever investigates the dialog's own Lua/FrameXML
+# state next (StaticPopup-style UI, likely tracked outside CGlueMgr entirely).
+#
+# A second finding (L11, same session): login_state does NOT reset when the dialog is dismissed -- it is
+# sticky until the *next* real login/connect attempt changes it. Live-proven: a screenshot taken right after
+# a successful Okay click showed a genuinely clean login screen (Username field visible, no dialog), while
+# login_state still read 5. So login_state==5 is only ever used here as the pre-click "a failure was just
+# recorded" signal (`glue_login_dialog_present`), never as a post-click success condition -- `coa-lab-mem
+# glue`'s own `login-clean` --until state has the same limitation and is not used by either dismiss function
+# below for that reason; both confirm only current_screen == "login" afterward, matching the pre-L11 code's
+# own bar for this (no stronger memory-based confirmation exists for "the dialog is actually gone now").
+glue_login_dialog_present() {
+    local json
+    json=$(glue_state) || return 1
+    [[ "$(glue_field "$json" current_screen)" == "login" && "$(glue_field "$json" login_state)" == "5" ]]
+}
+
+# Clicks Okay (click_login_dialog_dismiss) only when memory confirms the detectable (login_state==5) case,
+# then re-reads memory to confirm the account-login screen is still current (see the comment above for why
+# not more than that). Used only at the one call site (cmd_login, just before typing) where an unconditional
+# click was previously found to risk a regression (ADR 0007) and a narrower, proven-safe gate is preferred
+# over an unconditional one.
+dismiss_login_dialog_via_memory() {
+    glue_login_dialog_present || return 0
+    click_login_dialog_dismiss || return 1
+    glue_until login "$DIALOG_DISMISS_WAIT" > /dev/null
+}
+
+# Clicks Okay unconditionally, then confirms via memory that the account-login screen is (still) current.
+# Not gated on glue_login_dialog_present: as documented above, that signal misses the kick-caused dialog,
+# which is exactly what this function exists to clear. Safe to run even when no dialog is present --
+# click_login_dialog_dismiss (0.5, 0.517 of the window) is the same point `cmd_login`'s own account-field
+# click already uses next, proven harmless on a dialog-free login screen (ADR 0007) and re-confirmed live
+# this session (clicked it on both a dialog-present and a dialog-free login screen; the clean screen stayed
+# clean, screenshot-confirmed). This is "memory-driven, not blind" in the sense the brief asked for even
+# though the click itself cannot be gated on proof of the dialog: the result is always reconfirmed by memory
+# before the caller proceeds, never assumed.
+clear_login_dialog_unconditionally() {
+    click_login_dialog_dismiss || return 1
+    glue_until login "$DIALOG_DISMISS_WAIT" > /dev/null
+}
+
 goto_login_screen_via_memory() {
     local json screen world character
     json=$(glue_state) || return 1
     screen=$(glue_field "$json" current_screen)
     world=$(glue_field "$json" in_world)
-    [[ "$screen" == "login" && "$world" == "false" ]] && return 0
+    if [[ "$screen" == "login" && "$world" == "false" ]]; then
+        clear_login_dialog_unconditionally
+        return
+    fi
     if [[ "$world" == "true" ]]; then
         character=$(lab_last_character) || character=""
         if [[ -n "$character" ]] && kick_via_soap "$character" \
             && glue_until login "$KICK_WAIT" > /dev/null; then
-            click_login_dialog_dismiss || return 1
-            json=$(glue_state) || return 1
-            [[ "$(glue_field "$json" current_screen)" == "login" ]]
+            clear_login_dialog_unconditionally
             return
         fi
         cmd_chat "/camp"
@@ -843,7 +924,8 @@ goto_login_screen_via_memory() {
         return 1
     fi
     click_charselect_back_xtest || return 1
-    glue_until login "$CHARSELECT_BACK_WAIT" > /dev/null
+    glue_until login "$CHARSELECT_BACK_WAIT" > /dev/null || return 1
+    clear_login_dialog_unconditionally
 }
 
 # At character-select, presses Down until `coa-lab-mem glue`'s selection index names the wanted character,
@@ -851,9 +933,22 @@ goto_login_screen_via_memory() {
 # since Down alone reaches every index within one pass over a list of that length). Returns 0 once the
 # highlighted character's name matches; 1 (refuse by name, never guess) if it never does within that many
 # presses, or if memory stops answering partway through.
+# L11 (2026-10-27) found live, slot 2, that the pre-existing "could not highlight X" failure's actual cause
+# (at least once, reproduced with a screenshot) was not a navigation/name-matching defect at all: the client
+# was force-disconnected back to the account-login screen (the same "You have been disconnected from the
+# server" dialog as the login-time case) WHILE this loop was still polling character-select -- the character
+# list it kept reading went stale/empty mid-navigation because the glue session itself dropped underneath it,
+# the same server-side session instability already found causing the zero-gap kick race (see kick_via_soap's
+# comment), manifesting here instead of during login. Return codes now distinguish the two: 1 is the
+# original "never matched while still genuinely on character-select" (a real navigation/timing miss), 2 is
+# "the screen stopped being character-select partway through" (a disconnect, not a navigation defect) -- the
+# caller (cmd_login) reports a different, accurate message for each instead of one misleading "could not
+# highlight" for both.
 select_character_via_memory() {
-    local character="$1" json count index name tries
+    local character="$1" json count index name tries screen
     json=$(glue_state) || return 1
+    screen=$(glue_field "$json" current_screen)
+    [[ "$screen" == "charselect" ]] || return 2
     count=$(python3 -c '
 import json, sys
 try:
@@ -878,6 +973,8 @@ except Exception:
         xdotool key --window "$WINDOW" Down
         "$SLEEP" 1
         json=$(glue_state) || return 1
+        screen=$(glue_field "$json" current_screen)
+        [[ "$screen" == "charselect" ]] || return 2
         tries=$((tries + 1))
     done
     return 1
@@ -1020,13 +1117,27 @@ cmd_login() {
                "see $STATE_DIR/screen-check.png. Refusing to type credentials."
     # A leftover "You have been disconnected from the server" (or similar) dialog shares current_screen
     # and the brightness check with a clean login screen (comment above), so neither guard above can see
-    # one. Unlike goto_login_screen_via_memory's own use of click_login_dialog_dismiss right after a
-    # kick_via_soap it just sent (XTEST, proven reliable from inside this process there), adding that same
-    # call unconditionally here was tried and reverted (reports/l8, live, slot 2, 2026-10-26): it broke the
-    # previously-reliable fresh-login path (regression reproduced live, isolated with `git stash`), most
-    # likely XTEST's own `windowactivate` disturbing focus for the credential click two lines below, which
-    # stays the XSendEvent form. Left as the pre-existing, already-documented gap (not fixed by this task):
-    # a leftover dialog here still needs a restart (`coa-client-lab stop && start N`) to clear.
+    # one. Unconditionally clicking dismiss here (XTEST) was tried and reverted (reports/l8, live, slot 2,
+    # 2026-10-26): it broke the previously-reliable fresh-login path (regression reproduced live, isolated
+    # with `git stash`), most likely XTEST's own `windowactivate` disturbing focus for the credential click
+    # two lines below, which stays the XSendEvent form. L11 (2026-10-27) adds a narrow, gated dismiss here
+    # instead of an unconditional one: `dismiss_login_dialog_via_memory` only clicks when `coa-lab-mem glue`
+    # confirms login_state == LOGIN_STATE_FAILED, the one dialog trigger (this client's own login attempt
+    # rejected: wrong password, already online, a duplicate-session disconnect, ...) this session found a
+    # reliable memory signal for -- see `glue_login_dialog_present`'s comment for the other trigger (an
+    # already-in-world client kicked) this did NOT find a signal for; that one is instead cleared earlier,
+    # unconditionally, in `goto_login_screen_via_memory` (`clear_login_dialog_unconditionally`), which this
+    # function already ran via the `-f "$STATE_DIR/account"` check in `cmd_login` above, for any call where
+    # a previous login was attempted this session. This gate therefore mainly guards a fresh client (no
+    # prior `goto_login_screen_via_memory` call this session) that still somehow shows a login_state==5
+    # dialog, and is intentionally narrow rather than unconditional, to stay clear of the ADR 0007 regression
+    # site. When `coa-lab-mem` is unusable at all, this is a no-op and the pre-existing gap stands (a
+    # leftover dialog then still needs a restart, `coa-client-lab stop && start N`).
+    if glue_state > /dev/null 2>&1; then
+        dismiss_login_dialog_via_memory \
+            || die "a result dialog is still on the account-login screen after trying to dismiss it" \
+                   "(login_state stayed LOGIN_STATE_FAILED); see $STATE_DIR/screen-check.png."
+    fi
     echo "$account" > "$STATE_DIR/account"
     local backspaces geometry
     backspaces=$(printf 'BackSpace %.0s' $(seq 1 20))
@@ -1043,14 +1154,50 @@ cmd_login() {
     xdotool key --window "$WINDOW" --delay 20 $backspaces
     xdotool type --window "$WINDOW" --delay 40 "$password"
     xdotool key --window "$WINDOW" Return
-    glue_until charselect-loaded "$REALM_WAIT" > /dev/null || true
+    # `login-settled` (L11, 2026-10-27) stops as soon as either the character list loads or the client's own
+    # login_state records a failure (wrong password, already online, banned, ...), instead of always waiting
+    # out REALM_WAIT -- fails fast with the client's own login_result_name rather than a timeout that then
+    # goes on to misreport the real cause (ADR 0007/8's "could not highlight" symptom was often this: a
+    # login failure, not a character-select defect). Falls back to the old unconditional wait when
+    # coa-lab-mem is unusable.
+    if json=$(glue_until login-settled "$REALM_WAIT" 2> /dev/null); then
+        :
+    else
+        json=$(glue_state 2> /dev/null) || json=""
+    fi
+    if [[ -n "$json" ]]; then
+        local settled_state settled_result_name
+        settled_state=$(glue_field "$json" login_state)
+        settled_result_name=$(glue_field "$json" login_result_name)
+        if [[ "$settled_state" == "5" ]]; then
+            die "login failed: $settled_result_name" "(see $STATE_DIR/screen-check.png)"
+        fi
+    fi
     if [[ -n "$character" ]]; then
         # `glue_until charselect-loaded` above already waited for the character list to be loaded (when
-        # memory is usable); re-check here only confirms memory is still usable right now.
-        if glue_state > /dev/null 2>&1; then
-            select_character_via_memory "$character" \
-                || die "could not highlight $character in the character-select list within its own length;" \
-                       "refusing to enter the world as an unconfirmed character. See $STATE_DIR/screen-check.png."
+        # memory is usable); re-check here only confirms memory is still usable right now. L11 (2026-10-27):
+        # this single check is itself exposed to the same transient server-side instability documented at
+        # kick_via_soap and select_character_via_memory -- reproduced live, slot 2: `glue_state` failed right
+        # at this exact point once, sending this call to the `else` branch (`select_character`, which has no
+        # name confirmation and silently uses the client's default-highlighted character), and the client
+        # entered the world as the WRONG character with only a WARN, not a failure. A short retry here closes
+        # that window instead of falling back to the unconfirmed path on a single transient miss; it still
+        # falls back exactly as before if memory stays unusable for GLUE_STATE_RETRY_ATTEMPTS in a row.
+        local glue_ready="" attempt
+        for ((attempt = 1; attempt <= GLUE_STATE_RETRY_ATTEMPTS; attempt++)); do
+            glue_state > /dev/null 2>&1 && { glue_ready=1; break; }
+            [[ "$attempt" -lt "$GLUE_STATE_RETRY_ATTEMPTS" ]] && "$SLEEP" "$GLUE_STATE_RETRY_WAIT"
+        done
+        if [[ -n "$glue_ready" ]]; then
+            local select_rc=0
+            select_character_via_memory "$character" || select_rc=$?
+            case "$select_rc" in
+                0) ;;
+                2) die "disconnected during character selection (the client returned to the login screen" \
+                       "while selecting $character, not a navigation failure); see $STATE_DIR/screen-check.png." ;;
+                *) die "could not highlight $character in the character-select list within its own length;" \
+                       "refusing to enter the world as an unconfirmed character. See $STATE_DIR/screen-check.png." ;;
+            esac
         else
             select_character "$account" "$character"
         fi
