@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Remove a finished CoA worktree and the test data it left behind, once its work is pushed.
+
+    coa-worktree-cleanup WORKTREE          # dry run: print what would be removed, change nothing
+    coa-worktree-cleanup WORKTREE --yes    # remove it
+
+Steps, in order; the first refusal stops everything and nothing after it runs:
+
+1. WORKTREE must be a linked worktree of the CoA checkout (not the main checkout, not a slot build clone).
+2. No running process may have its working directory inside WORKTREE (an agent may still use it). Its
+   tracked files must be clean, and its HEAD must be on a remote branch (pushed) or be the head of a merged
+   pull request (`gh`, the merged branch may be deleted). Untracked files are listed and refused too, so
+   nothing unpublished is lost; `.cache/`, `build/` and `env/` are expected and ignored.
+3. Every gameplay world cache it owns (`.cache/coa-gameplay-tests/world-cache/**/world.json`) in the in-RAM
+   test MySQL (`coa-test-mysql`) is dropped only if no `lease.json` holds it, its state is `ready` or
+   `invalid`, the schema's owner token matches the metadata, and no MySQL connection uses it. A cache whose
+   schema is not in that server (for example one built against a slot database) is left alone and reported.
+4. `git worktree remove` (never forced), then `git branch -d` of its branch (`-D` only when step 2 found a
+   merged pull request whose head is this HEAD, since a squash merge leaves the branch unmerged for git).
+
+The slot (`coa-slot release N`) and the lab client instance (`coa-client-lab stop`) stay the caller's job.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+MYSQL_CONTAINER = "coa-test-mysql"
+OWNER_TABLE = "coa_gameplay_cache_owner"
+CACHE_ROOT = Path(".cache/coa-gameplay-tests/world-cache")
+EXPECTED_UNTRACKED = (".cache/", "build/", "env/")
+
+
+class Refused(Exception):
+    pass
+
+
+def git(worktree: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Refused(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def mysql(statement: str) -> str:
+    command = ["docker", "exec", MYSQL_CONTAINER, "sh", "-c",
+               'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -B -e "$0" 2>/dev/null', statement]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Refused(f"{MYSQL_CONTAINER} query failed: {statement}")
+    return result.stdout
+
+
+def processes_inside(worktree: Path):
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            cwd = Path(os.readlink(entry / "cwd"))
+        except OSError:
+            continue
+        if cwd == worktree or worktree in cwd.parents:
+            yield entry.name
+
+
+def merged_pull_request(worktree: Path, branch: str, head: str):
+    if not branch:
+        return None
+    origin = git(worktree, "remote", "get-url", "origin").strip().removesuffix(".git")
+    repo = "/".join(origin.split("/")[-2:])
+    result = subprocess.run(["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "merged",
+                             "--json", "url,headRefOid"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    return next((pr["url"] for pr in json.loads(result.stdout) if pr["headRefOid"] == head), None)
+
+
+def check_worktree(worktree: Path):
+    if not (worktree / ".git").is_file():
+        raise Refused(f"{worktree} is not a linked worktree (no .git file): refusing the main checkout or a clone")
+    common = Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    if not (common.parent / "src/server/coa").is_dir():
+        raise Refused(f"{worktree} is not a worktree of the CoA checkout ({common})")
+    users = list(processes_inside(worktree))
+    if users:
+        raise Refused(f"process(es) {', '.join(users)} have their working directory inside it")
+    dirty = [line for line in git(worktree, "status", "--porcelain").splitlines()
+             if not (line.startswith("?? ") and line[3:].startswith(EXPECTED_UNTRACKED))]
+    if dirty:
+        raise Refused("uncommitted or untracked work:\n  " + "\n  ".join(dirty))
+    branch = git(worktree, "branch", "--show-current").strip()
+    merged = merged_pull_request(worktree, branch, git(worktree, "rev-parse", "HEAD").strip())
+    if not merged and not git(worktree, "branch", "-r", "--contains", "HEAD").strip():
+        raise Refused("HEAD is on no remote branch and is not the head of a merged pull request: push it first")
+    return branch, merged
+
+
+def world_caches(worktree: Path):
+    for metadata_path in sorted((worktree / CACHE_ROOT).glob("**/world.json")):
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        yield metadata_path, metadata
+
+
+def check_cache(metadata_path: Path, metadata: dict):
+    world_id = metadata.get("world_id", "")
+    if not (len(world_id) == 12 and all(c in "0123456789abcdef" for c in world_id)):
+        raise Refused(f"{metadata_path}: invalid world_id")
+    schema = f"coa_test_{world_id}_world"
+    if (metadata_path.parent / "lease.json").exists():
+        raise Refused(f"{schema} is leased ({metadata_path.parent / 'lease.json'}): a run may still use it")
+    if metadata.get("state") not in {"ready", "invalid"}:
+        raise Refused(f"{schema} state is {metadata.get('state')!r}, not ready/invalid: inspect it first")
+    if not mysql(f"SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{schema}';").strip():
+        return schema, None
+    token = mysql(f"SELECT token FROM `{schema}`.`{OWNER_TABLE}`;").strip()
+    if token != metadata.get("token"):
+        raise Refused(f"{schema}: owner token does not match {metadata_path}")
+    connections = mysql(f"SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = '{schema}';").strip()
+    if connections != "0":
+        raise Refused(f"{schema}: {connections} MySQL connection(s) use it")
+    return schema, True
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("worktree", type=Path)
+    parser.add_argument("--yes", action="store_true", help="remove; without it only print the plan")
+    args = parser.parse_args(argv)
+    worktree = args.worktree.expanduser().resolve()
+    try:
+        branch, merged = check_worktree(worktree)
+        caches = [(path, *check_cache(path, metadata)) for path, metadata in world_caches(worktree)]
+    except Refused as refusal:
+        print(f"REFUSED: {refusal}", file=sys.stderr)
+        return 1
+    for path, schema, present in caches:
+        if present:
+            print(f"{'drop' if args.yes else 'would drop'} {schema} ({path})")
+        else:
+            print(f"skip {schema}: not in {MYSQL_CONTAINER} ({path})")
+    if merged:
+        print(f"merged pull request: {merged}")
+    print(f"{'remove' if args.yes else 'would remove'} worktree {worktree}"
+          + (f" and branch {branch}" if branch else ""))
+    if not args.yes:
+        print("dry run: nothing changed (add --yes)")
+        return 0
+    try:
+        for path, schema, present in caches:
+            if present:
+                mysql(f"DROP DATABASE `{schema}`;")
+            path.unlink()
+        main_checkout = Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).parent
+        git(main_checkout, "worktree", "remove", str(worktree))
+        if branch:
+            git(main_checkout, "branch", "-D" if merged else "-d", branch)
+    except Refused as refusal:
+        print(f"FAILED: {refusal}", file=sys.stderr)
+        return 1
+    print("done")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
