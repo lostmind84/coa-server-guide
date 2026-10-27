@@ -32,6 +32,8 @@ LOGIN_WAIT="${COA_LAB_LOGIN_WAIT:-20}"
 REALM_WAIT="${COA_LAB_REALM_WAIT:-25}"
 WORLD_WAIT="${COA_LAB_WORLD_WAIT:-45}"
 UI_READY_WAIT="${COA_LAB_UI_READY_WAIT:-30}"
+LOGIN_ATTEMPTS="${COA_LAB_LOGIN_ATTEMPTS:-2}"
+LOGIN_DISCONNECTED_EXIT=75
 GLUE_STATE_RETRY_ATTEMPTS="${COA_LAB_GLUE_STATE_RETRY_ATTEMPTS:-3}"
 GLUE_STATE_RETRY_WAIT="${COA_LAB_GLUE_STATE_RETRY_WAIT:-1}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -724,6 +726,22 @@ glue_state() {
 # typed in that window, such as the next login's /camp, is lost. login therefore returns only once
 # the addon answers a relay ping, which needs the UI loaded; without a relay descriptor it keeps the
 # memory signal alone.
+# The server sometimes ends the new session while the character list is shown, after a zero-gap
+# switch back to a shared account (slot 2, 2026-10-27: about 1 in 10 mixed switches; cause not
+# established, see ADR 0011). A second login from the same client state failed the same way each
+# time (3/3), so the retry restarts the client first. Only that disconnect is retried; every other
+# failure stops at once.
+login_with_retry() {
+    local attempt rc
+    for ((attempt = 1; ; attempt++)); do
+        rc=0
+        ( cmd_login "$@" ) || rc=$?
+        [[ "$rc" == "$LOGIN_DISCONNECTED_EXIT" && "$attempt" -lt "$LOGIN_ATTEMPTS" ]] || return "$rc"
+        echo "WARN: the server disconnected the client during character selection; restarting it and logging in again" >&2
+        ( restart_client ) || return "$rc"
+    done
+}
+
 wait_ui_ready() {
     [[ -f "$STATE_DIR/lab.json" ]] || return 0
     local deadline=$((SECONDS + UI_READY_WAIT))
@@ -1349,8 +1367,10 @@ cmd_login() {
             select_character_via_memory "$character" || select_rc=$?
             case "$select_rc" in
                 0) ;;
-                2) die "disconnected during character selection (the client returned to the login screen" \
-                       "while selecting $character, not a navigation failure); see $STATE_DIR/screen-check.png." ;;
+                2) printf 'ERROR: %s\n' "disconnected during character selection (the client returned to the" \
+                       "login screen while selecting $character, not a navigation failure); see" \
+                       "$STATE_DIR/screen-check.png." >&2
+                   exit "$LOGIN_DISCONNECTED_EXIT" ;;
                 *) die "could not highlight $character in the character-select list within its own length;" \
                        "refusing to enter the world as an unconfirmed character. See $STATE_DIR/screen-check.png." ;;
             esac
@@ -1626,7 +1646,7 @@ main() {
         type) cmd_type "$@" ;;
         key) cmd_key "$@" ;;
         chat) cmd_chat "$@" ;;
-        login) cmd_login "$@" ;;
+        login) login_with_retry "$@" ;;
         character) cmd_character "$@" ;;
         screenshot) cmd_screenshot "$@" ;;
         hold) cmd_hold "$@" ;;

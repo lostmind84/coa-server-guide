@@ -102,3 +102,16 @@ would be the natural next step, but was out of scope for a read-only, slot-2-onl
   pre-existing `kick_via_soap` flake can still surface under sustained zero-gap load.
 - Open items for whoever continues this: the `kick_via_soap` retry-cadence flake under true zero-gap pressure,
   and the root trigger of the first genuine disconnect (needs timestamped server logging to chase further).
+
+## Addendum (2026-10-27): measured state after these fixes
+
+Measured live on slot 2, zero gap, with the default path order:
+
+- With the fields cleared reliably, the `/camp` + Back different-account path that ADR 0010 reverted works:
+  6/6 switches with `.kick` forced to fail, 23-26 s each. It now backs up a missed `.kick`.
+- One failure remains: switching back to a shared account sometimes gets the new session disconnected while
+  the character list is shown (about 1 in 10 mixed switches; no server log line at the default levels). A
+  second login from the same client state failed the same way 3/3, so `login` restarts the client and logs in
+  once more for that one error (`LOGIN_DISCONNECTED_EXIT`, `COA_LAB_LOGIN_ATTEMPTS`, default 2).
+- Result: 15/15 mixed switches reached the right character; 14 took 13-23 s, one took the restart retry
+  (73 s). The cause of that disconnect is still open.

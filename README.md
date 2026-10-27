@@ -792,6 +792,11 @@ memory `in_world` signal, about 9 s before the in-world UI takes input, so the n
 loading screen and lost. `login` now returns only once the addon answers a relay ping (`COA_LAB_UI_READY_WAIT`,
 30 s): zero-gap same-account switches then took the fast path 5/5, 14-15 s each (ADR 0010, addendum).
 
+A zero-gap switch back to a shared account is sometimes disconnected by the server while the character list is
+shown (about 1 in 10; cause open). `login` then restarts the client and logs in once more
+(`COA_LAB_LOGIN_ATTEMPTS`, default 2): 15/15 mixed switches reached the right character, 13-23 s each, one at
+73 s through that retry (ADR 0011, addendum).
+
 A second idea tried and reverted: making the same instant `/camp` the *primary* recovery for a **different**
 -account world switch too (ahead of `kick_via_soap`), reasoning that a graceful instant logout would avoid
 `kick_via_soap`'s own server-side registration race (previous paragraph). Live, slot 2: `/camp` did reach
