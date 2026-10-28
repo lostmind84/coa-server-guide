@@ -1075,7 +1075,8 @@ symptoms. Claiming and closing issues adapt to the permissions your account actu
 When an agent has pushed the PR of a worktree, it runs
 [`scripts/coa-worktree-cleanup`](scripts/coa-worktree-cleanup) `<worktree>` (dry run) and then with `--yes`: the
 worktree's world caches leave the in-RAM test MySQL, then the worktree and its local branch go. The script
-refuses unpublished, in-use or leased work; see [`agents/git-safety.md`](agents/git-safety.md) for the full
+refuses unpublished, in-use or leased work. When the test MySQL is full mid-batch, `--cache-only` drops only a
+worktree's idle world caches and keeps the worktree; the next run copies the world again. See [`agents/git-safety.md`](agents/git-safety.md) for the full
 cleanup rule and [ADR 0016](docs/adr/0016-clean-up-worktrees-after-publishing.md).
 
 Claude Code uses the command file directly or through a symlink:

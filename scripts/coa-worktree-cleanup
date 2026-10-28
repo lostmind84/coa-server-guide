@@ -3,6 +3,7 @@
 
     coa-worktree-cleanup WORKTREE          # dry run: print what would be removed, change nothing
     coa-worktree-cleanup WORKTREE --yes    # remove it
+    coa-worktree-cleanup WORKTREE --cache-only [--yes]   # drop only its world caches, keep the worktree
 
 Steps, in order; the first refusal stops everything and nothing after it runs:
 
@@ -17,6 +18,9 @@ Steps, in order; the first refusal stops everything and nothing after it runs:
    schema is not in that server (for example one built against a slot database) is left alone and reported.
 4. `git worktree remove` (never forced), then `git branch -d` of its branch (`-D` only when step 2 found a
    merged pull request whose head is this HEAD, since a squash merge leaves the branch unmerged for git).
+
+`--cache-only` runs step 1 and step 3 only: it frees the test MySQL for a worktree whose work is still going on
+(unpushed, dirty, or with an agent inside it). The next gameplay run rebuilds the cache (a few minutes).
 
 The slot (`coa-slot release N`) and the lab client instance (`coa-client-lab stop`) stay the caller's job.
 """
@@ -77,12 +81,15 @@ def merged_pull_request(worktree: Path, branch: str, head: str):
     return next((pr["url"] for pr in json.loads(result.stdout) if pr["headRefOid"] == head), None)
 
 
-def check_worktree(worktree: Path):
+def check_linked(worktree: Path):
     if not (worktree / ".git").is_file():
         raise Refused(f"{worktree} is not a linked worktree (no .git file): refusing the main checkout or a clone")
     common = Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
     if not (common.parent / "src/server/coa").is_dir():
         raise Refused(f"{worktree} is not a worktree of the CoA checkout ({common})")
+
+
+def check_published(worktree: Path):
     users = list(processes_inside(worktree))
     if users:
         raise Refused(f"process(es) {', '.join(users)} have their working directory inside it")
@@ -127,10 +134,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("worktree", type=Path)
     parser.add_argument("--yes", action="store_true", help="remove; without it only print the plan")
+    parser.add_argument("--cache-only", action="store_true",
+                        help="drop only the world caches and keep the worktree, even if its work is unpublished")
     args = parser.parse_args(argv)
     worktree = args.worktree.expanduser().resolve()
     try:
-        branch, merged = check_worktree(worktree)
+        check_linked(worktree)
+        branch, merged = (None, None) if args.cache_only else check_published(worktree)
         caches = [(path, *check_cache(path, metadata)) for path, metadata in world_caches(worktree)]
     except Refused as refusal:
         print(f"REFUSED: {refusal}", file=sys.stderr)
@@ -142,8 +152,9 @@ def main(argv=None) -> int:
             print(f"skip {schema}: not in {MYSQL_CONTAINER} ({path})")
     if merged:
         print(f"merged pull request: {merged}")
-    print(f"{'remove' if args.yes else 'would remove'} worktree {worktree}"
-          + (f" and branch {branch}" if branch else ""))
+    if not args.cache_only:
+        print(f"{'remove' if args.yes else 'would remove'} worktree {worktree}"
+              + (f" and branch {branch}" if branch else ""))
     if not args.yes:
         print("dry run: nothing changed (add --yes)")
         return 0
@@ -152,6 +163,9 @@ def main(argv=None) -> int:
             if present:
                 mysql(f"DROP DATABASE `{schema}`;")
             path.unlink()
+        if args.cache_only:
+            print("done")
+            return 0
         main_checkout = Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).parent
         git(main_checkout, "worktree", "remove", str(worktree))
         if branch:

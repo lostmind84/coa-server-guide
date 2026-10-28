@@ -56,6 +56,12 @@ made, in the same task, without asking:
 2. `coa-client-lab stop` for the agent's own lab instance, then erase its throwaway accounts and characters.
 3. `coa-slot stop N` (unless the user wants the server up) and `coa-slot release N`.
 
+When the test MySQL is full while the work is still going on, `coa-worktree-cleanup <worktree> --cache-only
+[--yes]` drops only that worktree's world caches, with the same cache checks (lease, state, owner token, open
+connections), and keeps the worktree whatever its git state. The next gameplay run copies the world again. Use it
+on your own worktrees first; on another agent's only when its cache is idle (the checks pass) and say so to that
+agent.
+
 Review follow-ups do not need the old worktree: `git worktree add -b <branch> <path> fork/<branch>` recreates it
 from the pushed branch. Worktrees whose PR is merged are removed the same way by whoever finds them. Never
 remove another agent's worktree while its work is unpublished or in use; the script's refusals enforce that.
