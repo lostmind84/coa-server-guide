@@ -113,7 +113,8 @@ CGOBJECTDATA_TYPE_OFF = 0x08       # validated (0x19 == object|unit|player on th
 CGOBJECTDATA_ENTRY_OFF = 0x0C      # validated (32666 on the training dummy)
 
 # Gameobject fields sit in the same descriptor array CGObject::m_obj points at: 4 * (OBJECT_END (6) + field),
-# per EGameObjectFields in UpdateFields.h. Not yet validated against a live client.
+# per EGameObjectFields in UpdateFields.h. Validated live (slot 2, 2026-10-31): display id and type matched
+# gameobject_template for a gatherable chest, a tree and two transports; chests read dynflag activate, path -1.
 GAMEOBJECT_DISPLAYID_OFF = 0x20    # GAMEOBJECT_DISPLAYID
 GAMEOBJECT_FLAGS_OFF = 0x24        # GAMEOBJECT_FLAGS
 GAMEOBJECT_DYNAMIC_OFF = 0x38      # GAMEOBJECT_DYNAMIC: low u16 GO_DYNFLAG_LO_*, high u16 path progress
@@ -1069,13 +1070,13 @@ def read_gameobject_data(pid: int, node: int) -> dict:
         "dynflag_names": [name for bit, name in GO_DYNFLAG_LO_NAMES.items() if dynflags & bit],
         "path_progress": dynamic >> 16,
         "state": bytes_1 & 0xFF, "go_type": (bytes_1 >> 8) & 0xFF,
-        "validated": False,
+        "validated": True,
     }
 
 
 def cmd_gameobject(pid: int, mgr_addr: int, selector: str) -> dict:
     guid = int(selector, 16) if selector.lower().startswith("0x") else int(selector)
-    if guid < 0x10000:
+    if guid >> 32 == 0:
         matches = []
         for node in walk_objects(pid, mgr_addr):
             try:
@@ -1131,7 +1132,7 @@ def main(argv=None) -> int:
     unit_parser = sub.add_parser("unit")
     unit_parser.add_argument("selector", help="player | target | 0x<guid>")
     go_parser = sub.add_parser("gameobject")
-    go_parser.add_argument("selector", help="entry (below 0x10000) | 0x<guid> | decimal guid")
+    go_parser.add_argument("selector", help="entry | 0x<guid> (64-bit, high word non-zero)")
     sub.add_parser("objects")
     sub.add_parser("spell-db")
     spell_parser = sub.add_parser("spell")

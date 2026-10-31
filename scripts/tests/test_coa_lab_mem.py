@@ -239,6 +239,18 @@ class GameObjectTest(unittest.TestCase):
         result = mem.cmd_gameobject(None, self.build(dynamic=0), "0xF11000003D0000FF")
         self.assertEqual(result["dynflag_names"], [])
 
+    def test_entries_above_65535_are_entries_not_guids(self):
+        fake = FakeMemory()
+        mgr = 0x3000000
+        build_object_manager(fake, mgr, player_guid=1, map_id=0, nodes=[
+            (0x4001000, 0x24, 0x4001100, 0xF11000003D0000FF, 0x21, 175080, 5),
+        ])
+        fake.write(0x4001100, bytes(0x50))
+        fake.write_u32(0x4001100 + mem.CGOBJECTDATA_ENTRY_OFF, 175080)
+        patch_memory(self, fake)
+        result = mem.cmd_gameobject(None, mgr, "175080")
+        self.assertEqual(result["object"]["entry"], 175080)
+
     def test_unknown_entry_raises(self):
         with self.assertRaises(mem.MemoryError_):
             mem.cmd_gameobject(None, self.build(), "999")
