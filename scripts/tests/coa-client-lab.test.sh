@@ -132,6 +132,12 @@ EOF
     # Fake ffmpeg (L15 problem 1, --video-seconds): there is no real X server at the fake DISPLAY, so the
     # real x11grab demuxer would fail here regardless of this change; this just logs the invocation and
     # creates the output file, same convention as the magick fake above.
+    cat > "$WORK/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >> "$FAKE_LOG"
+[[ "${FAKE_NO_SPAWN:-}" == 1 ]] && exit 0
+printf '6940068\t0\t100\t200\t-30\n2\n'
+EOF
     cat > "$WORK/bin/ffmpeg" <<'EOF'
 #!/usr/bin/env bash
 printf 'ffmpeg %s\n' "$*" >> "$FAKE_LOG"
@@ -140,7 +146,7 @@ EOF
     cat > "$WORK/bin/coa-slot" <<'EOF'
 #!/usr/bin/env bash
 printf 'coa-slot %s\n' "$*" >> "$FAKE_LOG"
-[[ "$1" == env ]] && printf 'SLOT=%s\nAUTH_ADDR=127.0.0.1:3924\nETC=%s\nSTATE_FILE=%s\nGHOST_ENV=%s\n' \
+[[ "$1" == env ]] && printf 'SLOT=%s\nAUTH_ADDR=127.0.0.1:3924\nETC=%s\nSTATE_FILE=%s\nGHOST_ENV=%s\nDATABASE_CONTAINER=fake-db\n' \
     "$2" "$FAKE_ETC" "$FAKE_SLOT_STATE" "$FAKE_GHOST_ENV"
 [[ "$1" == preflight && "${FAKE_PREFLIGHT_FAIL:-}" == 1 ]] && exit 1
 exit 0
@@ -303,6 +309,22 @@ assert_contains "status shows running" "$WORK/out" "gamescope: running (pid"
 run_lab chat "/say hello lab"
 assert_contains "chat opens the edit box" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4242 Return"
 assert_contains "chat types text" "$FAKE_LOG" "xdotool DISPLAY=:77 type --window 4242 --delay 40 /say hello lab"
+
+: > "$FAKE_LOG"
+run_lab camera pitch down 50
+assert_contains "camera starts the pitch" "$FAKE_LOG" "type --window 4242 --delay 40 /script MoveViewDownStart()"
+assert_contains "camera stops the pitch" "$FAKE_LOG" "type --window 4242 --delay 40 /script MoveViewDownStop()"
+if run_lab camera pitch sideways 50; then fail "camera refuses an unknown direction"; else pass "camera refuses an unknown direction"; fi
+
+: > "$FAKE_LOG"
+run_lab goto-spawn gameobject --entry 90268 --distance 10 --bearing 90 --dz 2
+assert_contains "goto-spawn queries the slot database" "$FAKE_LOG" "docker exec fake-db"
+assert_contains "goto-spawn stands at bearing and distance, facing the spawn" "$FAKE_LOG" \
+    "type --window 4242 --delay 40 .go xyz 100.000 210.000 -28.000 0 4.7124"
+assert_contains "goto-spawn reports the spawn count" "$WORK/out" "2 with id 90268"
+FAKE_NO_SPAWN=1 run_lab goto-spawn creature --guid 5 || true
+assert_contains "goto-spawn names a missing spawn" "$WORK/out" "no creature spawn with guid 5"
+if run_lab goto-spawn gameobject --entry 1 --guid 2; then fail "goto-spawn refuses both ids"; else pass "goto-spawn refuses both ids"; fi
 
 : > "$FAKE_LOG"
 run_lab key Escape Tab
@@ -1063,6 +1085,7 @@ assert_contains "character request has the class" "$FAKE_LOG" '"class": 23'
 assert_contains "character request has the level" "$FAKE_LOG" '"level": 20'
 assert_contains "character request has the learn list" "$FAKE_LOG" '"learn": [704723, 704724]'
 assert_contains "character request has the items list" "$FAKE_LOG" '"items": [9701803]'
+assert_contains "character request has an empty bag items list" "$FAKE_LOG" '"bag_items": []'
 assert_contains "character prints the Go module's JSON result" "$WORK/out" '"created": true'
 
 : > "$FAKE_LOG"

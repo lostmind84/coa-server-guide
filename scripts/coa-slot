@@ -37,6 +37,8 @@ Server (the slot must be claimed first):
   preflight N [ARGS]            coa-preflight.py against slot N (extra ARGS passed through, e.g. --skip-dbc, --skip-harness)
   compose N ARGS...             docker compose for slot N (e.g. logs --tail 50 ac-worldserver)
   start N | stop N              start or stop slot N's containers without rebuilding
+  warden N on|off               slots 2-4: set Warden.Enabled in the slot's own worldserver.conf and restart the
+                                worldserver (coa-lab-mem and coa-lab-packets need it off; deploy keeps the setting)
   reset-db N                    slots 2-4: drop the database and seed it again from the repack dump
   reseed-test-mysql [N]         refill the in-RAM test MySQL (coa-test-mysql) from slot N's database (default 1); a
                                 container restart empties it. Root passwords stay inside the containers
@@ -193,12 +195,20 @@ seed_db() {
     echo "    $(printf '%s SELECT @converted;' "$sql" | db -N) update hash(es) converted"
 }
 
+claim_age() {
+    local stamp epoch minutes
+    stamp=$(sed -n 's/.*(\([0-9T:+-]*\))$/\1/p' "$1")
+    epoch=$(date -d "$stamp" +%s 2>/dev/null) || return 0
+    minutes=$((($(date +%s) - epoch) / 60))
+    if ((minutes >= 120)); then printf ' [held %dh]' $((minutes / 60)); else printf ' [held %d min]' "$minutes"; fi
+}
+
 cmd_list() {
     local n owner state world
     for n in 1 2 3 4; do
         load_slot "$n"
         owner="-"; state="-"; world="not created"
-        [[ -s "$OWNER" ]] && owner=$(cat "$OWNER")
+        [[ -s "$OWNER" ]] && owner="$(cat "$OWNER")$(claim_age "$OWNER")"
         [[ -s "$STATE" ]] && state=$(cat "$STATE")
         if [[ -n "$(container_field "$WORLD" '{{.State.Status}}')" ]]; then
             world="$(container_field "$WORLD" '{{.State.Status}} since {{.State.StartedAt}}')"
@@ -413,6 +423,27 @@ cmd_stop() {
     compose stop ac-worldserver ac-authserver ac-database
 }
 
+cmd_warden() {
+    load_slot "${1:-}"
+    local mode="${2:-}" value since
+    [[ "$N" != 1 ]] || die "slot 1 shares /srv/coa/etc with the live server: warden is only for slots 2-4"
+    case "$mode" in on) value=1 ;; off) value=0 ;; *) die "usage: coa-slot warden N on|off" ;; esac
+    require_claimed
+    require_created
+    sed -i "s/^Warden\.Enabled *=.*/Warden.Enabled = $value/" "$ETC/worldserver.conf"
+    grep -q "^Warden.Enabled = $value\$" "$ETC/worldserver.conf" || die "Warden.Enabled not found in $ETC/worldserver.conf"
+    since=$(date -u +%Y-%m-%dT%H:%M:%S)
+    compose restart ac-worldserver
+    for _ in $(seq 1 120); do
+        if grep -q "(worldserver-daemon) ready" < <(docker logs --since "$since" "$WORLD" 2>&1); then
+            echo "slot $N: Warden.Enabled = $value, worldserver ready"
+            return 0
+        fi
+        sleep 5
+    done
+    die "$WORLD not ready after 10 minutes, see: coa-slot compose $N logs ac-worldserver"
+}
+
 cmd_reset_db() {
     load_slot "${1:-}"
     [[ "$N" != 1 ]] || die "slot 1 holds the main database: reset-db is only for slots 2 and 3"
@@ -476,6 +507,7 @@ main() {
         compose) cmd_compose "$@" ;;
         start) cmd_start "$@" ;;
         stop) cmd_stop "$@" ;;
+        warden) cmd_warden "$@" ;;
         reset-db) cmd_reset_db "$@" ;;
         reseed-test-mysql) cmd_reseed_test_mysql "$@" ;;
         destroy) cmd_destroy "$@" ;;

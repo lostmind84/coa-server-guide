@@ -69,6 +69,7 @@ type Spec struct {
 	GM        int      `json:"gm"`
 	Learn     []uint32 `json:"learn"`
 	Items     []uint32 `json:"items"`
+	BagItems  []uint32 `json:"bag_items"`
 	// Password overrides e2eharness.DefaultPassword when set: coa-client-lab's --account path
 	// (today's behavior) leaves this empty; the dedicated-account path sets it from a generated,
 	// persisted password file so `login CHARACTER` can read the same password back.
@@ -314,6 +315,9 @@ func TestLabCharacterApply(t *testing.T) {
 			t.Fatalf("item %d did not equip on class %d (slot=%d found=%v): likely refused by its"+
 				" AllowableClass restriction in Item.dbc; it stays in the backpack instead", item, spec.Class, slot, ok)
 		}
+	}
+	for _, item := range spec.BagItems {
+		bot.AddItem(t, item, 1)
 	}
 	bot.Save(t)
 

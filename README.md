@@ -586,6 +586,13 @@ coa-slot release 2                            # batch done: stops the slot's con
   It refuses a clone with uncommitted changes and writes `branch sha date` to `~/CoaServer/slots/sN/state`.
 - SQL applied by one branch stays in the slot's database. Before deploying a branch without it:
   `coa-slot reset-db N` (slots 2 and 3 only).
+- `list` shows how long each claim has been held (`[held 12 min]`), so a forgotten claim is visible.
+- `deploy N REF` takes 2 to 5 minutes and runs in the foreground until the worldserver is ready: give the
+  calling tool a timeout of at least 10 minutes (or run it in the background and wait for it) instead of
+  letting a 2 minute default move it out of sight.
+- `warden N on|off` (slots 2-4) sets `Warden.Enabled` in the slot's own `worldserver.conf` and restarts the
+  worldserver. `coa-lab-mem` and `coa-lab-packets` need it off; `deploy` leaves the setting alone. Slot 1
+  shares `/srv/coa/etc` with the live server and is refused.
 - `reseed-test-mysql [N]` refills the in-RAM test MySQL (`coa-test-mysql`, empty after every container restart)
   from slot N's database (default 1) with `mysqldump | mysql` between the two containers: the root passwords
   never leave them. Takes about a minute. It overwrites `acore_auth`, `acore_characters` and `acore_world`, so
@@ -954,6 +961,11 @@ coa-lab-mem gameobject ENTRY|0xGUID         # a gameobject's flags, GAMEOBJECT_D
                                             #   client holds them for this player (offsets from UpdateFields.h, validated live 2026-10-31)
 coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character over SOAP (.revive): the client's chat box
                                             #   refuses all input, GM commands included, while dead. Default: last logged-in character
+coa-client-lab goto-spawn gameobject|creature --entry ID|--guid ID [--distance YD] [--bearing DEG] [--dz YD]
+                                            # stand next to a spawn read from the slot database, facing it (`.go gameobject`
+                                            #   lands inside the model); bearing 0 = east, 90 = north
+coa-client-lab camera pitch up|down MS      # also yaw left|right and zoom in|out: move the third-person camera on its own
+                                            #   (an underwater or elevated object can then be framed)
 coa-client-lab erase CHARACTER [--account A] # delete a throwaway lab character over SOAP (in-game GMs lack the RBAC
                                             #   permission); without --account also its dedicated COALAB account and password file
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
