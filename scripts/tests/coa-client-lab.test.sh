@@ -1551,5 +1551,45 @@ out=$(revive_lab Namedchar)
 rm -f "$FUNCS_FILE"
 rm -rf "$REVIVE_DIR"
 
+# cmd_erase: character erase and dedicated-account delete over the SOAP relay, with account guards.
+ERASE_DIR=$(mktemp -d "$WORK/erasetest.XXXXXX")
+mkdir -p "$ERASE_DIR/lab/relay" "$ERASE_DIR/lab/state" "$ERASE_DIR/lab/secrets"
+printf 'SLOT=5\nSOAP_ACCOUNT=COALABSOAP\n' > "$ERASE_DIR/lab/relay/slot5.env"
+echo 5 > "$ERASE_DIR/lab/state/slot"
+ERASE_CALL_LOG="$ERASE_DIR/calls.log"
+cat > "$ERASE_DIR/relay" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$ERASE_CALL_LOG"
+EOF
+chmod +x "$ERASE_DIR/relay"
+FUNCS_FILE=$(source_lab_functions)
+erase_lab() {
+    COA_LAB_ROOT="$ERASE_DIR/lab" COA_LAB_RELAY="$ERASE_DIR/relay" \
+        bash -c "source \"$FUNCS_FILE\"; cmd_erase $*" 2>&1
+}
+: > "$ERASE_CALL_LOG"
+touch "$ERASE_DIR/lab/secrets/coalabthrow.password"
+out=$(erase_lab Throw)
+assert_eq "erase removes the character then its dedicated account" "$(tr '\n' ';' < "$ERASE_CALL_LOG")" \
+    "soap character erase Throw;soap account delete COALABTHROW;"
+assert_absent "erase removes the dedicated account's password file" "$ERASE_DIR/lab/secrets/coalabthrow.password"
+[[ "$out" == *"deleted account COALABTHROW"* ]] && pass "erase reports the deleted account" \
+    || fail "erase reports the deleted account: got [$out]"
+: > "$ERASE_CALL_LOG"
+out=$(erase_lab Throw --account COALABSHARED)
+assert_eq "erase with --account keeps the account" "$(cat "$ERASE_CALL_LOG")" "soap character erase Throw"
+[[ "$out" == *"account COALABSHARED kept"* ]] && pass "erase reports the kept account" \
+    || fail "erase reports the kept account: got [$out]"
+: > "$ERASE_CALL_LOG"
+out=$(erase_lab Throw --account PLAYERONE)
+[[ "$out" == *"not a COALAB"* ]] && pass "erase refuses a non-lab account" \
+    || fail "erase refuses a non-lab account: got [$out]"
+out=$(erase_lab Throw --account coalabsoap)
+[[ "$out" == *"relay's SOAP account"* ]] && pass "erase refuses the relay's SOAP account" \
+    || fail "erase refuses the relay's SOAP account: got [$out]"
+assert_eq "erase makes no relay call when a guard refuses" "$(wc -c < "$ERASE_CALL_LOG")" "0"
+rm -f "$FUNCS_FILE"
+rm -rf "$ERASE_DIR"
+
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

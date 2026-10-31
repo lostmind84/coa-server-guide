@@ -954,6 +954,8 @@ coa-lab-mem gameobject ENTRY|0xGUID         # a gameobject's flags, GAMEOBJECT_D
                                             #   client holds them for this player (offsets from UpdateFields.h, validated live 2026-10-31)
 coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character over SOAP (.revive): the client's chat box
                                             #   refuses all input, GM commands included, while dead. Default: last logged-in character
+coa-client-lab erase CHARACTER [--account A] # delete a throwaway lab character over SOAP (in-game GMs lack the RBAC
+                                            #   permission); without --account also its dedicated COALAB account and password file
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 
