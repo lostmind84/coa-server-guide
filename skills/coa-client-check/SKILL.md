@@ -36,6 +36,9 @@ A technical failure is never "not reproduced": closing a real issue costs more t
 
 1. `coa-slot list`, then `coa-slot claim N "<issue> client check"`; `coa-slot claim-issues N <issue>`.
 2. The slot runs the revision the check needs (`coa-slot deploy N origin/main`, or the fix branch in verify mode).
+   A deploy takes 2 to 5 minutes in the foreground: give the tool a timeout of 10 minutes, or background it and
+   wait; the harness's default 2 minute timeout silently moves it to the background. `coa-slot list` shows
+   `[held N min]` on every claim: a claim is live until its owner runs `coa-slot release`.
 3. `coa-client-lab preflight N` must be PASS. A FAIL stops the check with **inconclusive**, naming the failing line.
    A slot merely behind origin/main only WARNs on the `git` line and lists the missing commits: read them and
    continue when none touches the code or data under test.
@@ -85,7 +88,7 @@ below instead: it writes the `core.ascension_active_spec` character_settings row
 
 For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
 `coa-client-lab character --slot N --character C --race R --class K [--level N] [--spec ID]
-[--learn ID,ID,...] [--items ID,ID,...]` (guide README, "Client lab for agents"). It works on any slot and refuses
+[--learn ID,ID,...] [--items ID,ID,...] [--bag-items ID,ID,...]` (guide README, "Client lab for agents"). It works on any slot and refuses
 to silently change an existing character's class; by default it makes a dedicated account for C alone, so
 `coa-client-lab login C` logs straight into it. Pass `--account A` instead only when the check is itself about
 a shared account (bank, account-bound items, char-select screen) or needs a second character alongside it on
@@ -151,12 +154,18 @@ folder.
    corner before concluding a buff is invisible; `probe frame BuffButton1` returns `shown`/`visible`, and
    `probe eval` reads `BuffButton1Icon:GetTexture()`. `eval` takes an expression (it prepends `return`;
    wrap statements in `(function() ... end)()`), no `|`, and stays under the 255-character chat limit.
-9. **Gameobject state.** `coa-lab-mem gameobject ENTRY|0xGUID` prints the client's copy of the object's
+9. **Framing an object.** `coa-client-lab goto-spawn gameobject|creature --entry ID|--guid ID --distance 8
+   --bearing 90` lands the character at that bearing and distance from a database spawn, facing it, instead of
+   inside its model (`.go gameobject GUID`); an underwater spawn needs a bearing toward the shore and `--dz`.
+   `coa-client-lab camera pitch up|down MS`, `yaw left|right MS` and `zoom in|out MS` then move the camera
+   around the character without turning it. `--items` must equip; put cache or consumable ids in `--bag-items`.
+   `coa-slot warden N off` makes any claimed slot 2-4 usable for `coa-lab-mem` (it restarts the worldserver).
+10. **Gameobject state.** `coa-lab-mem gameobject ENTRY|0xGUID` prints the client's copy of the object's
    `GAMEOBJECT_DYNAMIC` low word (`activate`, `sparkle`...), flags and state. The server sets `sparkle` per
    player only for quest-objective gameobjects (`ActivateToQuest`, `GameObject.cpp` BuildValuesUpdate); a
    quest-giver's `!` marker comes from the quest-giver status packet instead (`probe pkwatch`). The ENTRY form
    reads the first matching object in view; use the GUID from `coa-lab-mem objects` for a specific one.
-10. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
+11. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
    (guide, part 2) reads the lab client's own process memory (object manager, unit/aura data, loaded
    `Spell.dbc` row) independently of the addon API, so it can show that the engine disagrees with
    `probe state`/`probe auras` themselves. `scripts/coa-lab-packets` reads the worldserver's packet log to
