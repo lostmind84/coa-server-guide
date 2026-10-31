@@ -163,7 +163,8 @@ Running (one lab client per instance):
   erase CHARACTER [--account A]
                            delete a throwaway lab character over the SOAP relay (`character erase` is not grantable
                            to in-game GMs); with no --account, also deletes its dedicated COALAB account and
-                           password file. Refuses a non-COALAB account and the relay's own SOAP account
+                           password file. Refuses a character that does not belong to a COALAB account (checked with
+                           pinfo), a non-COALAB account and the relay's own SOAP account
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window
   preflight N              coa-slot preflight N against the lab client's data; records pass/fail, slot and time
@@ -1050,7 +1051,7 @@ cmd_erase() {
             *) [[ -z "$character" ]] || die "usage: coa-client-lab erase CHARACTER [--account A]"; character="$1"; shift ;;
         esac
     done
-    [[ -n "$character" ]] || die "usage: coa-client-lab erase CHARACTER [--account A]"
+    [[ "$character" =~ ^[A-Za-z]{2,12}$ ]] || die "usage: coa-client-lab erase CHARACTER [--account A] (CHARACTER: 2-12 letters)"
     slot=$(cat "$STATE_DIR/slot" 2> /dev/null) || slot=""
     relay_env=$(relay_env_for_slot "$slot") || die "no relay configuration for slot ${slot:-unknown}: run relay-setup first"
     soap_account=$(sed -n 's/^SOAP_ACCOUNT=//p' "$relay_env")
@@ -1063,6 +1064,11 @@ cmd_erase() {
     upper=$(tr '[:lower:]' '[:upper:]' <<<"$account")
     [[ "$upper" == "${LAB_ACCOUNT_PREFIX}"* ]] || die "refusing to touch $account: not a $LAB_ACCOUNT_PREFIX* lab account"
     [[ "$upper" != "$(tr '[:lower:]' '[:upper:]' <<<"$soap_account")" ]] || die "refusing to touch $account: it is the relay's SOAP account"
+    local info owner
+    info=$(COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "pinfo $character") || die "cannot look up $character on the relay"
+    owner=$(sed -n 's/.*Account: \([^ ]*\) (ID: [0-9]*).*/\1/p' <<<"$info" | head -n 1)
+    [[ "$(tr '[:lower:]' '[:upper:]' <<<"$owner")" == "$upper" ]] \
+        || die "refusing to erase $character: it belongs to account ${owner:-unknown}, not $upper"
     COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "character erase $character" || die "character erase $character failed"
     if [[ "$delete_account" == 1 ]]; then
         COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "account delete $account" || die "account delete $account failed"
