@@ -586,6 +586,10 @@ coa-slot release 2                            # batch done: stops the slot's con
   It refuses a clone with uncommitted changes and writes `branch sha date` to `~/CoaServer/slots/sN/state`.
 - SQL applied by one branch stays in the slot's database. Before deploying a branch without it:
   `coa-slot reset-db N` (slots 2 and 3 only).
+- `reseed-test-mysql [N]` refills the in-RAM test MySQL (`coa-test-mysql`, empty after every container restart)
+  from slot N's database (default 1) with `mysqldump | mysql` between the two containers: the root passwords
+  never leave them. Takes about a minute. It overwrites `acore_auth`, `acore_characters` and `acore_world`, so
+  run it only when no `verify_all` run uses the test MySQL; the `coa_test_*` world caches are left alone.
 - `destroy N --yes` (slots 2 and 3, released first) removes containers, database volume, the slot's images and
   `~/CoaServer/slots/sN`, and keeps the build clone.
 - Claims are plain files: `~/CoaServer/slots/sN/owner` (created with `noclobber`) and `~/CoaServer/slots/issues.tsv`
@@ -946,6 +950,10 @@ coa-lab-mem glue                            # glue screen state: current screen,
                                             #   `login` reads this itself (see above) -- useful standalone for debugging it
 coa-lab-mem glue --until in-world --timeout 45  # one process polls internally (0.1s) until STATE holds or the
                                             #   timeout; `login`'s own waits use this (see ADR 0006), not a shell loop
+coa-lab-mem gameobject ENTRY|0xGUID         # a gameobject's flags, GAMEOBJECT_DYNAMIC (activate/sparkle/...) and state as the
+                                            #   client holds them for this player; offsets from UpdateFields.h, not yet validated live
+coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character over SOAP (.revive): the client's chat box
+                                            #   refuses all input, GM commands included, while dead. Default: last logged-in character
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
 

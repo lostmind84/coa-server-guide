@@ -34,10 +34,12 @@ Server (the slot must be claimed first):
                                 (--own-data: private copy of server-data, for batches that change server DBCs)
   deploy N REF                  check out REF in the slot's build clone (a branch of the main checkout or of
                                 origin, or a commit), build, run db-import, restart, wait until ready
-  preflight N [ARGS]            coa-preflight.py against slot N (extra ARGS passed through, e.g. --skip-dbc)
+  preflight N [ARGS]            coa-preflight.py against slot N (extra ARGS passed through, e.g. --skip-dbc, --skip-harness)
   compose N ARGS...             docker compose for slot N (e.g. logs --tail 50 ac-worldserver)
   start N | stop N              start or stop slot N's containers without rebuilding
   reset-db N                    slots 2-4: drop the database and seed it again from the repack dump
+  reseed-test-mysql [N]         refill the in-RAM test MySQL (coa-test-mysql) from slot N's database (default 1); a
+                                container restart empties it. Root passwords stay inside the containers
   destroy N --yes               slots 2-4: remove containers, database, images and ~/CoaServer/slots/sN
                                 (the build clone is kept)
 EOF
@@ -436,6 +438,28 @@ cmd_destroy() {
     echo "slot $N destroyed; build clone kept at $CLONE"
 }
 
+TEST_MYSQL="${COA_TEST_MYSQL:-coa-test-mysql}"
+TEST_MYSQL_SEED_DATABASES="acore_auth acore_characters acore_world"
+
+cmd_reseed_test_mysql() {
+    load_slot "${1:-1}"
+    require_created
+    docker inspect "$TEST_MYSQL" > /dev/null 2>&1 || die "container $TEST_MYSQL does not exist"
+    [[ "$(docker inspect -f '{{.State.Running}}' "$DB")" == true ]] || die "slot $N database $DB is not running: coa-slot start $N"
+    docker start "$TEST_MYSQL" > /dev/null
+    local waited=0
+    until docker exec "$TEST_MYSQL" sh -c 'mysqladmin -uroot -p"$MYSQL_ROOT_PASSWORD" ping' > /dev/null 2>&1; do
+        ((waited >= 120)) && die "$TEST_MYSQL not ready after 120 s"
+        sleep 2
+        waited=$((waited + 2))
+    done
+    step "copying $TEST_MYSQL_SEED_DATABASES from $DB into $TEST_MYSQL"
+    docker exec "$DB" sh -c "mysqldump -uroot -p\"\$MYSQL_ROOT_PASSWORD\" --single-transaction --databases $TEST_MYSQL_SEED_DATABASES" \
+        | docker exec -i "$TEST_MYSQL" sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' \
+        || die "reseed failed (an empty container needs both databases reachable)"
+    echo "$TEST_MYSQL reseeded from slot $N"
+}
+
 main() {
     local command="${1:-}"
     [[ $# -gt 0 ]] && shift
@@ -453,6 +477,7 @@ main() {
         start) cmd_start "$@" ;;
         stop) cmd_stop "$@" ;;
         reset-db) cmd_reset_db "$@" ;;
+        reseed-test-mysql) cmd_reseed_test_mysql "$@" ;;
         destroy) cmd_destroy "$@" ;;
         -h|--help|help|"") usage ;;
         *) usage >&2; exit 2 ;;
