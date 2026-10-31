@@ -157,6 +157,9 @@ Running (one lab client per instance):
                            pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
                            pkunwatch OPCODE); prints JSON. With state/lab.json, read-only commands go through the
                            server relay (coa-lab-relay, no /reload); COA_LAB_TRANSPORT=reload forces /reload
+  revive [CHARACTER]       revive a dead or ghost lab character server-side over the SOAP relay (.revive); the
+                           client's chat box refuses every input, GM commands included, while the character is
+                           dead. CHARACTER defaults to the last one that reached world; needs relay-setup
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window
   preflight N              coa-slot preflight N against the lab client's data; records pass/fail, slot and time
@@ -1023,6 +1026,17 @@ kick_via_soap() {
     return 1
 }
 
+cmd_revive() {
+    [[ $# -le 1 ]] || die "usage: coa-client-lab revive [CHARACTER]"
+    local character="${1:-}" slot relay_env
+    [[ -n "$character" ]] || character=$(lab_last_character)
+    [[ -n "$character" ]] || die "revive needs CHARACTER: no login has reached world this session"
+    slot=$(cat "$STATE_DIR/slot" 2> /dev/null) || slot=""
+    relay_env=$(relay_env_for_slot "$slot") || die "no relay configuration for slot ${slot:-unknown}: run relay-setup first"
+    COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "revive $character" || die "revive $character failed"
+    echo "revived $character"
+}
+
 # Returns 0 once memory confirms the account-login screen, driving the client there in place instead of
 # restarting it. Three starting states, each confirmed by `glue_state` before anything is sent:
 #   - already the login screen (current_screen == "login", in_world == false): nothing else runs.
@@ -1823,7 +1837,7 @@ cmd_preflight() {
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab preflight N"
     shift
     mkdir -p "$STATE_DIR"
-    coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" "$@" || status=$?
+    coa-slot preflight "$n" --client-data "$LAB_CLIENT/Data" --skip-harness "$@" || status=$?
     warden_status_line "$n"
     if [[ "$status" == 0 ]]; then
         echo "pass slot $n $(date -Is)" > "$STATE_DIR/preflight"
@@ -1913,6 +1927,7 @@ main() {
         hold) cmd_hold "$@" ;;
         mute) cmd_mute ;;
         probe) cmd_probe "$@" ;;
+        revive) cmd_revive "$@" ;;
         stop) cmd_stop ;;
         preflight) cmd_preflight "$@" ;;
         relay-setup) cmd_relay_setup "$@" ;;

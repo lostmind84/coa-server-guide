@@ -211,6 +211,43 @@ class ObjectManagerTest(unittest.TestCase):
         self.assertEqual(mem.walk_objects(None, mgr), [node])
 
 
+class GameObjectTest(unittest.TestCase):
+    def build(self, dynamic=0x0008, type_id=5):
+        fake = FakeMemory()
+        mgr = 0x3000000
+        build_object_manager(fake, mgr, player_guid=1, map_id=0, nodes=[
+            (0x4000000, 0x24, 0x4000100, 1, 0x19, 0, 4),
+            (0x4001000, 0x24, 0x4001100, 0xF11000003D0000FF, 0x21, 61, type_id),
+        ])
+        obj = 0x4001100
+        fake.write_u32(obj + mem.GAMEOBJECT_DISPLAYID_OFF, 301)
+        fake.write_u32(obj + mem.GAMEOBJECT_FLAGS_OFF, 0x20)
+        fake.write_u32(obj + mem.GAMEOBJECT_DYNAMIC_OFF, dynamic)
+        fake.write_u32(obj + mem.GAMEOBJECT_BYTES_1_OFF, 0x00000A01)
+        patch_memory(self, fake)
+        return mgr
+
+    def test_reads_sparkle_dynflag_by_entry(self):
+        result = mem.cmd_gameobject(None, self.build(dynamic=0x00050009), "61")
+        self.assertEqual(result["dynflags"], 0x09)
+        self.assertEqual(result["dynflag_names"], ["activate", "sparkle"])
+        self.assertEqual(result["path_progress"], 5)
+        self.assertEqual((result["state"], result["go_type"]), (1, 10))
+        self.assertEqual((result["display_id"], result["flags"]), (301, 0x20))
+
+    def test_dynflags_clear_when_no_sparkle(self):
+        result = mem.cmd_gameobject(None, self.build(dynamic=0), "0xF11000003D0000FF")
+        self.assertEqual(result["dynflag_names"], [])
+
+    def test_unknown_entry_raises(self):
+        with self.assertRaises(mem.MemoryError_):
+            mem.cmd_gameobject(None, self.build(), "999")
+
+    def test_non_gameobject_guid_is_refused(self):
+        with self.assertRaises(mem.MemoryError_):
+            mem.cmd_gameobject(None, self.build(type_id=3), "0xF11000003D0000FF")
+
+
 class UnitDataTest(unittest.TestCase):
     def test_reads_health_powers_and_target(self):
         fake = FakeMemory()

@@ -439,7 +439,7 @@ assert_contains "bare --key message" "$WORK/out" "need --burst or --video-second
 
 : > "$FAKE_LOG"
 run_lab preflight 3
-assert_contains "preflight on lab data" "$FAKE_LOG" "coa-slot preflight 3 --client-data $COA_LAB_ROOT/ascension-lab/Data"
+assert_contains "preflight on lab data" "$FAKE_LOG" "coa-slot preflight 3 --client-data $COA_LAB_ROOT/ascension-lab/Data --skip-harness"
 
 gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid")
 sleep 1
@@ -1512,6 +1512,44 @@ assert_contains "missing conf reports unknown, not Warden on" "$WORK/out" "warde
 
 rm -f "$FUNCS_FILE"
 rm -rf "$WARDEN_ETC"
+
+# cmd_revive: SOAP .revive for a dead or ghost character, named or taken from the last login.
+REVIVE_DIR=$(mktemp -d "$WORK/revivetest.XXXXXX")
+mkdir -p "$REVIVE_DIR/lab/relay" "$REVIVE_DIR/lab/state"
+printf 'SLOT=5\n' > "$REVIVE_DIR/lab/relay/slot5.env"
+echo 5 > "$REVIVE_DIR/lab/state/slot"
+echo '{"character": "Lastchar"}' > "$REVIVE_DIR/lab/state/lab.json"
+REVIVE_CALL_LOG="$REVIVE_DIR/calls.log"
+cat > "$REVIVE_DIR/relay" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$REVIVE_CALL_LOG"
+EOF
+chmod +x "$REVIVE_DIR/relay"
+FUNCS_FILE=$(source_lab_functions)
+revive_lab() {
+    COA_LAB_ROOT="$REVIVE_DIR/lab" COA_LAB_RELAY="$REVIVE_DIR/relay" \
+        bash -c "source \"$FUNCS_FILE\"; cmd_revive $*" 2>&1
+}
+: > "$REVIVE_CALL_LOG"
+out=$(revive_lab Namedchar)
+assert_eq "revive sends .revive for the named character" "$(cat "$REVIVE_CALL_LOG")" "soap revive Namedchar"
+[[ "$out" == *"revived Namedchar"* ]] && pass "revive reports the character" || fail "revive reports the character: got [$out]"
+: > "$REVIVE_CALL_LOG"
+revive_lab > /dev/null
+assert_eq "revive defaults to the last logged-in character" "$(cat "$REVIVE_CALL_LOG")" "soap revive Lastchar"
+rm -f "$REVIVE_DIR/lab/state/lab.json"
+: > "$REVIVE_CALL_LOG"
+out=$(revive_lab)
+rc=$?
+[[ "$out" == *"revive needs CHARACTER"* ]] && pass "revive without a character refuses" \
+    || fail "revive without a character refuses: rc=$rc got [$out]"
+assert_eq "revive without a character makes no relay call" "$(wc -c < "$REVIVE_CALL_LOG")" "0"
+rm -f "$REVIVE_DIR/lab/relay/slot5.env"
+out=$(revive_lab Namedchar)
+[[ "$out" == *"no relay configuration for slot 5"* ]] && pass "revive without relay configuration refuses" \
+    || fail "revive without relay configuration refuses: got [$out]"
+rm -f "$FUNCS_FILE"
+rm -rf "$REVIVE_DIR"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

@@ -112,6 +112,14 @@ CGOBJECTDATA_GUID_OFF = 0x00       # validated
 CGOBJECTDATA_TYPE_OFF = 0x08       # validated (0x19 == object|unit|player on the live player)
 CGOBJECTDATA_ENTRY_OFF = 0x0C      # validated (32666 on the training dummy)
 
+# Gameobject fields sit in the same descriptor array CGObject::m_obj points at: 4 * (OBJECT_END (6) + field),
+# per EGameObjectFields in UpdateFields.h. Not yet validated against a live client.
+GAMEOBJECT_DISPLAYID_OFF = 0x20    # GAMEOBJECT_DISPLAYID
+GAMEOBJECT_FLAGS_OFF = 0x24        # GAMEOBJECT_FLAGS
+GAMEOBJECT_DYNAMIC_OFF = 0x38      # GAMEOBJECT_DYNAMIC: low u16 GO_DYNFLAG_LO_*, high u16 path progress
+GAMEOBJECT_BYTES_1_OFF = 0x44      # GAMEOBJECT_BYTES_1: state, type, art kit, animation progress
+GO_DYNFLAG_LO_NAMES = {0x01: "activate", 0x02: "animate", 0x04: "no_interact", 0x08: "sparkle", 0x10: "stopped"}
+
 CGUNIT_MUNIT_OFF = 0xD0            # CGUnit::m_unit -- validated (found by health/maxhealth match, both units)
 CGUNITDATA_TARGET_OFF = 0x30       # validated (0 with no target, the dummy's guid after /target)
 CGUNITDATA_HEALTH_OFF = 0x48       # validated
@@ -1049,6 +1057,44 @@ def cmd_unit(pid: int, mgr_addr: int, selector: str) -> dict:
     return read_full_unit(pid, node)
 
 
+def read_gameobject_data(pid: int, node: int) -> dict:
+    m_obj = read_u32(pid, node + CGOBJECT_MOBJ_OFF)
+    dynamic = read_u32(pid, m_obj + GAMEOBJECT_DYNAMIC_OFF)
+    dynflags = dynamic & 0xFFFF
+    bytes_1 = read_u32(pid, m_obj + GAMEOBJECT_BYTES_1_OFF)
+    return {
+        "display_id": read_u32(pid, m_obj + GAMEOBJECT_DISPLAYID_OFF),
+        "flags": read_u32(pid, m_obj + GAMEOBJECT_FLAGS_OFF),
+        "dynflags": dynflags,
+        "dynflag_names": [name for bit, name in GO_DYNFLAG_LO_NAMES.items() if dynflags & bit],
+        "path_progress": dynamic >> 16,
+        "state": bytes_1 & 0xFF, "go_type": (bytes_1 >> 8) & 0xFF,
+        "validated": False,
+    }
+
+
+def cmd_gameobject(pid: int, mgr_addr: int, selector: str) -> dict:
+    guid = int(selector, 16) if selector.lower().startswith("0x") else int(selector)
+    if guid < 0x10000:
+        matches = []
+        for node in walk_objects(pid, mgr_addr):
+            try:
+                obj = read_cgobject(pid, node)
+            except MemoryError_:
+                continue
+            if obj["type_id"] == 5 and obj["entry"] == guid:
+                matches.append((node, obj))
+        if not matches:
+            raise MemoryError_(f"no gameobject with entry {guid} in the object manager")
+        node, obj = matches[0]
+    else:
+        node = find_node_by_guid(pid, mgr_addr, guid)
+        obj = read_cgobject(pid, node)
+        if obj["type_id"] != 5:
+            raise MemoryError_(f"object {guid:#x} is a {obj['type_id_name']}, not a gameobject")
+    return {"object": obj, **read_gameobject_data(pid, node)}
+
+
 def cmd_objects(pid: int, mgr_addr: int) -> dict:
     objects = []
     for node in walk_objects(pid, mgr_addr):
@@ -1084,6 +1130,8 @@ def main(argv=None) -> int:
     sub.add_parser("player")
     unit_parser = sub.add_parser("unit")
     unit_parser.add_argument("selector", help="player | target | 0x<guid>")
+    go_parser = sub.add_parser("gameobject")
+    go_parser.add_argument("selector", help="entry (below 0x10000) | 0x<guid> | decimal guid")
     sub.add_parser("objects")
     sub.add_parser("spell-db")
     spell_parser = sub.add_parser("spell")
@@ -1137,6 +1185,8 @@ def main(argv=None) -> int:
                 result = cmd_player(pid, mgr["address"])
             elif args.command == "unit":
                 result = cmd_unit(pid, mgr["address"], args.selector)
+            elif args.command == "gameobject":
+                result = cmd_gameobject(pid, mgr["address"], args.selector)
             else:
                 result = cmd_objects(pid, mgr["address"])
     except (GuardError, MemoryError_) as error:

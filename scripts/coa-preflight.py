@@ -337,13 +337,18 @@ def main():
     parser.add_argument("--worldserver", default="ac-worldserver")
     parser.add_argument("--database", default="ac-database")
     parser.add_argument("--skip-dbc", action="store_true", help="skip the client and DBC checks (about a minute)")
+    parser.add_argument("--skip-harness", action="store_true",
+                        help="skip the gameplay-test image check (client-lab checks never run scenarios)")
     args = parser.parse_args()
 
     report = Report()
     try:
         head = check_git(report, args.repo)
         check_server(report, head, args.worldserver)
-        check_harness_image(report, head, args.worldserver)
+        if args.skip_harness:
+            report.line("WARN", "harness", "skipped: gameplay-test image not verified")
+        else:
+            check_harness_image(report, head, args.worldserver)
         check_db(report, args.repo, args.database)
         mpqcli = shutil.which("mpqcli")
         if args.skip_dbc:
