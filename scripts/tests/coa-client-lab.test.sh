@@ -1560,6 +1560,8 @@ ERASE_CALL_LOG="$ERASE_DIR/calls.log"
 cat > "$ERASE_DIR/relay" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$ERASE_CALL_LOG"
+[[ "\$2" == pinfo* ]] && echo "| Account: \${FAKE_OWNER:-COALABTHROW} (ID: 33),"
+exit 0
 EOF
 chmod +x "$ERASE_DIR/relay"
 FUNCS_FILE=$(source_lab_functions)
@@ -1571,13 +1573,14 @@ erase_lab() {
 touch "$ERASE_DIR/lab/secrets/coalabthrow.password"
 out=$(erase_lab Throw)
 assert_eq "erase removes the character then its dedicated account" "$(tr '\n' ';' < "$ERASE_CALL_LOG")" \
-    "soap character erase Throw;soap account delete COALABTHROW;"
+    "soap pinfo Throw;soap character erase Throw;soap account delete COALABTHROW;"
 assert_absent "erase removes the dedicated account's password file" "$ERASE_DIR/lab/secrets/coalabthrow.password"
 [[ "$out" == *"deleted account COALABTHROW"* ]] && pass "erase reports the deleted account" \
     || fail "erase reports the deleted account: got [$out]"
 : > "$ERASE_CALL_LOG"
-out=$(erase_lab Throw --account COALABSHARED)
-assert_eq "erase with --account keeps the account" "$(cat "$ERASE_CALL_LOG")" "soap character erase Throw"
+out=$(FAKE_OWNER=COALABSHARED erase_lab Throw --account COALABSHARED)
+assert_eq "erase with --account keeps the account" "$(tr '\n' ';' < "$ERASE_CALL_LOG")" \
+    "soap pinfo Throw;soap character erase Throw;"
 [[ "$out" == *"account COALABSHARED kept"* ]] && pass "erase reports the kept account" \
     || fail "erase reports the kept account: got [$out]"
 : > "$ERASE_CALL_LOG"
@@ -1588,6 +1591,13 @@ out=$(erase_lab Throw --account coalabsoap)
 [[ "$out" == *"relay's SOAP account"* ]] && pass "erase refuses the relay's SOAP account" \
     || fail "erase refuses the relay's SOAP account: got [$out]"
 assert_eq "erase makes no relay call when a guard refuses" "$(wc -c < "$ERASE_CALL_LOG")" "0"
+out=$(FAKE_OWNER=REALPLAYER erase_lab Throw)
+[[ "$out" == *"belongs to account REALPLAYER"* ]] && pass "erase refuses a character owned by another account" \
+    || fail "erase refuses a character owned by another account: got [$out]"
+assert_eq "erase never erases after a failed ownership check" "$(grep -c 'character erase' "$ERASE_CALL_LOG")" "0"
+out=$(erase_lab "'Throw;x'")
+[[ "$out" == *"2-12 letters"* ]] && pass "erase refuses a malformed character name" \
+    || fail "erase refuses a malformed character name: got [$out]"
 rm -f "$FUNCS_FILE"
 rm -rf "$ERASE_DIR"
 
