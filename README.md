@@ -951,7 +951,7 @@ coa-lab-mem glue                            # glue screen state: current screen,
 coa-lab-mem glue --until in-world --timeout 45  # one process polls internally (0.1s) until STATE holds or the
                                             #   timeout; `login`'s own waits use this (see ADR 0006), not a shell loop
 coa-lab-mem gameobject ENTRY|0xGUID         # a gameobject's flags, GAMEOBJECT_DYNAMIC (activate/sparkle/...) and state as the
-                                            #   client holds them for this player; offsets from UpdateFields.h, not yet validated live
+                                            #   client holds them for this player (offsets from UpdateFields.h, validated live 2026-10-31)
 coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character over SOAP (.revive): the client's chat box
                                             #   refuses all input, GM commands included, while dead. Default: last logged-in character
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates

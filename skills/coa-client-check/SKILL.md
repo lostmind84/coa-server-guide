@@ -139,14 +139,16 @@ folder.
    reports mana, rage, focus, energy and runic power); `.gps` prints the position into the captured system
    messages; `.go xyz X Y Z MAP O` takes the facing as its fifth number, which answers "Target needs to be in
    front of you".
+   To stand next to a spawn from the database, use the core's own `.go creature id ENTRY`, `.go creature SPAWNGUID`,
+   `.go gameobject id ENTRY` or `.go gameobject SPAWNGUID` (`cs_go.cpp`) instead of typing coordinates by hand.
 7. **A dead or ghost character cannot chat at all** ("You can't chat when you're dead!", GM `.` commands
    included), e.g. after `.go xyz` into open air. Recover with `coa-client-lab revive [CHARACTER]` (server-side
    `.revive` over the SOAP relay; needs `relay-setup`). Do not abandon the character.
 8. **Gameobject state.** `coa-lab-mem gameobject ENTRY|0xGUID` prints the client's copy of the object's
    `GAMEOBJECT_DYNAMIC` low word (`activate`, `sparkle`...), flags and state. The server sets `sparkle` per
    player only for quest-objective gameobjects (`ActivateToQuest`, `GameObject.cpp` BuildValuesUpdate); a
-   quest-giver's `!` marker comes from the quest-giver status packet instead (`probe pkwatch`). The offsets are
-   not yet validated against a live client: confirm on a known object before trusting a negative.
+   quest-giver's `!` marker comes from the quest-giver status packet instead (`probe pkwatch`). The ENTRY form
+   reads the first matching object in view; use the GUID from `coa-lab-mem objects` for a specific one.
 9. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
    (guide, part 2) reads the lab client's own process memory (object manager, unit/aura data, loaded
    `Spell.dbc` row) independently of the addon API, so it can show that the engine disagrees with
