@@ -160,6 +160,10 @@ Running (one lab client per instance):
   revive [CHARACTER]       revive a dead or ghost lab character server-side over the SOAP relay (.revive); the
                            client's chat box refuses every input, GM commands included, while the character is
                            dead. CHARACTER defaults to the last one that reached world; needs relay-setup
+  erase CHARACTER [--account A]
+                           delete a throwaway lab character over the SOAP relay (`character erase` is not grantable
+                           to in-game GMs); with no --account, also deletes its dedicated COALAB account and
+                           password file. Refuses a non-COALAB account and the relay's own SOAP account
   stop                     stop the lab client by PID, release the lock, warn if the user's client changed
   status                   lock holder, process, display and window
   preflight N              coa-slot preflight N against the lab client's data; records pass/fail, slot and time
@@ -1035,6 +1039,38 @@ cmd_revive() {
     relay_env=$(relay_env_for_slot "$slot") || die "no relay configuration for slot ${slot:-unknown}: run relay-setup first"
     COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "revive $character" || die "revive $character failed"
     echo "revived $character"
+}
+
+cmd_erase() {
+    local character="" account="" slot relay_env soap_account upper
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --account) account="${2:-}"; shift 2 ;;
+            -*) die "usage: coa-client-lab erase CHARACTER [--account A]" ;;
+            *) [[ -z "$character" ]] || die "usage: coa-client-lab erase CHARACTER [--account A]"; character="$1"; shift ;;
+        esac
+    done
+    [[ -n "$character" ]] || die "usage: coa-client-lab erase CHARACTER [--account A]"
+    slot=$(cat "$STATE_DIR/slot" 2> /dev/null) || slot=""
+    relay_env=$(relay_env_for_slot "$slot") || die "no relay configuration for slot ${slot:-unknown}: run relay-setup first"
+    soap_account=$(sed -n 's/^SOAP_ACCOUNT=//p' "$relay_env")
+    local delete_account=1
+    if [[ -n "$account" ]]; then
+        delete_account=0
+    else
+        account=$(derive_account "$character")
+    fi
+    upper=$(tr '[:lower:]' '[:upper:]' <<<"$account")
+    [[ "$upper" == "${LAB_ACCOUNT_PREFIX}"* ]] || die "refusing to touch $account: not a $LAB_ACCOUNT_PREFIX* lab account"
+    [[ "$upper" != "$(tr '[:lower:]' '[:upper:]' <<<"$soap_account")" ]] || die "refusing to touch $account: it is the relay's SOAP account"
+    COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "character erase $character" || die "character erase $character failed"
+    if [[ "$delete_account" == 1 ]]; then
+        COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "account delete $account" || die "account delete $account failed"
+        rm -f "$(lab_password_file "$account")"
+        echo "erased $character and deleted account $upper"
+    else
+        echo "erased $character; account $upper kept"
+    fi
 }
 
 # Returns 0 once memory confirms the account-login screen, driving the client there in place instead of
@@ -1928,6 +1964,7 @@ main() {
         mute) cmd_mute ;;
         probe) cmd_probe "$@" ;;
         revive) cmd_revive "$@" ;;
+        erase) cmd_erase "$@" ;;
         stop) cmd_stop ;;
         preflight) cmd_preflight "$@" ;;
         relay-setup) cmd_relay_setup "$@" ;;

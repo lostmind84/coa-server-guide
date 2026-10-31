@@ -37,6 +37,8 @@ A technical failure is never "not reproduced": closing a real issue costs more t
 1. `coa-slot list`, then `coa-slot claim N "<issue> client check"`; `coa-slot claim-issues N <issue>`.
 2. The slot runs the revision the check needs (`coa-slot deploy N origin/main`, or the fix branch in verify mode).
 3. `coa-client-lab preflight N` must be PASS. A FAIL stops the check with **inconclusive**, naming the failing line.
+   A slot merely behind origin/main only WARNs on the `git` line and lists the missing commits: read them and
+   continue when none touches the code or data under test.
    It skips the gameplay-test `harness` image line (a stale harness image never blocks a client check); a bare
    `coa-slot preflight N` still checks it.
 4. The lab client exists (`coa-client-lab create` once) and no other check holds it (`coa-client-lab status`).
@@ -144,12 +146,17 @@ folder.
 7. **A dead or ghost character cannot chat at all** ("You can't chat when you're dead!", GM `.` commands
    included), e.g. after `.go xyz` into open air. Recover with `coa-client-lab revive [CHARACTER]` (server-side
    `.revive` over the SOAP relay; needs `relay-setup`). Do not abandon the character.
-8. **Gameobject state.** `coa-lab-mem gameobject ENTRY|0xGUID` prints the client's copy of the object's
+8. **Buffs render left of the minimap, not below it.** The stock 3.3.5a `BuffFrame` is anchored top right,
+   to the left of the minimap (verified 2026-10-31: the permanent "PvE Mode" icon sits there). Crop that
+   corner before concluding a buff is invisible; `probe frame BuffButton1` returns `shown`/`visible`, and
+   `probe eval` reads `BuffButton1Icon:GetTexture()`. `eval` takes an expression (it prepends `return`;
+   wrap statements in `(function() ... end)()`), no `|`, and stays under the 255-character chat limit.
+9. **Gameobject state.** `coa-lab-mem gameobject ENTRY|0xGUID` prints the client's copy of the object's
    `GAMEOBJECT_DYNAMIC` low word (`activate`, `sparkle`...), flags and state. The server sets `sparkle` per
    player only for quest-objective gameobjects (`ActivateToQuest`, `GameObject.cpp` BuildValuesUpdate); a
    quest-giver's `!` marker comes from the quest-giver status packet instead (`probe pkwatch`). The ENTRY form
    reads the first matching object in view; use the GUID from `coa-lab-mem objects` for a specific one.
-9. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
+10. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
    (guide, part 2) reads the lab client's own process memory (object manager, unit/aura data, loaded
    `Spell.dbc` row) independently of the addon API, so it can show that the engine disagrees with
    `probe state`/`probe auras` themselves. `scripts/coa-lab-packets` reads the worldserver's packet log to
@@ -233,4 +240,6 @@ PR and the issue comment stay that skill's job; this one only produces the verdi
 | The client crashes or freezes | `coa-client-lab stop`, inconclusive; a reproducible crash is a finding |
 | The symptom needs a capability the tools lack | inconclusive, name the capability |
 
-Always finish with `coa-client-lab stop` and `coa-slot release N`, even after a failure.
+Always finish with `coa-client-lab stop` and `coa-slot release N`, even after a failure. Delete throwaway
+characters with `coa-client-lab erase CHARACTER` (relay-based: `.character erase` and `.account delete` are
+not grantable to in-game GMs).

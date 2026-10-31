@@ -79,7 +79,10 @@ def check_git(report, repo):
     behind = int(run(["git", "rev-list", "--count", "HEAD..origin/main"], cwd=repo))
     ahead = int(run(["git", "rev-list", "--count", "origin/main..HEAD"], cwd=repo))
     if behind:
-        report.line("FAIL", "git", f"{branch} is missing {behind} commit(s) from origin/main: rebase or merge first")
+        report.line("WARN", "git", f"{branch} is missing {behind} commit(s) from origin/main: fine when none of them "
+                    "touches the code or data under test (the first ones are listed)")
+        for commit in run(["git", "log", "--oneline", "-n", "10", "HEAD..origin/main"], cwd=repo).splitlines():
+            print(f"          {commit}")
     else:
         report.line("PASS", "git", f"{branch} contains origin/main ({ahead} local commit(s) on top)")
     dirty = [l for l in run(["git", "status", "--porcelain"], cwd=repo).splitlines() if not l.startswith("??")]
