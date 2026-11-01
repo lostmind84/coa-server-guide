@@ -60,6 +60,8 @@ Linux (Docker, /srv/coa and ~/CoaServer paths, reflink copies, gamescope, xdotoo
 on this platform. Adapt the setup so it works here: translate paths and commands, replace what does not exist with
 an equivalent (for example the lab client copy: on Windows the client runs natively), and keep going. Tell the user
 what you changed, and report as "not verified" any result that rests on an adaptation you could not test.
+Safety: show the user each adapted command before its first use, and ask before adapting or running anything that
+deletes or overwrites (coa-worktree-cleanup, coa-slot reset-db/destroy/release, coa-client-lab destroy/erase).
 EOF
 }
 
@@ -137,7 +139,7 @@ link_all() {
         *) warn "$BIN_DIR is not on PATH" ;;
     esac
     say "== Claude Code skills and command into $CLAUDE_DIR"
-    for skill in coa-slot-workflow coa-client-check coa-triage coa-fix-issues-batch; do
+    for skill in coa-slot-workflow coa-client-check; do
         [[ -d "$ROOT/skills/$skill" ]] && link "$ROOT/skills/$skill" "$CLAUDE_DIR/skills/$skill"
     done
     link "$ROOT/agents/coa-triage.md" "$CLAUDE_DIR/commands/coa-triage.md"

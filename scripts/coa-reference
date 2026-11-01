@@ -10,7 +10,7 @@ repository. Downloading and unpacking them takes a while, so they are cached her
 
 Sources and what each one is worth are described in README.md next to this script.
 """
-import argparse, hashlib, io, json, os, sys, tarfile, urllib.request
+import argparse, hashlib, io, json, os, sys, tarfile, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,7 +30,14 @@ SIMPLE = {
 }
 
 
+ALLOWED_HOSTS = {'api.github.com', 'raw.githubusercontent.com', 'github.com', 'objects.githubusercontent.com',
+                 'release-assets.githubusercontent.com', 'bindmysoul.com', 'ascensionsidekick.com'}
+
+
 def get(url, timeout=300):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != 'https' or parsed.hostname not in ALLOWED_HOSTS:
+        raise ValueError(f'refusing to fetch {url}: only https on {sorted(ALLOWED_HOSTS)}')
     with urllib.request.urlopen(url, timeout=timeout) as fh:
         return fh.read()
 
@@ -85,6 +92,10 @@ def update_ascension_data(manifest):
                     print(f'! {logical}: blob {part["sha256"][:12]} missing from {pack}', file=sys.stderr)
                     continue
                 data = tar.extractfile(member).read()
+                if sha256(data) != part['sha256']:
+                    print(f'! {logical}: blob {part["sha256"][:12]} from {pack} does not match its hash; refused',
+                          file=sys.stderr)
+                    continue
                 restored.setdefault(rel, bytearray()).extend(data)
     for rel, data in restored.items():
         target = SNAP / rel
