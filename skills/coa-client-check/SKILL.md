@@ -161,6 +161,8 @@ folder.
    corner before concluding a buff is invisible; `probe frame BuffButton1` returns `shown`/`visible`, and
    `probe eval` reads `BuffButton1Icon:GetTexture()`. `eval` takes an expression (it prepends `return`;
    wrap statements in `(function() ... end)()`), no `|`, and stays under the 255-character chat limit.
+8a0. **Modules that ship disabled** (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`): `coa-slot conf N KEY 1`
+     turns one on for the slot (private config, worldserver restart) and `coa-slot conf N KEY 0` restores it.
 8a. **Fresh client cache.** Every `coa-client-lab start` deletes the lab client's `Cache` folder (WDB included), so
     a check always runs with a fresh cache; there is no separate cache command. A WDB refresh only refetches the
     server's templates (names, display ids): an icon or model that stays a red "?" with a fresh cache comes from the
