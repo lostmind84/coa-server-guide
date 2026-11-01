@@ -34,11 +34,26 @@ ALLOWED_HOSTS = {'api.github.com', 'raw.githubusercontent.com', 'github.com', 'o
                  'release-assets.githubusercontent.com', 'bindmysoul.com', 'ascensionsidekick.com'}
 
 
-def get(url, timeout=300):
+def check_url(url):
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != 'https' or parsed.hostname not in ALLOWED_HOSTS:
         raise ValueError(f'refusing to fetch {url}: only https on {sorted(ALLOWED_HOSTS)}')
-    with urllib.request.urlopen(url, timeout=timeout) as fh:
+
+
+class CheckedRedirects(urllib.request.HTTPRedirectHandler):
+    """Apply the same scheme and host check to every redirect target, not only to the first URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        check_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+OPENER = urllib.request.build_opener(CheckedRedirects)
+
+
+def get(url, timeout=300):
+    check_url(url)
+    with OPENER.open(url, timeout=timeout) as fh:
         return fh.read()
 
 
