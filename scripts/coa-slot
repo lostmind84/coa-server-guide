@@ -39,6 +39,9 @@ Server (the slot must be claimed first):
   start N | stop N              start or stop slot N's containers without rebuilding
   warden N on|off               slots 2-4: set Warden.Enabled in the slot's own worldserver.conf and restart the
                                 worldserver (coa-lab-mem and coa-lab-packets need it off; deploy keeps the setting)
+  conf N KEY [VALUE]            slots 2-4: set KEY in every file of the slot's own worldserver.conf and modules/*.conf that
+                                holds it (e.g. CoALegendaryItems.Enable 1) and restart the worldserver; no VALUE lists
+                                where KEY is set. Restore the value before releasing the slot
   classmodel N [coa|hero|wcr]  slots 2-4: set CoA.ClassModel in the slot's own modules/coa.conf and restart the worldserver;
                                 no argument prints it. Mystic Scroll drops need hero or wcr (AscensionMysticEnchant zeroes
                                 them on a "coa" realm)
@@ -452,6 +455,35 @@ cmd_warden() {
     die "$WORLD not ready after 10 minutes, see: coa-slot compose $N logs ac-worldserver"
 }
 
+cmd_conf() {
+    load_slot "${1:-}"
+    local key="${2:-}" value="${3:-}" files=() file since
+    [[ "$N" != 1 ]] || die "slot 1 shares /srv/coa/etc with the live server: conf is only for slots 2-4"
+    [[ "$key" =~ ^[A-Za-z0-9_.]+$ ]] || die "usage: coa-slot conf N KEY [VALUE]  (e.g. CoALegendaryItems.Enable 1)"
+    [[ -z "$value" || "$value" =~ ^[A-Za-z0-9_.\"/:+,-]+$ ]] || die "VALUE may only hold letters, digits and _ . \" / : + , -"
+    require_claimed
+    require_created
+    mapfile -t files < <(grep -l "^${key//./\\.} *=" "$ETC/worldserver.conf" "$ETC"/modules/*.conf 2> /dev/null)
+    [[ ${#files[@]} -gt 0 ]] || die "$key is not set in $ETC/worldserver.conf or $ETC/modules/*.conf"
+    if [[ -z "$value" ]]; then
+        grep -H "^${key//./\\.} *=" "${files[@]}"
+        return 0
+    fi
+    for file in "${files[@]}"; do
+        sed -i "s|^${key//./\\.} *=.*|$key = $value|" "$file"
+    done
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    compose restart ac-worldserver
+    for _ in $(seq 1 120); do
+        if grep -q "(worldserver-daemon) ready" < <(docker logs --since "$since" "$WORLD" 2>&1); then
+            echo "slot $N: $key = $value in ${files[*]##*/}, worldserver ready"
+            return 0
+        fi
+        sleep 5
+    done
+    die "$WORLD not ready after 10 minutes, see: coa-slot compose $N logs ac-worldserver"
+}
+
 cmd_classmodel() {
     load_slot "${1:-}"
     local model="${2:-}" conf since
@@ -572,6 +604,7 @@ main() {
         warden) cmd_warden "$@" ;;
         tz) cmd_tz "$@" ;;
         classmodel) cmd_classmodel "$@" ;;
+        conf) cmd_conf "$@" ;;
         reset-db) cmd_reset_db "$@" ;;
         reseed-test-mysql) cmd_reseed_test_mysql "$@" ;;
         destroy) cmd_destroy "$@" ;;

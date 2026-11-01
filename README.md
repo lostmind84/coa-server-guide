@@ -593,6 +593,12 @@ coa-slot release 2                            # batch done: stops the slot's con
 - `warden N on|off` (slots 2-4) sets `Warden.Enabled` in the slot's own `worldserver.conf` and restarts the
   worldserver. `coa-lab-mem` and `coa-lab-packets` need it off; `deploy` leaves the setting alone. Slot 1
   shares `/srv/coa/etc` with the live server and is refused.
+- `conf N KEY [VALUE]` (slots 2-4) sets `KEY = VALUE` in every file of the slot's private `worldserver.conf` and
+  `modules/*.conf` that holds it, then restarts the worldserver; without VALUE it lists where the key is set.
+  Use it to turn a module on for a client or Ghost check (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`,
+  both `0` by default; the Manastorm key sits in two files and both are set). Restore the value before `release`.
+  The gameplay-test harness does not read the slot: for a `verify_all` scenario give it its own copy of
+  `/srv/coa/etc/modules` through `modules_config_dir` instead (core `docs/coa/verification.md`).
 - `classmodel N [coa|hero|wcr]` (slots 2-4) sets `CoA.ClassModel` in the slot's own `modules/coa.conf` and restarts the
   worldserver; no argument prints it. `AscensionMysticEnchant` zeroes Mystic Scroll drops unless the realm offers
   Mystic altars (`hero` or Warcraft Reborn, and not a wildcard realm), so a scroll or chest loot check on a `coa`
