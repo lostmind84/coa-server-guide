@@ -226,10 +226,19 @@ eventApi.UnitHealthMax = function() return 2236 end
 eventApi.UnitIsDeadOrGhost = function() return false end
 eventApi.UnitPowerType = function() return 1 end
 eventApi.UnitPower = function(_, index) return index == 1 and 35 or 0 end
+eventApi.GetUnitSpeed = function() return 4.7, 7, 7, 4.722 end
+eventApi.IsSwimming = function() return 1 end
+eventApi.IsFalling = function() return nil end
 local state = run(eventApi, "s1 state")
 check("state player name", state.result.player.name, "Labarba")
 check("state player auras", #state.result.player.auras, 1)
 check("state no target", state.result.target.exists, false)
+check("state swim speed", state.result.player.movement.speed.swim, 4.722)
+check("state current speed", state.result.player.movement.speed.current, 4.7)
+check("state swimming flag", state.result.player.movement.swimming, true)
+check("state falling flag", state.result.player.movement.falling, false)
+check("state missing API leaves a flag out", state.result.player.movement.flying, nil)
+check("state target has no movement", state.result.target.movement, nil)
 check("state player rage", state.result.player.powers.rage, 35)
 check("state player mana", state.result.player.powers.mana, 0)
 check("state player power type", state.result.player.powerType, 1)

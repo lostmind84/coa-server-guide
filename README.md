@@ -980,6 +980,7 @@ coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character 
 coa-client-lab probe perf start 250|stop    # client-side frame timer: `hitch` entries (ms) and 5 s `perf` summaries in `probe log`
 coa-client-lab probe item ID                 # name/link/quality, cached (client holds it) and retrieving (still waiting for the server);
                                             #   probe twice ~5 s apart: an id that stays retrieving has no server item_template
+coa-client-lab probe state                  # also the player's movement: speed.current (yd/s, read while a key is held), swimming, falling, mounted
 coa-client-lab probe actionbar               # every filled action slot (id, spell, cooldown) and the bar buttons with their slot
                                             #   (reload path); `probe frame NAME` also lists the hidden parents and the rect
 coa-client-lab goto-spawn gameobject|creature --entry ID|--guid ID [--distance YD] [--bearing DEG] [--dz YD]
