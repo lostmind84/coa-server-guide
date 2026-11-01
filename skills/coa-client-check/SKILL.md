@@ -216,6 +216,11 @@ folder.
      fixed `hold w 3000` instead, from `.gps` lines in `probe log` before and after, restarting each run from the same
      `.go xyz X Y Z MAP O` (control run without the action, then with it; land 3 s gave 20.1 yd, swimming 14.2 yd, repeatable
      to 0.5 yd).
+     Caveat: a chat-typed `/cast` takes about 1.5 s, so its moment inside the hold is loose. The Chaos Rush check (#10310)
+     read 0 yd gained while moving on land this way, while another run (hold 2 s, cast fired during the hold, X delta
+     against a no-cast control) measured +6.4 yd on land, +6.7 on the water surface and about 0 underwater on the same
+     build. The cause of the difference was not established; prefer the second protocol and confirm a "no effect" reading
+     with a positive control before trusting it.
 8a0. **Modules that ship disabled** (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`): `coa-slot conf N KEY 1`
      turns one on for the slot (private config, worldserver restart) and `coa-slot conf N KEY 0` restores it.
 8a. **Fresh client cache.** Every `coa-client-lab start` deletes the lab client's `Cache` folder (WDB included), so
