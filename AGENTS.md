@@ -1,16 +1,17 @@
 # AGENTS.md
 
 Guide and tooling for running a CoA (Conquest of Azeroth) server in Docker, plus the parallel-slot and client-lab
-scripts agents use to test it. Read this file first; open `README.md` only for the section you need.
+scripts agents use to test it. Read this file first. `README.md` is the server install guide (Part 1) and an index of the tooling pages in
+`docs/tooling/`: open only the page you need.
 
 ## Where to look
 
 | Question | Read |
 |---|---|
-| Install or run the server from scratch | `QUICKSTART.md`, then README parts 1 to 13 |
-| Parallel test slots (`coa-slot`) | README "Parallel work: server slots", `scripts/coa-slot help` |
-| Is a test result trustworthy? | README "Preflight", `scripts/coa-preflight.py` |
-| Driving the game client (`coa-client-lab`, CoaProbe) | `skills/coa-client-check/SKILL.md` and its `references/`, README "Client lab for agents" |
+| Install or run the server from scratch | `QUICKSTART.md`, then README Part 1 (steps 1 to 13) |
+| Parallel test slots (`coa-slot`) | `docs/tooling/slots-and-preflight.md`, `scripts/coa-slot help` |
+| Is a test result trustworthy? | `docs/tooling/slots-and-preflight.md` (Preflight), `scripts/coa-preflight.py` |
+| Driving the game client (`coa-client-lab`, CoaProbe) | `skills/coa-client-check/SKILL.md` and its `references/`; `docs/tooling/client-lab.md`, `docs/tooling/relay-probes.md` |
 | Why a lab tool works the way it does | `docs/adr/` (one decision per file, never rewritten) |
 | Issue queue workflow | `agents/coa-triage.md`, `agents/git-safety.md` |
 | Backups, restore, production | `docs/backup.md`, `docs/restore.md`, `docs/prod-server.md` |
@@ -36,7 +37,7 @@ scripts agents use to test it. Read this file first; open `README.md` only for t
 ## Rules for this repository
 
 - Conventional Commits. No session trailer and no session URL in commits or PR bodies.
-- Code and docs change together in one commit; a lab behaviour change updates the README or the skill and, when it is
+- Code and docs change together in one commit; a lab behaviour change updates `docs/tooling/` or the skill and, when it is
   a decision, adds an ADR. User-visible changes go in `CHANGELOG.md` under `Unreleased`.
 - Warn before changing the behaviour of `character`, `login`, `probe`, `relay-setup`, `preflight`, `create-instance`
   or `stop`: other agents script them.
