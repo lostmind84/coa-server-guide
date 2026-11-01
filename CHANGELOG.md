@@ -12,6 +12,8 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 - `skills/coa-client-check/references/`: probe, measurement and lab-state recipes, read on demand.
 
 ### Changed
+- README Part 2 moved to `docs/tooling/` (slots and preflight, client lab, relay probes, agent workflow): the README
+  drops from 1,259 to about 520 lines and keeps an index. Text moved unchanged; relative links were rewritten.
 - `skills/coa-client-check/SKILL.md` shrinks from 338 to about 220 lines; the recipes moved to `references/`.
 - The lab script tests run in about 3 minutes instead of 5 (`COA_LAB_PROBE_TIMEOUT=2` in the test environment).
 

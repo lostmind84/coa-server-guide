@@ -78,7 +78,7 @@ below instead: it writes the `core.ascension_active_spec` character_settings row
 
 For the lab client specifically, do this setup with one command instead of an ad hoc Ghost module:
 `coa-client-lab character --slot N --character C --race R --class K [--level N] [--spec ID]
-[--learn ID,ID,...] [--items ID,ID,...] [--bag-items ID,ID,...]` (guide README, "Client lab for agents"). It works on any slot and refuses
+[--learn ID,ID,...] [--items ID,ID,...] [--bag-items ID,ID,...]` (guide `docs/tooling/client-lab.md`). It works on any slot and refuses
 to silently change an existing character's class; by default it makes a dedicated account for C alone, so
 `coa-client-lab login C` logs straight into it. Pass `--account A` instead only when the check is itself about
 a shared account (bank, account-bound items, char-select screen) or needs a second character alongside it on
@@ -105,8 +105,7 @@ folder.
    `character`'s default dedicated account, or `coa-client-lab login --account <account> <character>` for a
    shared one (its password is generated/reused the same way as a dedicated account's — never type or pass one
    on the command line). `coa-client-lab login <account> <password> [<character>]` still works for a password
-   held another way. On a slot prepared with `coa-client-lab relay-setup N` (guide README, "Headless lab with relay
-   probes"), prefer `COA_LAB_PROFILE=minimal coa-client-lab start N`: with CHARACTER given either way, read-only
+   held another way. On a slot prepared with `coa-client-lab relay-setup N` (guide `docs/tooling/relay-probes.md`), prefer `COA_LAB_PROFILE=minimal coa-client-lab start N`: with CHARACTER given either way, read-only
    probes then go through the server relay in a fraction of a second, without `/reload`.
 2. Drive the client with `chat` (slash and GM commands), `key`, `hold KEY MS` (walk with `w`/`s`, turn with
    `Left`/`Right`) and `screenshot`. Typed text must not contain `|`.

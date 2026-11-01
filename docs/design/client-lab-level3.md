@@ -288,7 +288,7 @@ tried at character-select, live, slot 2:
   --sync X Y` / `click` with **no** `--window`) instead of XSendEvent (`mousemove --window "$WINDOW" ... click
   1`, the form that failed in-process 4/4 in L3/ADR 0003 and 2/2 in L5/ADR 0004): reached the login screen
   **4/4**, driven end to end inside `coa-client-lab login`'s own process -- the exact failure mode the earlier
-  sessions hit. See [ADR 0005](adr/0005-in-place-login-recovery-via-xtest-click.md) for the live table, the
+  sessions hit. See [ADR 0005](../adr/0005-in-place-login-recovery-via-xtest-click.md) for the live table, the
   1s-resolution phase breakdown, and why this is shipped even though the measured wall-clock times (43.4-46.0s,
   in-place) landed in the same band as the restart path's own 42.9-49.6s rather than a clear win.
 
@@ -320,7 +320,7 @@ typed into blindly) and to replace three misleading error messages with their re
   dialog (the client's own rejected login attempt); a kicked in-world client's dialog reads `login_state ==
   16` instead, identical to a genuinely clean login screen reached the normal way -- not distinguishable by
   any field read this session. `login_state` is also sticky (does not reset on dismiss). Both are documented,
-  not hidden, in `coa-lab-mem`'s own comment and [ADR 0009](adr/0009-login-state-machine-reads-and-fail-fast.md).
+  not hidden, in `coa-lab-mem`'s own comment and [ADR 0009](../adr/0009-login-state-machine-reads-and-fail-fast.md).
 
 Measured live, slot 2, 2026-10-27, nested 1920x1080: a ~2s-paced dedicated-account switch
 (`Coalabres`/`Labswitch`) ran 8/8 consecutive with zero restarts, 17.8-22.1s each. The same pace on the shared
