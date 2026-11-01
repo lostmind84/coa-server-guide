@@ -28,7 +28,9 @@ The tooling was written and tested on Linux only: bash scripts driving Docker, `
 reflink filesystem (btrfs or xfs), gamescope, xdotool and Wine/Proton. On Windows, macOS or WSL, **adapt the setup so
 it works on your OS**: translate paths and commands, replace what does not exist with an equivalent (on Windows the
 game client runs natively, so the lab client copy may not be needed at all), and keep going. Tell the user what you
-changed, and report as "not verified" any result that rests on an adaptation you could not test.
+changed, and report as "not verified" any result that rests on an adaptation you could not test. Show the user each
+adapted command before its first use, and ask before adapting or running anything that deletes or overwrites
+(`coa-worktree-cleanup`, `coa-slot reset-db`/`destroy`/`release`, `coa-client-lab destroy`/`erase`).
 `scripts/install-agent-tools.sh --check` reports the platform and the missing prerequisites without changing anything.
 
 ## Layout

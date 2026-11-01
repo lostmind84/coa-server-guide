@@ -23,6 +23,11 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 - `skills/coa-client-check/references/`: probe, measurement and lab-state recipes, read on demand.
 
 ### Changed
+- `coa-reference` fetches only over https from a fixed list of hosts and refuses a downloaded part whose SHA-256 does
+  not match the cache manifest; the platform note tells agents to show adapted commands and to ask before adapting
+  destructive ones.
+- `install-agent-tools.sh` links only `coa-slot-workflow` and `coa-client-check` into the Claude skills directory; `coa-triage`
+  (a command for Claude Code) and the Codex skills `coa-triage` and `coa-fix-issues-batch` (with `--codex`) stay separate.
 - README Part 2 moved to `docs/tooling/` (slots and preflight, client lab, relay probes, agent workflow): the README
   drops from 1,259 to about 520 lines and keeps an index. Text moved unchanged; relative links were rewritten.
 - `skills/coa-client-check/SKILL.md` shrinks from 338 to about 220 lines; the recipes moved to `references/`.
