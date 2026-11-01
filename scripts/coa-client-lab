@@ -1221,7 +1221,10 @@ cmd_goto_spawn() {
     if [[ "$kind" == gameobject ]]; then
         table=gameobject id_column=id
     else
-        table=creature id_column=id1
+        table=creature
+        id_column=$(docker exec "$db_container" sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -N -e \"select column_name from information_schema.columns where table_schema='acore_world' and table_name='creature' and column_name in ('id','id1') order by column_name desc limit 1\" 2> /dev/null") \
+            || die "database query failed"
+        [[ -n "$id_column" ]] || die "acore_world.creature has neither an id nor an id1 column"
     fi
     if [[ -n "$entry" ]]; then key="$id_column" value="$entry"; else key=guid value="$guid"; fi
     row=$(docker exec "$db_container" sh -c "mysql -uroot -p\"\$MYSQL_ROOT_PASSWORD\" -N -e \"select guid, map, position_x, position_y, position_z from acore_world.$table where $key = $value order by guid limit 1; select count(*) from acore_world.$table where $key = $value\" 2> /dev/null") \
