@@ -1627,6 +1627,17 @@ assert_eq "erase never erases after a failed ownership check" "$(grep -c 'charac
 out=$(erase_lab "'Throw;x'")
 [[ "$out" == *"2-12 letters"* ]] && pass "erase refuses a malformed character name" \
     || fail "erase refuses a malformed character name: got [$out]"
+rm -f "$ERASE_DIR/lab/state/slot"
+out=$(erase_lab Throw)
+[[ "$out" == *"pass --slot N"* ]] && pass "erase without a lab slot says to pass --slot" \
+    || fail "erase without a lab slot says to pass --slot: got [$out]"
+: > "$ERASE_CALL_LOG"
+out=$(erase_lab Throw --slot 5)
+assert_eq "erase --slot works with the lab stopped" "$(tr '\n' ';' < "$ERASE_CALL_LOG")" \
+    "soap pinfo Throw;soap character erase Throw;soap account delete COALABTHROW;"
+out=$(erase_lab Throw --slot x)
+[[ "$out" == *"--slot needs a slot number"* ]] && pass "erase refuses a non-numeric --slot" \
+    || fail "erase refuses a non-numeric --slot: got [$out]"
 rm -f "$FUNCS_FILE"
 rm -rf "$ERASE_DIR"
 

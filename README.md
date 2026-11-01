@@ -990,7 +990,7 @@ coa-client-lab camera status|reset|pitch up|down MS  # also yaw left|right and z
                                             #   its own; every move prints the pitch (-89..89 degrees, applied in bursts: converge
                                             #   by reading it); the angle is saved per character and survives relogs, `reset` undoes it
                                             #   (an underwater or elevated object can then be framed)
-coa-client-lab erase CHARACTER [--account A] # delete a throwaway lab character over SOAP (in-game GMs lack the RBAC
+coa-client-lab erase CHARACTER [--account A] [--slot N] # delete a throwaway lab character over SOAP (in-game GMs lack the RBAC
                                             #   permission); without --account also its dedicated COALAB account and password file
 coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.packetlog` over SOAP, decoded aura updates
 ```
