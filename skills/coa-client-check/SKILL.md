@@ -180,6 +180,15 @@ folder.
      `DODGE`, ...). Verified 2026-11-01: a level 20 Barbarian auto-attacking a level 23 dummy logged 8 of 8 swings as
      `SWING_MISSED`, one `PARRY` and the others `MISS` (one run, not a hit-rate). The log keeps 200 entries and a
      fight fills it, so read it soon after.
+8a3b. **Hitches and frame time.** `probe perf start [MS]` arms a client-side timer (kept across reloads, no reload after
+     the first call): every frame of MS milliseconds or more (default 250) writes a `hitch` log entry with `ms`, and a
+     `perf` entry every 5 s with `frames`, `fps` and `worstMs`; read them with `probe log 100` (relay, no reload), each
+     carrying the millisecond `clock`, then `probe perf stop`. Arm it, cast, read the log: a client freeze shows as a
+     `hitch` entry whose `clock` sits at the cast. The `minimal` profile caps the client at 10 fps, so a frame is 100 ms
+     and anything under about 250 ms is invisible; start the client with another profile for finer resolution.
+     Verified 2026-11-01: a 700 ms busy loop logged `hitch` 706, summaries read 10 fps, and the watch survived a reload.
+     It measures the client's frame time, not the server's: a hitch from a server stall shows as a frame gap only
+     if the client waits on it.
 8a4. **A dead gamescope.** A `key` press, or nothing at all, has twice killed the lab's gamescope (`[gamescope_ei]
      Unhandled libei event!`, `EI_EVENT_SYNC`, a Wayland broken pipe): a host-side crash, not reproducible on demand. Every
      command then answers `lock present but gamescope is gone` with the recovery: `coa-client-lab stop`, `start N`,
