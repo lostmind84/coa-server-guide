@@ -23,7 +23,7 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 - `skills/coa-client-check/references/`: probe, measurement and lab-state recipes, read on demand.
 
 ### Changed
-- `coa-reference` fetches only over https from a fixed list of hosts and refuses a downloaded part whose SHA-256 does
+- `coa-reference` fetches only over https from a fixed list of hosts (redirect targets included) and refuses a downloaded part whose SHA-256 does
   not match the cache manifest; the platform note tells agents to show adapted commands and to ask before adapting
   destructive ones.
 - `install-agent-tools.sh` links only `coa-slot-workflow` and `coa-client-check` into the Claude skills directory; `coa-triage`
