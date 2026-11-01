@@ -1669,5 +1669,11 @@ out=$(rv_run "lab_player_dead() { return 0; }; cmd_revive() { echo revived-calle
 rm -f "$FUNCS_FILE"
 rm -rf "$RV_DIR"
 
+# select_character_via_memory matches the character list case-insensitively (the server title-cases names).
+FUNCS_FILE=$(source_lab_functions)
+out=$(bash -c "source \"$FUNCS_FILE\"; glue_state() { echo '{\"current_screen\": \"charselect\", \"selection_index\": 0, \"characters\": [\"Cmsuncleric\"]}'; }; select_character_via_memory CMSunCleric; echo rc=\$?" 2>&1)
+[[ "$out" == *"rc=0"* ]] && pass "character selection ignores name case" || fail "character selection ignores name case: got [$out]"
+rm -f "$FUNCS_FILE"
+
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))

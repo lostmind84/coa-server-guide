@@ -161,6 +161,10 @@ folder.
    corner before concluding a buff is invisible; `probe frame BuffButton1` returns `shown`/`visible`, and
    `probe eval` reads `BuffButton1Icon:GetTexture()`. `eval` takes an expression (it prepends `return`;
    wrap statements in `(function() ... end)()`), no `|`, and stays under the 255-character chat limit.
+8b. **Time-gated mechanics.** The slot containers run in UTC; a mechanic keyed to the local hour (Sun Cleric `Daytime()`)
+    strips a forced aura outside its window. `coa-slot tz N UTC-12` (or another POSIX zone) shifts the worldserver's
+    local time for the check and `coa-slot tz N off` restores it; verified 2026-11-01 with aura 707768 on a Sun Cleric.
+    `login` accepts the character name in any letter case (the server stores it title-cased).
 9. **Framing an object.** `coa-client-lab goto-spawn gameobject|creature --entry ID|--guid ID --distance 8
    --bearing 90` lands the character at that bearing and distance from a database spawn, facing it, instead of
    inside its model (`.go gameobject GUID`); an underwater spawn needs a bearing toward the shore and `--dz`.

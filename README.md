@@ -593,6 +593,11 @@ coa-slot release 2                            # batch done: stops the slot's con
 - `warden N on|off` (slots 2-4) sets `Warden.Enabled` in the slot's own `worldserver.conf` and restarts the
   worldserver. `coa-lab-mem` and `coa-lab-packets` need it off; `deploy` leaves the setting alone. Slot 1
   shares `/srv/coa/etc` with the live server and is refused.
+- `tz N [ZONE|off]` (slots 2-4) runs the slot's worldserver in another local time zone through a per-slot compose
+  override (`compose.tz.yml`, kept across `deploy`), for mechanics gated on the local hour such as the Sun Cleric's
+  `Daytime()` (6:00-18:00 local, read with `localtime_r`). The zone is a POSIX string, `UTC-12` meaning twelve
+  hours ahead; no argument prints the current value and `off` restores the container default. It recreates the
+  worldserver and only moves what reads local time, not the stored timestamps of the database.
 - `reseed-test-mysql [N]` refills the in-RAM test MySQL (`coa-test-mysql`, empty after every container restart)
   from slot N's database (default 1) with `mysqldump | mysql` between the two containers: the root passwords
   never leave them. Takes about a minute. It overwrites `acore_auth`, `acore_characters` and `acore_world`, so
