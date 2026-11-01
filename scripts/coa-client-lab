@@ -138,11 +138,16 @@ Running (one lab client per instance):
   goto-spawn gameobject|creature (--entry ID | --guid ID) [--distance YD] [--bearing DEG] [--dz YD]
                            stand YD yards (default 8) from a spawn read from the slot database, at compass
                            BEARING degrees from it (0 = east, 90 = north), facing it, via `.go xyz`; --dz
-                           raises or lowers the landing point. Prints the spawn and the line it typed
-  camera pitch up|down MS | yaw left|right MS | zoom in|out MS
+                           raises or lowers the landing point (the server snaps heights to the ground). Prints the spawn, the line it
+                           typed and where the character really landed (`.gps`); revives a dead character first,
+                           and again if it died on landing
+  camera status | reset | pitch up|down MS | yaw left|right MS | zoom in|out MS
                            move the third-person camera on its own (Lua MoveView*), independent of the
                            character's facing; `pitch up` raises the camera until it looks down on the
-                           character. Stops by itself after MS milliseconds; the new angle stays
+                           character. Each move runs for MS milliseconds of client time and prints the
+                           resulting pitch; the client applies pitch in bursts, so converge by reading
+                           `status` (pitch -89..89 degrees). The angle is saved per character and survives
+                           relogs: `reset` returns to the default third-person view
   type TEXT                type text into the client
   key KEY...               send keys (xdotool names: Return, Tab, Escape, BackSpace...)
   chat TEXT                Return, type TEXT, Return (slash commands, /say...)
@@ -166,7 +171,8 @@ Running (one lab client per instance):
                            pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
                            pkunwatch OPCODE); prints JSON. With state/lab.json, read-only commands go through the
                            server relay (coa-lab-relay, no /reload); COA_LAB_TRANSPORT=reload forces /reload
-  revive [CHARACTER]       revive a dead or ghost lab character server-side over the SOAP relay (.revive); the
+  revive [CHARACTER]       revive a dead or ghost lab character server-side over the SOAP relay (.revive), releasing
+                           the spirit and retrying once if it is still dead; the
                            client's chat box refuses every input, GM commands included, while the character is
                            dead. CHARACTER defaults to the last one that reached world; needs relay-setup
   erase CHARACTER [--account A]
@@ -1041,15 +1047,42 @@ kick_via_soap() {
     return 1
 }
 
+# 0 dead, 1 alive, 2 unknown (no probe answer): the addon's own view, which still answers while the
+# character is dead and the chat box refuses every input.
+lab_player_dead() {
+    local out
+    out=$(cmd_probe state 2> /dev/null) || return 2
+    python3 -c '
+import json, sys
+try:
+    sys.exit(0 if json.load(sys.stdin)["result"]["player"].get("dead") else 1)
+except Exception:
+    sys.exit(2)
+' <<<"$out"
+}
+
 cmd_revive() {
     [[ $# -le 1 ]] || die "usage: coa-client-lab revive [CHARACTER]"
-    local character="${1:-}" slot relay_env
+    local character="${1:-}" slot relay_env attempt dead
     [[ -n "$character" ]] || character=$(lab_last_character)
     [[ -n "$character" ]] || die "revive needs CHARACTER: no login has reached world this session"
     slot=$(cat "$STATE_DIR/slot" 2> /dev/null) || slot=""
     relay_env=$(relay_env_for_slot "$slot") || die "no relay configuration for slot ${slot:-unknown}: run relay-setup first"
-    COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "revive $character" || die "revive $character failed"
-    echo "revived $character"
+    for attempt in 1 2; do
+        COA_LAB_RELAY_ENV="$relay_env" "$RELAY" soap "revive $character" || die "revive $character failed"
+        "$SLEEP" 2
+        lab_player_dead && dead=1 || dead=0
+        if [[ "$dead" == 0 ]]; then
+            echo "revived $character"
+            return 0
+        fi
+        if [[ "$attempt" == 1 ]]; then
+            echo "$character is still dead after revive: releasing the spirit (CMSG_REPOP_REQUEST), then reviving again" >&2
+            cmd_probe pksend 346 u8:0 > /dev/null 2>&1 || true
+            "$SLEEP" 2
+        fi
+    done
+    die "$character is still dead after revive and release"
 }
 
 cmd_erase() {
@@ -1089,21 +1122,76 @@ cmd_erase() {
     fi
 }
 
+camera_status() {
+    cmd_probe eval 'GetCVar("cameraSavedPitch").."/"..GetCVar("cameraSavedDistance")' 2> /dev/null | python3 -c '
+import json, sys
+try:
+    pitch, distance = json.load(sys.stdin)["result"]["values"][0].split("/")
+    print("camera pitch %.1f degrees, distance %.2f yards" % (float(pitch), float(distance)))
+except Exception:
+    sys.exit(1)
+'
+}
+
 cmd_camera() {
-    local axis="${1:-}" direction="${2:-}" ms="${3:-}" start stop
-    [[ "$ms" =~ ^[0-9]+$ ]] || die "usage: coa-client-lab camera pitch up|down MS | yaw left|right MS | zoom in|out MS"
-    case "$axis $direction" in
-        "pitch up") start=MoveViewUpStart stop=MoveViewUpStop ;;
-        "pitch down") start=MoveViewDownStart stop=MoveViewDownStop ;;
-        "yaw left") start=MoveViewLeftStart stop=MoveViewLeftStop ;;
-        "yaw right") start=MoveViewRightStart stop=MoveViewRightStop ;;
-        "zoom in") start=MoveViewInStart stop=MoveViewInStop ;;
-        "zoom out") start=MoveViewOutStart stop=MoveViewOutStop ;;
-        *) die "usage: coa-client-lab camera pitch up|down MS | yaw left|right MS | zoom in|out MS" ;;
+    local axis="${1:-}" direction="${2:-}" ms="${3:-}" move seconds
+    local usage="usage: coa-client-lab camera status | reset | pitch up|down MS | yaw left|right MS | zoom in|out MS"
+    case "$axis" in
+        status) camera_status || die "no camera reading from the probe"; return ;;
+        reset)
+            cmd_chat "/script ResetView(3) SetView(3)"
+            "$SLEEP" 4
+            camera_status || true
+            return ;;
     esac
-    cmd_chat "/script $start()"
-    "$SLEEP" "$(awk -v ms="$ms" 'BEGIN { print ms / 1000 }')"
-    cmd_chat "/script $stop()"
+    [[ "$ms" =~ ^[0-9]+$ ]] || die "$usage"
+    case "$axis $direction" in
+        "pitch up") move=ViewUp ;;
+        "pitch down") move=ViewDown ;;
+        "yaw left") move=ViewLeft ;;
+        "yaw right") move=ViewRight ;;
+        "zoom in") move=ViewIn ;;
+        "zoom out") move=ViewOut ;;
+        *) die "$usage" ;;
+    esac
+    seconds=$(awk -v ms="$ms" 'BEGIN { print ms / 1000 }')
+    cmd_chat "/script local e=0 local f=CreateFrame(\"Frame\") Move${move}Start() f:SetScript(\"OnUpdate\",function(s,dt) e=e+dt if e>=$seconds then Move${move}Stop() s:SetScript(\"OnUpdate\",nil) end end)"
+    "$SLEEP" "$(awk -v s="$seconds" 'BEGIN { print s + 2 }')"
+    camera_status || true
+}
+
+# Position of the character from `.gps`, read back from the addon's capture of the system messages:
+# "X Y Z ORIENTATION". Fails when no `.gps` answer shows up (a dead character cannot chat).
+lab_gps() {
+    cmd_chat ".gps"
+    "$SLEEP" 2
+    cmd_probe log 15 2> /dev/null | python3 -c '
+import re, sys
+text = sys.stdin.read()
+found = re.findall(r"X: (-?[0-9.]+) Y: (-?[0-9.]+) Z: (-?[0-9.]+) Orientation: ([0-9.]+)", text)
+if not found:
+    sys.exit(1)
+print(*found[-1])
+'
+}
+
+# Reports where `.go xyz` really put the character: `.go xyz` silently floor-snaps heights, and a tight or
+# airborne landing can kill the character (a dead character cannot chat, so the teleport is also lost).
+goto_verify_landing() {
+    local requested_z="$1" landed lx ly lz lo
+    if lab_player_dead; then
+        echo "WARN: the character died on landing (tight collision or a fall): reviving; try another --bearing, --distance or --dz" >&2
+        cmd_revive || true
+    fi
+    if landed=$(lab_gps); then
+        read -r lx ly lz lo <<<"$landed"
+        echo "landed at $lx $ly $lz (orientation $lo)"
+        if awk -v a="$lz" -v b="$requested_z" 'BEGIN { d = a - b; exit !(d > 2 || d < -2) }'; then
+            echo "WARN: landed at Z $lz, not the requested $requested_z: the server snaps .go xyz heights to the ground and a landing in rock or off the map drops the character; read the position back before trusting the view" >&2
+        fi
+    else
+        echo "WARN: no .gps answer: the landing position could not be read back" >&2
+    fi
 }
 
 cmd_goto_spawn() {
@@ -1152,7 +1240,14 @@ print("%.3f %.3f %.3f %.4f" % (x + distance * math.cos(rad), y + distance * math
     read -r tx ty tz facing <<<"$target"
     echo "spawn $kind guid $spawn_guid map $map at $x $y $z ($count with $key $value; first used)"
     echo ".go xyz $tx $ty $tz $map $facing"
+    if [[ "${COA_LAB_GOTO_VERIFY:-1}" == 1 ]] && lab_player_dead; then
+        echo "WARN: the character is dead, so the teleport would be silently ignored: reviving first" >&2
+        cmd_revive || die "cannot revive the dead character: the teleport would be lost"
+    fi
     cmd_chat ".go xyz $tx $ty $tz $map $facing"
+    [[ "${COA_LAB_GOTO_VERIFY:-1}" == 1 ]] || return 0
+    "$SLEEP" 3
+    goto_verify_landing "$tz"
 }
 
 # Returns 0 once memory confirms the account-login screen, driving the client there in place instead of
@@ -1575,6 +1670,10 @@ cmd_login() {
     if glue_state > /dev/null 2>&1; then
         local confirm_screen
         confirm_screen=$(glue_field "$(glue_state)" current_screen)
+        if [[ -z "$confirm_screen" || "$confirm_screen" == unknown ]]; then
+            glue_until login "$LOGIN_WAIT" > /dev/null 2>&1 || true
+            confirm_screen=$(glue_field "$(glue_state)" current_screen)
+        fi
         [[ "$confirm_screen" == "login" ]] \
             || die "memory no longer confirms the account-login screen (current_screen=${confirm_screen:-unknown});" \
                    "refusing to type credentials."

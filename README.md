@@ -512,7 +512,7 @@ and made configurable afterwards: defaults assume the layout of Part 1 (`~/Proje
 
 ```bash
 git clone https://github.com/lostmind84/coa-server-guide.git ~/Projects/coa-server-guide
-ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint,coa-worktree-cleanup} ~/.local/bin/
+ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint,coa-lab-mem,coa-lab-packets,coa-worktree-cleanup} ~/.local/bin/
 ```
 
 ## Prerequisites
@@ -964,7 +964,9 @@ coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character 
 coa-client-lab goto-spawn gameobject|creature --entry ID|--guid ID [--distance YD] [--bearing DEG] [--dz YD]
                                             # stand next to a spawn read from the slot database, facing it (`.go gameobject`
                                             #   lands inside the model); bearing 0 = east, 90 = north
-coa-client-lab camera pitch up|down MS      # also yaw left|right and zoom in|out: move the third-person camera on its own
+coa-client-lab camera status|reset|pitch up|down MS  # also yaw left|right and zoom in|out: move the third-person camera on
+                                            #   its own; every move prints the pitch (-89..89 degrees, applied in bursts: converge
+                                            #   by reading it); the angle is saved per character and survives relogs, `reset` undoes it
                                             #   (an underwater or elevated object can then be framed)
 coa-client-lab erase CHARACTER [--account A] # delete a throwaway lab character over SOAP (in-game GMs lack the RBAC
                                             #   permission); without --account also its dedicated COALAB account and password file

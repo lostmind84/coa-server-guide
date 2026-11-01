@@ -124,6 +124,11 @@ folder.
    ("Target too close", "Not enough rage"), system messages and the player's casts with their failure reason.
    Nothing else shows why an action did not happen: the red error text fades and `/reload` clears the chat.
    Read the log after every action that could fail, before concluding anything.
+3b. **Timing.** Log entries carry `time` (one second) and `clock`, the client's `GetTime()` in milliseconds, so two
+    entries of one session can be ordered and spaced to the millisecond. The log keeps `cast`, `cast_failed` and
+    `cast_interrupted` by default; `probe evwatch UNIT_SPELLCAST_START` (also `UNIT_SPELLCAST_CHANNEL_START`,
+    `UNIT_SPELLCAST_CHANNEL_STOP`...) adds the starts. Lua has no world position: `.gps` (one line per call) is the
+    client-side read; for movement at 100 ms spacing use a Ghost or `coa-gameplay-test` step on the server side.
 4. **One request per moment (reload path).** `coa-client-lab probe state` snapshots the player and the current
    target together (name, level, health, every power index the client exposes, auras). A probe on the `/reload`
    path writes its answer through `/reload`, which clears the target selection, so two such probes never describe
@@ -147,8 +152,10 @@ folder.
    To stand next to a spawn from the database, use the core's own `.go creature id ENTRY`, `.go creature SPAWNGUID`,
    `.go gameobject id ENTRY` or `.go gameobject SPAWNGUID` (`cs_go.cpp`) instead of typing coordinates by hand.
 7. **A dead or ghost character cannot chat at all** ("You can't chat when you're dead!", GM `.` commands
-   included), e.g. after `.go xyz` into open air. Recover with `coa-client-lab revive [CHARACTER]` (server-side
-   `.revive` over the SOAP relay; needs `relay-setup`). Do not abandon the character.
+   included), and `.go xyz` typed then is silently lost. Recover with `coa-client-lab revive [CHARACTER]` (server-side
+   `.revive` over the SOAP relay; needs `relay-setup`): when the character is still dead it releases the spirit
+   (CMSG_REPOP_REQUEST) and revives again by itself. `goto-spawn` revives first, and again if the landing killed
+   the character (a tight cave spawn can). Do not abandon the character.
 8. **Buffs render left of the minimap, not below it.** The stock 3.3.5a `BuffFrame` is anchored top right,
    to the left of the minimap (verified 2026-10-31: the permanent "PvE Mode" icon sits there). Crop that
    corner before concluding a buff is invisible; `probe frame BuffButton1` returns `shown`/`visible`, and
@@ -158,7 +165,10 @@ folder.
    --bearing 90` lands the character at that bearing and distance from a database spawn, facing it, instead of
    inside its model (`.go gameobject GUID`); an underwater spawn needs a bearing toward the shore and `--dz`.
    `coa-client-lab camera pitch up|down MS`, `yaw left|right MS` and `zoom in|out MS` then move the camera
-   around the character without turning it. `--items` must equip; put cache or consumable ids in `--bag-items`.
+   around the character without turning it. The client applies pitch in bursts, so no timed move is
+   proportional: `camera status` prints the pitch (-89..89 degrees) and `camera reset` returns to the default
+   view; the angle is saved per character, so reset it at the start of a framing check. `goto-spawn` reads the
+   landing back with `.gps` and warns when Z differs from the request (snapped or fallen). `--items` must equip; put cache or consumable ids in `--bag-items`.
    `coa-slot warden N off` makes any claimed slot 2-4 usable for `coa-lab-mem` (it restarts the worldserver).
 10. **Gameobject state.** `coa-lab-mem gameobject ENTRY|0xGUID` prints the client's copy of the object's
    `GAMEOBJECT_DYNAMIC` low word (`activate`, `sparkle`...), flags and state. The server sets `sparkle` per

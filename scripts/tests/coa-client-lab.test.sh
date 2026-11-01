@@ -312,17 +312,20 @@ assert_contains "chat types text" "$FAKE_LOG" "xdotool DISPLAY=:77 type --window
 
 : > "$FAKE_LOG"
 run_lab camera pitch down 50
-assert_contains "camera starts the pitch" "$FAKE_LOG" "type --window 4242 --delay 40 /script MoveViewDownStart()"
-assert_contains "camera stops the pitch" "$FAKE_LOG" "type --window 4242 --delay 40 /script MoveViewDownStop()"
+assert_contains "camera runs a timed pitch move" "$FAKE_LOG" "MoveViewDownStart() f:SetScript"
+assert_contains "camera stops the move by itself" "$FAKE_LOG" "MoveViewDownStop() s:SetScript"
+: > "$FAKE_LOG"
+run_lab camera reset
+assert_contains "camera reset restores the default view" "$FAKE_LOG" "type --window 4242 --delay 40 /script ResetView(3) SetView(3)"
 if run_lab camera pitch sideways 50; then fail "camera refuses an unknown direction"; else pass "camera refuses an unknown direction"; fi
 
 : > "$FAKE_LOG"
-run_lab goto-spawn gameobject --entry 90268 --distance 10 --bearing 90 --dz 2
+COA_LAB_GOTO_VERIFY=0 run_lab goto-spawn gameobject --entry 90268 --distance 10 --bearing 90 --dz 2
 assert_contains "goto-spawn queries the slot database" "$FAKE_LOG" "docker exec fake-db"
 assert_contains "goto-spawn stands at bearing and distance, facing the spawn" "$FAKE_LOG" \
     "type --window 4242 --delay 40 .go xyz 100.000 210.000 -28.000 0 4.7124"
 assert_contains "goto-spawn reports the spawn count" "$WORK/out" "2 with id 90268"
-FAKE_NO_SPAWN=1 run_lab goto-spawn creature --guid 5 || true
+COA_LAB_GOTO_VERIFY=0 FAKE_NO_SPAWN=1 run_lab goto-spawn creature --guid 5 || true
 assert_contains "goto-spawn names a missing spawn" "$WORK/out" "no creature spawn with guid 5"
 if run_lab goto-spawn gameobject --entry 1 --guid 2; then fail "goto-spawn refuses both ids"; else pass "goto-spawn refuses both ids"; fi
 
@@ -1623,6 +1626,48 @@ out=$(erase_lab "'Throw;x'")
     || fail "erase refuses a malformed character name: got [$out]"
 rm -f "$FUNCS_FILE"
 rm -rf "$ERASE_DIR"
+
+# revive retry (release spirit) and landing verification, with the probe and chat layers overridden.
+RV_DIR=$(mktemp -d "$WORK/revretry.XXXXXX")
+mkdir -p "$RV_DIR/lab/relay" "$RV_DIR/lab/state"
+printf 'SLOT=5\n' > "$RV_DIR/lab/relay/slot5.env"
+echo 5 > "$RV_DIR/lab/state/slot"
+RV_LOG="$RV_DIR/calls.log"
+cat > "$RV_DIR/relay" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$RV_LOG"
+exit 0
+EOF
+chmod +x "$RV_DIR/relay"
+FUNCS_FILE=$(source_lab_functions)
+rv_run() {
+    COA_LAB_ROOT="$RV_DIR/lab" COA_LAB_RELAY="$RV_DIR/relay" \
+        bash -c "source \"$FUNCS_FILE\"; cmd_probe() { echo \"probe \$*\" >> \"$RV_LOG\"; }; $1" 2>&1
+}
+: > "$RV_LOG"
+echo 0 > "$RV_DIR/count"
+out=$(rv_run "lab_player_dead() { local n; n=\$(cat \"$RV_DIR/count\"); echo \$((n + 1)) > \"$RV_DIR/count\"; ((n < 1)); }; cmd_revive Namedchar")
+assert_eq "revive releases the spirit and revives again when still dead" "$(tr '\n' ';' < "$RV_LOG")" \
+    "soap revive Namedchar;probe pksend 346 u8:0;soap revive Namedchar;"
+[[ "$out" == *"revived Namedchar"* ]] && pass "revive succeeds after the release" || fail "revive succeeds after the release: got [$out]"
+: > "$RV_LOG"
+out=$(rv_run "lab_player_dead() { return 0; }; cmd_revive Namedchar")
+[[ "$out" == *"still dead after revive and release"* ]] && pass "revive gives up when the character stays dead" \
+    || fail "revive gives up when the character stays dead: got [$out]"
+
+: > "$RV_LOG"
+out=$(rv_run "cmd_chat() { echo \"chat \$*\" >> \"$RV_LOG\"; }; cmd_probe() { printf 'X: 1 Y: 2 Z: 3 Orientation: 0.5\nX: -690.37 Y: -5602.0 Z: 25.12 Orientation: 4.7124\n'; }; lab_gps")
+assert_eq "lab_gps returns the last position" "$out" "-690.37 -5602.0 25.12 4.7124"
+out=$(rv_run "cmd_chat() { :; }; cmd_probe() { echo nothing; }; lab_gps || echo rc=\$?")
+[[ "$out" == *"rc=1"* ]] && pass "lab_gps fails without a .gps answer" || fail "lab_gps fails without a .gps answer: got [$out]"
+out=$(rv_run "lab_player_dead() { return 1; }; lab_gps() { echo '1 2 23.322 4.7'; }; goto_verify_landing 44.679")
+[[ "$out" == *"landed at 1 2 23.322"* && "$out" == *"not the requested 44.679"* ]] && pass "landing check warns when Z was snapped" \
+    || fail "landing check warns when Z was snapped: got [$out]"
+out=$(rv_run "lab_player_dead() { return 0; }; cmd_revive() { echo revived-called; }; lab_gps() { echo '1 2 3 4'; }; goto_verify_landing 3")
+[[ "$out" == *"died on landing"* && "$out" == *"revived-called"* ]] && pass "landing check revives a character that died" \
+    || fail "landing check revives a character that died: got [$out]"
+rm -f "$FUNCS_FILE"
+rm -rf "$RV_DIR"
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))
