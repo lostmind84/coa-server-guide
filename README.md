@@ -593,6 +593,11 @@ coa-slot release 2                            # batch done: stops the slot's con
 - `warden N on|off` (slots 2-4) sets `Warden.Enabled` in the slot's own `worldserver.conf` and restarts the
   worldserver. `coa-lab-mem` and `coa-lab-packets` need it off; `deploy` leaves the setting alone. Slot 1
   shares `/srv/coa/etc` with the live server and is refused.
+- `classmodel N [coa|hero|wcr]` (slots 2-4) sets `CoA.ClassModel` in the slot's own `modules/coa.conf` and restarts the
+  worldserver; no argument prints it. `AscensionMysticEnchant` zeroes Mystic Scroll drops unless the realm offers
+  Mystic altars (`hero` or Warcraft Reborn, and not a wildcard realm), so a scroll or chest loot check on a `coa`
+  slot looks empty for that unrelated reason. `coa-client-lab character` still creates CoA classes 12-32 under `hero`
+  (checked 2026-11-01). Put the slot back to `coa` before releasing it.
 - `tz N [ZONE|off]` (slots 2-4) runs the slot's worldserver in another local time zone through a per-slot compose
   override (`compose.tz.yml`, kept across `deploy`), for mechanics gated on the local hour such as the Sun Cleric's
   `Daytime()` (6:00-18:00 local, read with `localtime_r`). The zone is a POSIX string, `UTC-12` meaning twelve
