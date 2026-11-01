@@ -63,7 +63,13 @@ Commands.handlers.item = function(api, args)
     if not id then
         return nil, err
     end
-    return { id = id, tooltip = tooltipLines(api, "item:" .. id) }
+    local tooltip = tooltipLines(api, "item:" .. id)
+    local name, link, quality = api.GetItemInfo(id)
+    local retrieving = tooltip[1] ~= nil and tooltip[1].left == api.RETRIEVING_ITEM_INFO
+    return {
+        id = id, name = name, link = link, quality = quality,
+        cached = name ~= nil, retrieving = retrieving, tooltip = tooltip,
+    }
 end
 
 Commands.handlers.auras = function(api, args)

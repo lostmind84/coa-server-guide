@@ -193,6 +193,16 @@ folder.
      Unhandled libei event!`, `EI_EVENT_SYNC`, a Wayland broken pipe): a host-side crash, not reproducible on demand. Every
      command then answers `lock present but gamescope is gone` with the recovery: `coa-client-lab stop`, `start N`,
      `login CHARACTER`.
+8a5. **"The chest or sack opens empty": is the looted item known to the server?** `probe item ID` answers `cached`
+     (the client holds the item: `name`, `link`, `quality`), `retrieving` (the tooltip is still "Retrieving item
+     information") and the tooltip lines. The first probe of an item the client has never seen always answers
+     `cached` false, `retrieving` true: the client asks the server and the answer lands a few seconds later. Probe
+     twice, about 5 s apart (verified 2026-11-01: item 400002 `retrieving` then, 6 s later, `cached` true with its
+     name and tooltip). An id that stays `cached` false and `retrieving` true on the second and third probe was not
+     answered with an item, which is what a missing `item_template` row looks like (verified with id 9999999, which has
+     no row: still `retrieving` after several probes). The client cannot tell "the server said unknown" from "no
+     answer yet": confirm in the database (`select entry from item_template where entry = ID`) before calling it a
+     missing template, and a `cached` true item whose chest is still empty is a loot-table problem instead.
 8a0. **Modules that ship disabled** (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`): `coa-slot conf N KEY 1`
      turns one on for the slot (private config, worldserver restart) and `coa-slot conf N KEY 0` restores it.
 8a. **Fresh client cache.** Every `coa-client-lab start` deletes the lab client's `Cache` folder (WDB included), so

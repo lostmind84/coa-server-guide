@@ -61,7 +61,11 @@ local function makeApi()
     api.GameTooltip = {
         SetOwner = function() end,
         SetHyperlink = function(_, link)
-            lines = { link, "second line" }
+            if link == "item:9999999" then
+                lines = { "Retrieving item information", "ID 9999999" }
+            else
+                lines = { link, "second line" }
+            end
         end,
         NumLines = function() return #lines end,
         Hide = function() end,
@@ -77,6 +81,10 @@ local function makeApi()
         end
     end
     api.IsSpellKnown = function(id) return id == 501281 end
+    api.RETRIEVING_ITEM_INFO = "Retrieving item information"
+    api.GetItemInfo = function(id)
+        if id == 6948 then return "Hearthstone", "|cffffffff|Hitem:6948|h[Hearthstone]|h|r", 1 end
+    end
     api.UnitAura = function(unit, index, filter)
         if unit == "player" and index == 1 and filter == "HELPFUL" then
             return "PvE Mode", "", "icon", 0, nil, 0, 0, "player", nil, nil, 9931032
@@ -117,6 +125,14 @@ check("spell usage", answer.error, "usage: spell <id>")
 
 answer = run(api, "r5 item 6948")
 check("item tooltip", answer.result.tooltip[1].left, "item:6948")
+check("item cached", answer.result.cached, true)
+check("item name", answer.result.name, "Hearthstone")
+check("item not retrieving", answer.result.retrieving, false)
+
+answer = run(api, "r5b item 9999999")
+check("uncached item name", answer.result.name, nil)
+check("uncached item flag", answer.result.cached, false)
+check("uncached item retrieving", answer.result.retrieving, true)
 
 answer = run(api, "r6 auras")
 check("auras unit", answer.result.unit, "player")
