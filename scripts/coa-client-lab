@@ -166,7 +166,7 @@ Running (one lab client per instance):
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
-                           ca [ENTRY], log [n], state, frame NAME, actionbar, errors [N] [previous] [locals],
+                           ca [ENTRY], log [n], state, frame NAME, actionbar, perf start [MS]|stop, errors [N] [previous] [locals],
                            pksend OPCODE [u32:N u8:N s:TEXT ...],
                            pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
                            pkunwatch OPCODE); prints JSON. With state/lab.json, read-only commands go through the

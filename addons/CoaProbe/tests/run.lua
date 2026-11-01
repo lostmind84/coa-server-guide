@@ -611,6 +611,33 @@ check("actionbar lists the buttons", bar.buttons[1].button, "ActionButton5")
 check("actionbar button slot", bar.buttons[1].slot, 5)
 check("frame missing method gives nil", broken.text, nil)
 
+local perfApi = makeApi()
+local perfFrames = {}
+perfApi.CreateFrame = function()
+    local frame = { SetScript = function(self, _, fn) self.onUpdate = fn end }
+    perfFrames[#perfFrames + 1] = frame
+    return frame
+end
+local perfStart = run(perfApi, "pf1 perf start 200").result
+check("perf start reports the threshold", perfStart.thresholdMs, 200)
+check("perf start is kept for the next reload", perfApi.CoaProbeWatch.perf, 200)
+local tick = perfFrames[1].onUpdate
+for _ = 1, 5 do tick(nil, 5) end
+check("perf skips the loading frames", perfApi.CoaProbeLog, nil)
+tick(nil, 0.016)
+tick(nil, 0.6)
+check("perf records a hitch", perfApi.CoaProbeLog[1].kind, "hitch")
+check("perf hitch length in ms", perfApi.CoaProbeLog[1].ms, 600)
+check("perf ignores a normal frame", #perfApi.CoaProbeLog, 1)
+for _ = 1, 400 do tick(nil, 0.016) end
+local summary = perfApi.CoaProbeLog[#perfApi.CoaProbeLog]
+check("perf writes a summary", summary.kind, "perf")
+check("perf summary fps", summary.fps > 50 and summary.fps < 70, true)
+run(perfApi, "pf2 perf stop")
+check("perf stop clears the watch", perfApi.CoaProbeWatch.perf, nil)
+check("perf stop detaches the timer", perfFrames[1].onUpdate, nil)
+check("perf rejects a bad mode", run(perfApi, "pf3 perf nope").error, "usage: perf start [thresholdMs] | stop")
+
 -- CoaProbe.lua routes CHAT_MSG_ADDON to the relay. It no longer installs its own error handler (no
 -- seterrorhandler call anywhere in the addon any more -- `errors` only reads ERROR_HANDLER_DATABASE).
 local scripts, events = {}, {}

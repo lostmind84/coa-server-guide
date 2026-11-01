@@ -977,6 +977,7 @@ coa-lab-mem gameobject ENTRY|0xGUID         # a gameobject's flags, GAMEOBJECT_D
                                             #   client holds them for this player (offsets from UpdateFields.h, validated live 2026-10-31)
 coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character over SOAP (.revive): the client's chat box
                                             #   refuses all input, GM commands included, while dead. Default: last logged-in character
+coa-client-lab probe perf start 250|stop    # client-side frame timer: `hitch` entries (ms) and 5 s `perf` summaries in `probe log`
 coa-client-lab probe actionbar               # every filled action slot (id, spell, cooldown) and the bar buttons with their slot
                                             #   (reload path); `probe frame NAME` also lists the hidden parents and the rect
 coa-client-lab goto-spawn gameobject|creature --entry ID|--guid ID [--distance YD] [--bearing DEG] [--dz YD]

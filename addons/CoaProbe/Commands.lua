@@ -465,6 +465,66 @@ Commands.handlers.evunwatch = function(api, args)
     return { event = event, watching = false, note = "stops after the next /reload" }
 end
 
+-- perf start [thresholdMs] / perf stop: from now on, and again after every /reload, an OnUpdate timer records a
+-- "hitch" log entry for every frame that took thresholdMs or more (default 250) and a "perf" summary entry every 5
+-- seconds (frames, fps, worst frame). The log is readable through the relay without a reload, so a hitch around a
+-- cast is read with `log` after the fact. Kept in CoaProbeWatch under "perf".
+local PERF_DEFAULT_MS = 250
+local PERF_SUMMARY_SECONDS = 5
+local PERF_SKIP_FRAMES = 5
+
+function Commands.watchPerf(api, thresholdMs)
+    if api.CoaProbePerfFrame then
+        api.CoaProbePerfFrame:SetScript("OnUpdate", nil)
+    end
+    local frame = api.CreateFrame("Frame")
+    api.CoaProbePerfFrame = frame
+    local skipped, frames, elapsed, worst = 0, 0, 0, 0
+    frame:SetScript("OnUpdate", function(_, dt)
+        if skipped < PERF_SKIP_FRAMES then
+            skipped = skipped + 1
+            return
+        end
+        api.CoaProbeLog = api.CoaProbeLog or {}
+        local ms = math.floor(dt * 1000 + 0.5)
+        if ms >= thresholdMs then
+            CoaProbe.Events.record(api.CoaProbeLog, { time = api.time(), kind = "hitch", ms = ms })
+        end
+        frames, elapsed = frames + 1, elapsed + dt
+        worst = math.max(worst, ms)
+        if elapsed >= PERF_SUMMARY_SECONDS then
+            CoaProbe.Events.record(api.CoaProbeLog, {
+                time = api.time(), kind = "perf", frames = frames,
+                fps = math.floor(frames / elapsed * 10 + 0.5) / 10, worstMs = worst,
+            })
+            frames, elapsed, worst = 0, 0, 0
+        end
+    end)
+end
+
+Commands.handlers.perf = function(api, args)
+    local mode = args[1]
+    if mode == "start" then
+        local threshold = tonumber(args[2]) or PERF_DEFAULT_MS
+        if threshold < 1 then
+            return nil, "usage: perf start [thresholdMs]"
+        end
+        api.CoaProbeWatch = api.CoaProbeWatch or {}
+        api.CoaProbeWatch.perf = threshold
+        Commands.watchPerf(api, threshold)
+        return { watching = true, thresholdMs = threshold, summaryEverySeconds = PERF_SUMMARY_SECONDS }
+    elseif mode == "stop" then
+        if api.CoaProbeWatch then
+            api.CoaProbeWatch.perf = nil
+        end
+        if api.CoaProbePerfFrame then
+            api.CoaProbePerfFrame:SetScript("OnUpdate", nil)
+        end
+        return { watching = false }
+    end
+    return nil, "usage: perf start [thresholdMs] | stop"
+end
+
 function Commands.watchEvent(api, event)
     local frame = api.CreateFrame("Frame")
     frame:RegisterEvent(event)

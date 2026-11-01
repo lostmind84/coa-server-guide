@@ -50,6 +50,8 @@ function CoaProbe.restoreWatches(api)
             restored = restored + 1
         elseif type(key) == "string" and key:sub(1, 6) == "event:" and pcall(CoaProbe.Commands.watchEvent, api, key:sub(7)) then
             restored = restored + 1
+        elseif key == "perf" and tonumber(bytes) and pcall(CoaProbe.Commands.watchPerf, api, tonumber(bytes)) then
+            restored = restored + 1
         end
     end
     return restored
