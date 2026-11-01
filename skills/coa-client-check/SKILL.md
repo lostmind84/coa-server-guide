@@ -161,6 +161,29 @@ folder.
    corner before concluding a buff is invisible; `probe frame BuffButton1` returns `shown`/`visible`, and
    `probe eval` reads `BuffButton1Icon:GetTexture()`. `eval` takes an expression (it prepends `return`;
    wrap statements in `(function() ... end)()`), no `|`, and stays under the 255-character chat limit.
+8a1. **Reading frames and action bars.** `probe frame NAME` returns `shown`, `visible`, the `parents` chain (`Name:1` shown,
+     `Name:0` hidden) and the `rect`: `visible` is false whenever an ancestor is hidden. This client's character pane
+     is on screen while the stock `CharacterFrame` is hidden (`PaperDollFrame` reports `shown` true, `visible` false,
+     `parents` `CharacterFrame:0,UIParent:1`, rect 384x512 at the top left, verified 2026-11-01): trust the rect and a
+     screenshot, not `visible`. `probe actionbar` lists every filled action slot (`slot`, `type`, `id`, `texture`,
+     `cooldown`) and the bar buttons with the slot each carries and whether it is shown, so a spell dragged to "the
+     fifth button" is found by slot id instead of by counting pixels. `frame` goes through the relay; `actionbar`
+     is a reload-path probe (see 4b).
+8a2. **Latency of reload-path probes.** `eval`, `actionbar`, `pksend` and the watches reload the UI: allow 10 to 60 s per
+     call under load (the default `COA_LAB_PROBE_TIMEOUT` is 30 s; raise it, and wrap a scripted loop's calls in at
+     least 60 s). One `eval` that scans many slots beats a loop of calls, and the `no CoaProbe answer` error only says the
+     answer did not arrive yet: read it again before concluding.
+8a3. **Observing a miss or a parry.** `probe evwatch COMBAT_LOG_EVENT_UNFILTERED` (one reload), then `.npc add 32666`,
+     `.npc set level N`, `/target Training Dummy`, `/startattack`, wait, and `probe log 200`: every entry is
+     `kind` event with `args` = timestamp, subevent, source guid, name, flags, destination guid, name, flags, then the
+     subevent's own fields. A miss is `SWING_MISSED` or `SPELL_MISSED` ending with the miss type (`MISS`, `PARRY`,
+     `DODGE`, ...). Verified 2026-11-01: a level 20 Barbarian auto-attacking a level 23 dummy logged 8 of 8 swings as
+     `SWING_MISSED`, one `PARRY` and the others `MISS` (one run, not a hit-rate). The log keeps 200 entries and a
+     fight fills it, so read it soon after.
+8a4. **A dead gamescope.** A `key` press, or nothing at all, has twice killed the lab's gamescope (`[gamescope_ei]
+     Unhandled libei event!`, `EI_EVENT_SYNC`, a Wayland broken pipe): a host-side crash, not reproducible on demand. Every
+     command then answers `lock present but gamescope is gone` with the recovery: `coa-client-lab stop`, `start N`,
+     `login CHARACTER`.
 8a0. **Modules that ship disabled** (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`): `coa-slot conf N KEY 1`
      turns one on for the slot (private config, worldserver restart) and `coa-slot conf N KEY 0` restores it.
 8a. **Fresh client cache.** Every `coa-client-lab start` deletes the lab client's `Cache` folder (WDB included), so

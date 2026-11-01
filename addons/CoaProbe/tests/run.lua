@@ -583,6 +583,32 @@ rawset(frameApi, "Broken", { GetObjectType = function() error("nope") end, IsSho
 local broken = run(frameApi, "f5 frame Broken").result
 check("frame survives a throwing method", broken.exists, true)
 check("frame throwing method gives nil", broken.type, nil)
+
+local chainApi = makeApi()
+local rootFrame = { GetName = function() return "UIParent" end, IsShown = function() return 1 end, GetParent = function() return nil end }
+local hidden = { GetName = function() return "CharacterFrame" end, IsShown = function() return nil end, GetParent = function() return rootFrame end }
+rawset(chainApi, "PaperDollFrame", {
+    GetObjectType = function() return "Frame" end, IsShown = function() return 1 end, IsVisible = function() return nil end,
+    GetParent = function() return hidden end, GetRect = function() return 10, 20, 300, 400 end,
+})
+local chain = run(chainApi, "f6 frame PaperDollFrame").result
+check("frame lists its hidden parent", table.concat(chain.parents, ","), "CharacterFrame:0,UIParent:1")
+check("frame reports its rectangle", chain.rect.width, 300)
+check("frame without GetRect has no rectangle", run(frameApi, "f7 frame MyFrame").result.rect, nil)
+
+local barApi = makeApi()
+barApi.HasAction = function(slot) return slot == 6 end
+barApi.GetActionInfo = function() return "spell", 680421 end
+barApi.GetActionCooldown = function() return 100.5, 180, 1 end
+barApi.GetActionTexture = function() return "Interface\\Icons\\ability_racial_avatar" end
+rawset(barApi, "ActionButton5", { action = 5, IsVisible = function() return true end })
+local bar = run(barApi, "a1 actionbar").result
+check("actionbar lists only filled slots", #bar.slots, 1)
+check("actionbar slot id", bar.slots[1].slot, 6)
+check("actionbar spell id", bar.slots[1].id, 680421)
+check("actionbar cooldown duration", bar.slots[1].cooldown.duration, 180)
+check("actionbar lists the buttons", bar.buttons[1].button, "ActionButton5")
+check("actionbar button slot", bar.buttons[1].slot, 5)
 check("frame missing method gives nil", broken.text, nil)
 
 -- CoaProbe.lua routes CHAT_MSG_ADDON to the relay. It no longer installs its own error handler (no

@@ -166,7 +166,7 @@ Running (one lab client per instance):
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
   probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
-                           ca [ENTRY], log [n], state, frame NAME, errors [N] [previous] [locals],
+                           ca [ENTRY], log [n], state, frame NAME, actionbar, errors [N] [previous] [locals],
                            pksend OPCODE [u32:N u8:N s:TEXT ...],
                            pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
                            pkunwatch OPCODE); prints JSON. With state/lab.json, read-only commands go through the
@@ -376,7 +376,9 @@ find_display() {
 
 require_running() {
     [[ -e "$LOCK" ]] || die "the lab client is not running: coa-client-lab start N"
-    gamescope_pid > /dev/null || die "lock present but gamescope is gone: coa-client-lab stop"
+    gamescope_pid > /dev/null || die "lock present but gamescope is gone (the host's gamescope/Xwayland session died, seen with" \
+        "libei events or a Wayland broken pipe); recover with: coa-client-lab stop && coa-client-lab start $(cat "$STATE_DIR/slot" 2> /dev/null || echo N)" \
+        "&& coa-client-lab login $(lab_last_character 2> /dev/null || echo CHARACTER)"
     DISPLAY=$(cat "$STATE_DIR/display")
     WINDOW=$(cat "$STATE_DIR/window")
     export DISPLAY
@@ -1997,7 +1999,8 @@ cmd_probe() {
         fi
         sleep 1
     done
-    die "no CoaProbe answer for $req after ${PROBE_TIMEOUT}s, see $file"
+    die "no CoaProbe answer for $req after ${PROBE_TIMEOUT}s: the client may still be reloading (a reload-path probe such as eval takes 10 to 60 s" \
+        "under load); raise COA_LAB_PROBE_TIMEOUT and read it again, see $file"
 }
 
 cmd_stop() {
