@@ -91,6 +91,7 @@ LOCK="$STATE_DIR/lock"
 usage() {
     cat <<'EOF'
 Usage: coa-client-lab <command> [arguments]
+(`coa-client-lab commands` lists every command on one line with an example)
 
 Lab copy:
   create                   reflink-copy the user's client and Wine prefix, drop accounts, glue config and cache,
@@ -189,6 +190,36 @@ Server relay:
   relay-setup N --soap-account NAME --soap-password-file PATH
                            enable SOAP (container 0.0.0.0, host loopback) and CoA.ProbeRelay.Enable in slot N's
                            configuration and write relay/slotN.env; restart the worldserver afterwards
+EOF
+}
+
+commands() {
+    cat <<'EOF'
+coa-client-lab commands (one line each; `coa-client-lab --help` has the full usage)
+  create | destroy --yes                 lab copy of the client          coa-client-lab create
+  create-instance | destroy-instance     extra lab clients               COA_LAB_INSTANCE=2 coa-client-lab create-instance
+  start N                                launch against slot N           COA_LAB_PROFILE=minimal coa-client-lab start 2
+  character --slot N --character C ...   make a test character          coa-client-lab character --slot 2 --character Labx --race 2 --class 12 --level 30 --learn 500422
+  login CHARACTER                        enter the world                 coa-client-lab login Labx
+  login --account A CHARACTER            shared account                  coa-client-lab login --account A Labx
+  probe COMMAND [ARGS]                   read the client (JSON)          coa-client-lab probe state
+  chat TEXT | key KEY... | type TEXT     drive the client                coa-client-lab chat ".gps"
+  hold KEY MS                            hold a key                      coa-client-lab hold w 3000
+  screenshot [PATH] | --burst | --video-seconds
+                                         capture                         coa-client-lab screenshot --video-seconds 3 --chat "/cast Spell"
+  goto-spawn gameobject|creature --entry ID|--guid ID [--distance D --bearing B --dz Z]
+                                         stand next to a spawn           coa-client-lab goto-spawn creature --entry 32666 --distance 8 --bearing 90
+  camera status|reset|pitch|yaw|zoom     third-person camera             coa-client-lab camera reset
+  revive [CHARACTER]                     revive over SOAP                coa-client-lab revive
+  erase CHARACTER [--account A] [--slot N]  delete a throwaway character coa-client-lab erase Labx --slot 2
+  preflight N                            is the slot trustworthy         coa-client-lab preflight 2
+  rbac-grant --account NAME              grant instant logout to an older lab account   coa-client-lab rbac-grant --account COALABLABX
+  relay-setup N --soap-account NAME --soap-password-file PATH   enable relay probes on slot N
+  status | stop | mute                   lock holder, stop, audio off    coa-client-lab stop
+Probe commands: ping, spell ID, item ID, auras [UNIT], spellbook, known ID, ca [ENTRY], log [n], state, frame NAME,
+  actionbar, perf start [MS]|stop, errors [N] [previous] [locals], pksend, pkwatch, pkmeta, pkfind, evwatch EVENT,
+  evunwatch EVENT, eval EXPR, pkunwatch OPCODE. Relay (no reload): ping spell item auras spellbook known log state ca
+  frame errors. Everything else reloads the UI.
 EOF
 }
 
@@ -2163,6 +2194,7 @@ main() {
         preflight) cmd_preflight "$@" ;;
         relay-setup) cmd_relay_setup "$@" ;;
         rbac-grant) cmd_rbac_grant "$@" ;;
+        commands) commands ;;
         -h|--help|help|"") usage ;;
         *) usage >&2; exit 2 ;;
     esac
