@@ -135,6 +135,7 @@ EOF
     cat > "$WORK/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "$FAKE_LOG"
+[[ "$*" == *information_schema* ]] && { echo id1; exit 0; }
 [[ "${FAKE_NO_SPAWN:-}" == 1 ]] && exit 0
 printf '6940068\t0\t100\t200\t-30\n2\n'
 EOF
@@ -325,6 +326,8 @@ assert_contains "goto-spawn queries the slot database" "$FAKE_LOG" "docker exec 
 assert_contains "goto-spawn stands at bearing and distance, facing the spawn" "$FAKE_LOG" \
     "type --window 4242 --delay 40 .go xyz 100.000 210.000 -28.000 0 4.7124"
 assert_contains "goto-spawn reports the spawn count" "$WORK/out" "2 with id 90268"
+COA_LAB_GOTO_VERIFY=0 run_lab goto-spawn creature --entry 7 || true
+assert_contains "goto-spawn finds the creature id column" "$FAKE_LOG" "where id1 = 7"
 COA_LAB_GOTO_VERIFY=0 FAKE_NO_SPAWN=1 run_lab goto-spawn creature --guid 5 || true
 assert_contains "goto-spawn names a missing spawn" "$WORK/out" "no creature spawn with guid 5"
 if run_lab goto-spawn gameobject --entry 1 --guid 2; then fail "goto-spawn refuses both ids"; else pass "goto-spawn refuses both ids"; fi

@@ -568,13 +568,68 @@ Commands.handlers.frame = function(api, args)
     if type(widget) ~= "table" then
         return { name = name, exists = false }
     end
+    -- parents: "Name:1" (shown) or "Name:0" up to the root, so a frame reported hidden because an ancestor is
+    -- hidden shows which one (a custom UI can keep a stock frame hidden while its own copy is on screen).
+    local parents = {}
+    local parent = widgetCall(widget, "GetParent")
+    while type(parent) == "table" and #parents < 12 do
+        parents[#parents + 1] = tostring(widgetCall(parent, "GetName") or "?") ..
+            ":" .. (widgetCall(parent, "IsShown") and "1" or "0")
+        parent = widgetCall(parent, "GetParent")
+    end
+    local left, bottom, width, height
+    if type(widget.GetRect) == "function" then
+        local ok, l, b, w, h = pcall(widget.GetRect, widget)
+        if ok then
+            left, bottom, width, height = l, b, w, h
+        end
+    end
     return {
         name = name, exists = true,
         type = widgetCall(widget, "GetObjectType"),
         shown = widgetCall(widget, "IsShown") and true or false,
         visible = widgetCall(widget, "IsVisible") and true or false,
         text = widgetCall(widget, "GetText"),
+        parents = parents,
+        rect = left and { left = left, bottom = bottom, width = width, height = height } or nil,
     }
+end
+
+-- actionbar: every filled action slot with its id as the Lua API numbers it (GetActionInfo/GetActionCooldown),
+-- and the bar buttons that carry them, so a spell dragged onto "the fifth button" is found by name, not by
+-- counting pixels on a screenshot.
+local ACTION_BARS = { "ActionButton", "MultiBarBottomLeftButton", "MultiBarBottomRightButton",
+                      "MultiBarRightButton", "MultiBarLeftButton" }
+
+Commands.handlers.actionbar = function(api, args)
+    local slots = {}
+    for slot = 1, 120 do
+        if api.HasAction(slot) then
+            local kind, id = api.GetActionInfo(slot)
+            local start, duration, enable = api.GetActionCooldown(slot)
+            slots[#slots + 1] = {
+                slot = slot, type = kind, id = id, texture = api.GetActionTexture(slot),
+                cooldown = { start = start, duration = duration, enable = enable },
+            }
+        end
+    end
+    local buttons = {}
+    for _, bar in ipairs(ACTION_BARS) do
+        for index = 1, 12 do
+            local button = api[bar .. index]
+            if type(button) == "table" then
+                local slot = button.action
+                if bar == "ActionButton" and type(api.ActionButton_GetPagedID) == "function" then
+                    local ok, paged = pcall(api.ActionButton_GetPagedID, button)
+                    slot = ok and paged or slot
+                end
+                buttons[#buttons + 1] = {
+                    button = bar .. index, slot = slot, visible = widgetCall(button, "IsVisible") and true or false,
+                }
+            end
+        end
+    end
+    return { slots = slots, buttons = buttons }
 end
 
 function Commands.run(api, line)
