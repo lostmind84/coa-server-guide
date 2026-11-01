@@ -185,6 +185,8 @@ folder.
    `coa-client-lab preflight N`/`start N` print the slot's Warden state up front (L15, 2026-10-27) --
    `warden: off on slot N (coa-lab-mem and coa-lab-packets usable)`, or a `WARN:` naming both tools when it
    is on -- so a Warden-on slot is known before either tool is tried, not from the first refusal.
+   Totem checks: `coa-lab-packets on`, cast, then `coa-lab-packets list --opcode SMSG_TOTEM_CREATED` shows whether
+   the server sent the totem-bar packet (the packet log holds every packet, both directions).
 
 ## Getting the state you need, shortest route first
 
