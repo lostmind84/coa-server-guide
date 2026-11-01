@@ -515,6 +515,10 @@ git clone https://github.com/lostmind84/coa-server-guide.git ~/Projects/coa-serv
 ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint,coa-lab-mem,coa-lab-packets,coa-worktree-cleanup} ~/.local/bin/
 ```
 
+Linux only: on Windows, macOS or WSL the tools below do not run (see "Platform" in [`AGENTS.md`](AGENTS.md)).
+`scripts/install-agent-tools.sh --check` lists what your machine lacks and `scripts/install-agent-tools.sh` links the
+tools, skills and the triage command into place.
+
 Each page below is self-contained; agents should start from [`AGENTS.md`](AGENTS.md) and open only the page
 they need.
 
