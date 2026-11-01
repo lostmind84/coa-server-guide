@@ -6,7 +6,7 @@
 #   scripts/install-agent-tools.sh --codex          also link the Codex skills
 #
 # Options: --bin-dir DIR (default ~/.local/bin), --claude-dir DIR (default ~/.claude),
-#          --codex-dir DIR (default ~/.agents), --force-platform (skip the platform stop).
+#          --codex-dir DIR (default ~/.agents).
 # Idempotent: an existing correct link is left alone, a real file or a link to elsewhere is never replaced.
 set -uo pipefail
 
@@ -16,13 +16,11 @@ CLAUDE_DIR="${HOME}/.claude"
 CODEX_DIR="${HOME}/.agents"
 CHECK=0
 CODEX=0
-FORCE_PLATFORM=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --check) CHECK=1; shift ;;
         --codex) CODEX=1; shift ;;
-        --force-platform) FORCE_PLATFORM=1; shift ;;
         --bin-dir) BIN_DIR="${2:?--bin-dir needs a directory}"; shift 2 ;;
         --claude-dir) CLAUDE_DIR="${2:?--claude-dir needs a directory}"; shift 2 ;;
         --codex-dir) CODEX_DIR="${2:?--codex-dir needs a directory}"; shift 2 ;;
@@ -41,35 +39,28 @@ platform_check() {
     local kernel
     kernel=$(uname -s 2> /dev/null || echo unknown)
     case "$kernel" in
-        MINGW*|MSYS*|CYGWIN*)
-            cat <<'EOF'
-This is Windows (Git Bash, MSYS or Cygwin). The tooling in this guide is not supported there and was never run there:
-  - coa-slot, coa-client-lab and the coa-lab-* tools are bash scripts that drive Docker, Linux paths (/srv/coa,
-    ~/CoaServer), a reflink-capable filesystem (btrfs or xfs), gamescope, xdotool and Wine/Proton. None of these exist
-    on native Windows.
-  - On Windows the game client runs natively, so the lab copy of the client is not the tool you need.
-  - What may still help: the server repository's own documentation for its Windows paths, the addon in
-    addons/CoaProbe copied by hand into a native client (untested), and reading the guide.
-  - Agents asked to use coa-slot or coa-client-lab here will fail or invent workarounds: tell them so.
-EOF
-            if [[ "$FORCE_PLATFORM" != 1 ]]; then
-                say "Stopping. Run with --force-platform to continue anyway (links only; nothing will work end to end)."
-                exit 3
-            fi
-            ;;
         Linux)
             if grep -qi microsoft /proc/version 2> /dev/null; then
-                warn "WSL detected. Not tested: the server stack may run in Docker, but the client lab needs gamescope, X11 input"
-                warn "and a reflink filesystem, which a default WSL install lacks. Expect to use only the server-side tools."
+                warn "WSL detected: the lab client needs gamescope, X11 input and a reflink filesystem, which a default WSL"
+                warn "install lacks. Adapt the setup (see below) before relying on the lab tools."
+                adapt_notice
             fi
             ;;
-        Darwin)
-            warn "macOS is not supported and was never tested: the lab needs Linux (gamescope, xdotool, reflink copies)."
-            ;;
         *)
-            warn "unrecognised platform '$kernel': the tooling was written for Linux only."
+            warn "platform '$kernel': the tooling was written and tested on Linux only."
+            adapt_notice
             ;;
     esac
+}
+
+adapt_notice() {
+    cat <<'EOF'
+NOTE for the agent reading this: the tools in this guide (coa-slot, coa-client-lab, coa-lab-*) are bash scripts for
+Linux (Docker, /srv/coa and ~/CoaServer paths, reflink copies, gamescope, xdotool, Wine/Proton). They were never run
+on this platform. Adapt the setup so it works here: translate paths and commands, replace what does not exist with
+an equivalent (for example the lab client copy: on Windows the client runs natively), and keep going. Tell the user
+what you changed, and report as "not verified" any result that rests on an adaptation you could not test.
+EOF
 }
 
 have() { command -v "$1" > /dev/null 2>&1; }
@@ -138,7 +129,7 @@ link() { # link TARGET LINKPATH
 link_all() {
     local script skill
     say "== Scripts into $BIN_DIR"
-    for script in coa-slot coa-client-lab coa-lab-relay coa-lab-footprint coa-lab-mem coa-lab-packets coa-worktree-cleanup; do
+    for script in coa-slot coa-client-lab coa-lab-relay coa-lab-footprint coa-lab-mem coa-lab-packets coa-worktree-cleanup coa-obtainable coa-reference; do
         link "$ROOT/scripts/$script" "$BIN_DIR/$script"
     done
     case ":$PATH:" in
@@ -146,7 +137,7 @@ link_all() {
         *) warn "$BIN_DIR is not on PATH" ;;
     esac
     say "== Claude Code skills and command into $CLAUDE_DIR"
-    for skill in coa-client-check coa-triage coa-fix-issues-batch; do
+    for skill in coa-slot-workflow coa-client-check coa-triage coa-fix-issues-batch; do
         [[ -d "$ROOT/skills/$skill" ]] && link "$ROOT/skills/$skill" "$CLAUDE_DIR/skills/$skill"
     done
     link "$ROOT/agents/coa-triage.md" "$CLAUDE_DIR/commands/coa-triage.md"

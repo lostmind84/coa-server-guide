@@ -12,8 +12,8 @@ description: >-
 One issue, one check, one verdict. The check is only worth what its expectation is worth: write the expectation
 before touching the client, and never soften it afterwards.
 
-Machine details (slots, paths, harness pitfalls) live in the `coa-ghost-harness` skill; the scripts are documented
-in the public guide (https://github.com/lostmind84/coa-server-guide, Part 2).
+Slots, preflight and harness pitfalls: the `coa-slot-workflow` skill (and `docs/agent-lessons.md`); the scripts are
+documented in the public guide (https://github.com/lostmind84/coa-server-guide, `docs/tooling/`).
 
 ## Not this skill
 

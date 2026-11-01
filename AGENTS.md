@@ -9,12 +9,14 @@ scripts agents use to test it. Read this file first. `README.md` is the server i
 | Question | Read |
 |---|---|
 | Install or run the server from scratch | `QUICKSTART.md`, then README Part 1 (steps 1 to 13) |
-| Parallel test slots (`coa-slot`) | `docs/tooling/slots-and-preflight.md`, `scripts/coa-slot help` |
+| Working on a server: slots, preflight, gameplay tests, cleanup | `skills/coa-slot-workflow/SKILL.md`, `docs/tooling/slots-and-preflight.md`, `scripts/coa-slot help` |
 | Is a test result trustworthy? | `docs/tooling/slots-and-preflight.md` (Preflight), `scripts/coa-preflight.py` |
 | Driving the game client (`coa-client-lab`, CoaProbe) | `skills/coa-client-check/SKILL.md` and its `references/`; `docs/tooling/client-lab.md`, `docs/tooling/relay-probes.md` |
 | Why a lab tool works the way it does | `docs/adr/` (one decision per file, never rewritten) |
 | Issue queue workflow | `agents/coa-triage.md`, `agents/git-safety.md` |
 | Backups, restore, production | `docs/backup.md`, `docs/restore.md`, `docs/prod-server.md` |
+| Was this spell ever obtainable? (outside captures) | `docs/tooling/spell-obtainability.md` (`coa-obtainable`) |
+| Faster gameplay verification (optional in-RAM MySQL) | `docs/tooling/ram-mysql.md` |
 | Pitfalls that cost time in past runs | `docs/agent-lessons.md` |
 | Install the tools and check prerequisites | `scripts/install-agent-tools.sh --check` |
 
@@ -22,18 +24,19 @@ scripts agents use to test it. Read this file first. `README.md` is the server i
 
 ## Platform
 
-The tooling is written for Linux: bash scripts driving Docker, `/srv/coa` and `~/CoaServer` paths, a reflink
-filesystem (btrfs or xfs), gamescope, xdotool and Wine/Proton. It is not supported on Windows, macOS or WSL and was
-never run there. On Windows the client runs natively, so the lab client copy is not the tool to use; `coa-slot` and
-`coa-client-lab` will fail. Tell the user instead of improvising a workaround. `scripts/install-agent-tools.sh
---check` reports the platform and the missing prerequisites without changing anything.
+The tooling was written and tested on Linux only: bash scripts driving Docker, `/srv/coa` and `~/CoaServer` paths, a
+reflink filesystem (btrfs or xfs), gamescope, xdotool and Wine/Proton. On Windows, macOS or WSL, **adapt the setup so
+it works on your OS**: translate paths and commands, replace what does not exist with an equivalent (on Windows the
+game client runs natively, so the lab client copy may not be needed at all), and keep going. Tell the user what you
+changed, and report as "not verified" any result that rests on an adaptation you could not test.
+`scripts/install-agent-tools.sh --check` reports the platform and the missing prerequisites without changing anything.
 
 ## Layout
 
 - `scripts/coa-slot`, `coa-client-lab`, `coa-lab-mem`, `coa-lab-packets`, `coa-lab-relay`, `coa-lab-footprint`,
   `coa-preflight.py`, `coa-worktree-cleanup`: the agent tooling (symlink them into `~/.local/bin`).
 - `addons/CoaProbe/`: the in-client addon (`Commands.lua`, `Relay.lua`, `Events.lua`) and its tests.
-- `skills/`: Claude Code skills (`coa-client-check`, `coa-triage`, `coa-fix-issues-batch`); `agents/`: shared workflows.
+- `skills/`: Claude Code skills (`coa-slot-workflow`, `coa-client-check`, `coa-triage`, `coa-fix-issues-batch`); `agents/`: shared workflows.
 - `docs/adr/`: decisions; `docs/design/`: design notes.
 
 ## Commands
