@@ -58,21 +58,11 @@ what will be observed, with which probe, and which result means the issue is rep
 If the issue cannot be turned into an expectation (no spell id, no reproduction path, a symptom nobody can see
 twice), ask the question in the issue and stop with **inconclusive**.
 
-`probe errors [N] [previous] [locals]` reads the client's own `ERROR_HANDLER_DATABASE` directly (no handler
-install) and returns the Lua error text and stack, not just the system line `probe log` already captures; a
-`/reload` empties the table, so read `previous` for the errors seen just before the last world entry. Still
-cannot observe: action-bar contents, 3D models, animations, anything purely visual. That is different from
-the red on-screen UI errors, which `probe log` does capture (section 4 below). A single `screenshot` can miss
-a sub-second effect (a projectile, a brief cast glow) between its own dispatch and the next one; for that,
-`screenshot --burst N --interval-ms MS [--chat TEXT|--key KEY...]` or `screenshot --video-seconds S [--fps N]
-[--chat TEXT|--key KEY...]` fire the triggering action and start capturing in the same call (L15,
-2026-10-27). `--burst` uses `magick import` per frame, measured at roughly 2.5s/frame on this environment's
-nested gamescope display (1920x1080) -- far above its own `--interval-ms` request, so it does not actually
-reach sub-second spacing; `--video-seconds` (ffmpeg x11grab) does: measured a true, evenly spaced 20fps
-(50ms/frame) over a 3s clip, first frame within roughly its own frame interval of the action. Prefer
-`--video-seconds` for anything sub-second; extract frames from the clip (`ffmpeg -i clip.mp4 frame-%03d.png`)
-to inspect one. Pure visuals too brief or ambiguous even for that are judged "visual, needs user
-confirmation"; the rest is **inconclusive** with the missing capability named.
+`probe errors [N] [previous] [locals]` returns the client's own Lua errors with their stack (a `/reload` empties the
+table: read `previous`). Purely visual symptoms (3D models, animations) are not observable; a sub-second effect needs
+`screenshot --video-seconds S`, not a single screenshot. Details and numbers:
+`references/probes-and-ui.md`. What the tools cannot observe is **inconclusive** with the missing capability named
+(or "visual, needs user confirmation").
 
 ## 3. Setup and action: Ghost first
 
@@ -124,11 +114,6 @@ folder.
    ("Target too close", "Not enough rage"), system messages and the player's casts with their failure reason.
    Nothing else shows why an action did not happen: the red error text fades and `/reload` clears the chat.
    Read the log after every action that could fail, before concluding anything.
-3b. **Timing.** Log entries carry `time` (one second) and `clock`, the client's `GetTime()` in milliseconds, so two
-    entries of one session can be ordered and spaced to the millisecond. The log keeps `cast`, `cast_failed` and
-    `cast_interrupted` by default; `probe evwatch UNIT_SPELLCAST_START` (also `UNIT_SPELLCAST_CHANNEL_START`,
-    `UNIT_SPELLCAST_CHANNEL_STOP`...) adds the starts. Lua has no world position: `.gps` (one line per call) is the
-    client-side read; for movement at 100 ms spacing use a Ghost or `coa-gameplay-test` step on the server side.
 4. **One request per moment (reload path).** `coa-client-lab probe state` snapshots the player and the current
    target together (name, level, health, every power index the client exposes, auras). A probe on the `/reload`
    path writes its answer through `/reload`, which clears the target selection, so two such probes never describe
@@ -145,120 +130,21 @@ folder.
     is no way to recover what the reload just closed.
 5. **Snapshot inside the effect window.** Many auras last seconds: send the probe immediately after the action,
    without waiting. An empty aura list after a finished cast proves nothing.
-6. Useful facts the client hides: the displayed bar is not always the resource a spell charges (`probe state`
-   reports mana, rage, focus, energy and runic power); `.gps` prints the position into the captured system
-   messages; `.go xyz X Y Z MAP O` takes the facing as its fifth number, which answers "Target needs to be in
-   front of you".
-   To stand next to a spawn from the database, use the core's own `.go creature id ENTRY`, `.go creature SPAWNGUID`,
-   `.go gameobject id ENTRY` or `.go gameobject SPAWNGUID` (`cs_go.cpp`) instead of typing coordinates by hand.
 7. **A dead or ghost character cannot chat at all** ("You can't chat when you're dead!", GM `.` commands
    included), and `.go xyz` typed then is silently lost. Recover with `coa-client-lab revive [CHARACTER]` (server-side
    `.revive` over the SOAP relay; needs `relay-setup`): when the character is still dead it releases the spirit
    (CMSG_REPOP_REQUEST) and revives again by itself. `goto-spawn` revives first, and again if the landing killed
    the character (a tight cave spawn can). Do not abandon the character.
-8. **Buffs render left of the minimap, not below it.** The stock 3.3.5a `BuffFrame` is anchored top right,
-   to the left of the minimap (verified 2026-10-31: the permanent "PvE Mode" icon sits there). Crop that
-   corner before concluding a buff is invisible; `probe frame BuffButton1` returns `shown`/`visible`, and
-   `probe eval` reads `BuffButton1Icon:GetTexture()`. `eval` takes an expression (it prepends `return`;
-   wrap statements in `(function() ... end)()`), no `|`, and stays under the 255-character chat limit.
-8a1. **Reading frames and action bars.** `probe frame NAME` returns `shown`, `visible`, the `parents` chain (`Name:1` shown,
-     `Name:0` hidden) and the `rect`: `visible` is false whenever an ancestor is hidden. This client's character pane
-     is on screen while the stock `CharacterFrame` is hidden (`PaperDollFrame` reports `shown` true, `visible` false,
-     `parents` `CharacterFrame:0,UIParent:1`, rect 384x512 at the top left, verified 2026-11-01): trust the rect and a
-     screenshot, not `visible`. `probe actionbar` lists every filled action slot (`slot`, `type`, `id`, `texture`,
-     `cooldown`) and the bar buttons with the slot each carries and whether it is shown, so a spell dragged to "the
-     fifth button" is found by slot id instead of by counting pixels. `frame` goes through the relay; `actionbar`
-     is a reload-path probe (see 4b).
-8a2. **Latency of reload-path probes.** `eval`, `actionbar`, `pksend` and the watches reload the UI: allow 10 to 60 s per
-     call under load (the default `COA_LAB_PROBE_TIMEOUT` is 30 s; raise it, and wrap a scripted loop's calls in at
-     least 60 s). One `eval` that scans many slots beats a loop of calls, and the `no CoaProbe answer` error only says the
-     answer did not arrive yet: read it again before concluding.
-8a3. **Observing a miss or a parry.** `probe evwatch COMBAT_LOG_EVENT_UNFILTERED` (one reload), then `.npc add 32666`,
-     `.npc set level N`, `/target Training Dummy`, `/startattack`, wait, and `probe log 200`: every entry is
-     `kind` event with `args` = timestamp, subevent, source guid, name, flags, destination guid, name, flags, then the
-     subevent's own fields. A miss is `SWING_MISSED` or `SPELL_MISSED` ending with the miss type (`MISS`, `PARRY`,
-     `DODGE`, ...). Verified 2026-11-01: a level 20 Barbarian auto-attacking a level 23 dummy logged 8 of 8 swings as
-     `SWING_MISSED`, one `PARRY` and the others `MISS` (one run, not a hit-rate). The log keeps 200 entries and a
-     fight fills it, so read it soon after.
-8a3b. **Hitches and frame time.** `probe perf start [MS]` arms a client-side timer (kept across reloads, no reload after
-     the first call): every frame of MS milliseconds or more (default 250) writes a `hitch` log entry with `ms`, and a
-     `perf` entry every 5 s with `frames`, `fps` and `worstMs`; read them with `probe log 100` (relay, no reload), each
-     carrying the millisecond `clock`, then `probe perf stop`. Arm it, cast, read the log: a client freeze shows as a
-     `hitch` entry whose `clock` sits at the cast. The `minimal` profile caps the client at 10 fps, so a frame is 100 ms
-     and anything under about 250 ms is invisible; start the client with another profile for finer resolution.
-     Verified 2026-11-01: a 700 ms busy loop logged `hitch` 706, summaries read 10 fps, and the watch survived a reload.
-     It measures the client's frame time, not the server's: a hitch from a server stall shows as a frame gap only
-     if the client waits on it.
-8a4. **A dead gamescope.** A `key` press, or nothing at all, has twice killed the lab's gamescope (`[gamescope_ei]
-     Unhandled libei event!`, `EI_EVENT_SYNC`, a Wayland broken pipe): a host-side crash, not reproducible on demand. Every
-     command then answers `lock present but gamescope is gone` with the recovery: `coa-client-lab stop`, `start N`,
-     `login CHARACTER`.
-8a5. **"The chest or sack opens empty": is the looted item known to the server?** `probe item ID` answers `cached`
-     (the client holds the item: `name`, `link`, `quality`), `retrieving` (the tooltip is still "Retrieving item
-     information") and the tooltip lines. The first probe of an item the client has never seen always answers
-     `cached` false, `retrieving` true: the client asks the server and the answer lands a few seconds later. Probe
-     twice, about 5 s apart (verified 2026-11-01: item 400002 `retrieving` then, 6 s later, `cached` true with its
-     name and tooltip). An id that stays `cached` false and `retrieving` true on the second and third probe was not
-     answered with an item, which is what a missing `item_template` row looks like (verified with id 9999999, which has
-     no row: still `retrieving` after several probes). The client cannot tell "the server said unknown" from "no
-     answer yet": confirm in the database (`select entry from item_template where entry = ID`) before calling it a
-     missing template, and a `cached` true item whose chest is still empty is a loot-table problem instead.
-8a6. **Speed while swimming or moving under a buff.** `probe state` reports the player's `movement`: `speed.current` (yards
-     per second, from `GetUnitSpeed`), `swimming`, `falling`, `flying`, `mounted`. This client's `GetUnitSpeed` returns
-     one value, the speed right now, so it reads 0 while standing still: send the probe while a key is held, e.g.
-     `coa-client-lab hold w 3000 & sleep 1.5; coa-client-lab probe state; wait` (`hold` blocks for its duration; the relay
-     probe does not reload, so it can run during the hold). Recipe for a swim buff: put the character in water, check
-     `swimming` true, read the speed moving, apply the buff, read it moving again. Verified 2026-11-01 in Baradin Bay
-     (map 0, `.go xyz -2538 -1632 8 0`, found by trying offsets around the `game_tele` row `BaradinBay`; `.tele NAME` itself
-     answers "Command 'tele' is ambiguous" in this client's chat, so use `.go xyz`): swimming forward 4.72, then 9.44 after `.aura 7840` (Swim Speed Potion). A
-     `.go xyz` over open ground with Z 0 makes the character fall and die: `revive`.
-     Measuring a dash or any short speed burst: `speed.current` sampled every 0.3 s misses it. Compare the distance over a
-     fixed `hold w 3000` instead, from `.gps` lines in `probe log` before and after, restarting each run from the same
-     `.go xyz X Y Z MAP O` (control run without the action, then with it; land 3 s gave 20.1 yd, swimming 14.2 yd, repeatable
-     to 0.5 yd).
-     Caveat: a chat-typed `/cast` takes about 1.5 s, so its moment inside the hold is loose. The Chaos Rush check (#10310)
-     read 0 yd gained while moving on land this way, while another run (hold 2 s, cast fired during the hold, X delta
-     against a no-cast control) measured +6.4 yd on land, +6.7 on the water surface and about 0 underwater on the same
-     build. The cause of the difference was not established; prefer the second protocol and confirm a "no effect" reading
-     with a positive control before trusting it.
-8a0. **Modules that ship disabled** (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`): `coa-slot conf N KEY 1`
-     turns one on for the slot (private config, worldserver restart) and `coa-slot conf N KEY 0` restores it.
-8a. **Fresh client cache.** Every `coa-client-lab start` deletes the lab client's `Cache` folder (WDB included), so
-    a check always runs with a fresh cache; there is no separate cache command. A WDB refresh only refetches the
-    server's templates (names, display ids): an icon or model that stays a red "?" with a fresh cache comes from the
-    client's own data (DBC, MPQ art), not from the cache.
-8a2. **Loot checks.** Mystic Scroll drops need `coa-slot classmodel N hero` (they are zeroed on a `coa` realm); restore
-    `coa` before `coa-slot release`.
-8b. **Time-gated mechanics.** The slot containers run in UTC; a mechanic keyed to the local hour (Sun Cleric `Daytime()`)
-    strips a forced aura outside its window. `coa-slot tz N UTC-12` (or another POSIX zone) shifts the worldserver's
-    local time for the check and `coa-slot tz N off` restores it; verified 2026-11-01 with aura 707768 on a Sun Cleric.
-    `login` accepts the character name in any letter case (the server stores it title-cased).
-9. **Framing an object.** `coa-client-lab goto-spawn gameobject|creature --entry ID|--guid ID --distance 8
-   --bearing 90` lands the character at that bearing and distance from a database spawn, facing it, instead of
-   inside its model (`.go gameobject GUID`); an underwater spawn needs a bearing toward the shore and `--dz`.
-   `coa-client-lab camera pitch up|down MS`, `yaw left|right MS` and `zoom in|out MS` then move the camera
-   around the character without turning it. The client applies pitch in bursts, so no timed move is
-   proportional: `camera status` prints the pitch (-89..89 degrees) and `camera reset` returns to the default
-   view; the angle is saved per character, so reset it at the start of a framing check. `goto-spawn` reads the
-   landing back with `.gps` and warns when Z differs from the request (snapped or fallen). `--items` must equip; put cache or consumable ids in `--bag-items`.
-   `coa-slot warden N off` makes any claimed slot 2-4 usable for `coa-lab-mem` (it restarts the worldserver).
-10. **Gameobject state.** `coa-lab-mem gameobject ENTRY|0xGUID` prints the client's copy of the object's
-   `GAMEOBJECT_DYNAMIC` low word (`activate`, `sparkle`...), flags and state. The server sets `sparkle` per
-   player only for quest-objective gameobjects (`ActivateToQuest`, `GameObject.cpp` BuildValuesUpdate); a
-   quest-giver's `!` marker comes from the quest-giver status packet instead (`probe pkwatch`). The ENTRY form
-   reads the first matching object in view; use the GUID from `coa-lab-mem objects` for a specific one.
-11. **When the question is "is the Lua view wrong", not "what does the UI show".** `scripts/coa-lab-mem`
-   (guide, part 2) reads the lab client's own process memory (object manager, unit/aura data, loaded
-   `Spell.dbc` row) independently of the addon API, so it can show that the engine disagrees with
-   `probe state`/`probe auras` themselves. `scripts/coa-lab-packets` reads the worldserver's packet log to
-   show what the server actually sent. Both are read-only, lab-only, and need a slot with
-   `Warden.Enabled = 0`; neither substitutes for a Ghost scenario or for `probe state`/`probe auras`, and
-   both are a last resort when the display and the Lua view already disagree and the cause matters.
-   `coa-client-lab preflight N`/`start N` print the slot's Warden state up front (L15, 2026-10-27) --
-   `warden: off on slot N (coa-lab-mem and coa-lab-packets usable)`, or a `WARN:` naming both tools when it
-   is on -- so a Warden-on slot is known before either tool is tried, not from the first refusal.
-   Totem checks: `coa-lab-packets on`, cast, then `coa-lab-packets list --opcode SMSG_TOTEM_CREATED` shows whether
-   the server sent the totem-bar packet (the packet log holds every packet, both directions).
+
+## Where the rest is
+
+Read the matching file when the check needs it; each holds verified recipes with their measured numbers.
+
+| Need | File |
+|---|---|
+| A frame, the action bar, buffs, an item the client may not know (empty chest), probe latency | `references/probes-and-ui.md` |
+| Ordering log entries in time, a miss or parry, a frame hitch, speed while swimming or under a buff, a dash | `references/measuring.md` |
+| `.gps` and `.go`, a dead gamescope, a disabled module, the fresh cache, loot checks, a time-of-day mechanic, framing an object with `goto-spawn` and `camera`, gameobject state, `coa-lab-mem` and `coa-lab-packets` | `references/lab-state-and-tools.md` |
 
 ## Getting the state you need, shortest route first
 
@@ -283,7 +169,6 @@ fixtures wander. Set the state instead, and record what you set.
   the difference. Talent entry ids come from
   `/srv/coa/server-data/dbc/CharacterAdvancement.dbc` (field layout in
   `modules/mod-ascension-compat/src/AscensionCoATalentData.cpp`).
-
 ## 5. Verdict and evidence
 
 `.agents/plans/<issue>/client/` holds `expectation.md`, `answers/`, `screenshots/` and `context.txt` with the
