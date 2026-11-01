@@ -122,12 +122,33 @@ end
 -- state: one snapshot of the player and the current target. A probe writes its answer through /reload, which clears
 -- the target selection, so asking for the target in a second probe would always find nothing.
 Commands.handlers.state = function(api, args)
+    local function flag(name, ...)
+        local fn = api[name]
+        if type(fn) ~= "function" then
+            return nil
+        end
+        return fn(...) and true or false
+    end
+    -- The player's movement. The lab client's GetUnitSpeed answers one value, the current speed in yards per second
+    -- (0 while standing still); run, flight and swim stay nil there but are kept for a client that returns them.
+    local function movement()
+        if type(api.GetUnitSpeed) ~= "function" then
+            return nil
+        end
+        local current, run, flight, swim = api.GetUnitSpeed("player")
+        return {
+            speed = { current = current, run = run, flight = flight, swim = swim },
+            swimming = flag("IsSwimming"), submerged = flag("IsSubmerged"), flying = flag("IsFlying"),
+            falling = flag("IsFalling"), mounted = flag("IsMounted"),
+        }
+    end
     local function unit(token)
         if not api.UnitExists(token) then
             return { exists = false }
         end
         return {
             exists = true,
+            movement = token == "player" and movement() or nil,
             name = api.UnitName(token),
             level = api.UnitLevel(token),
             health = api.UnitHealth(token),

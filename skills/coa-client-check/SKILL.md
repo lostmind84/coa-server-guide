@@ -203,6 +203,15 @@ folder.
      no row: still `retrieving` after several probes). The client cannot tell "the server said unknown" from "no
      answer yet": confirm in the database (`select entry from item_template where entry = ID`) before calling it a
      missing template, and a `cached` true item whose chest is still empty is a loot-table problem instead.
+8a6. **Speed while swimming or moving under a buff.** `probe state` reports the player's `movement`: `speed.current` (yards
+     per second, from `GetUnitSpeed`), `swimming`, `falling`, `flying`, `mounted`. This client's `GetUnitSpeed` returns
+     one value, the speed right now, so it reads 0 while standing still: send the probe while a key is held, e.g.
+     `coa-client-lab hold w 3000 & sleep 1.5; coa-client-lab probe state; wait` (`hold` blocks for its duration; the relay
+     probe does not reload, so it can run during the hold). Recipe for a swim buff: put the character in water, check
+     `swimming` true, read the speed moving, apply the buff, read it moving again. Verified 2026-11-01 in Baradin Bay
+     (map 0, `.go xyz -2538 -1632 8 0`, found by trying offsets around the `BaradinBay` `.tele` point, which is on the
+     shore and gives `swimming` false): swimming forward 4.72, then 9.44 after `.aura 7840` (Swim Speed Potion). A
+     `.go xyz` over open ground with Z 0 makes the character fall and die: `revive`.
 8a0. **Modules that ship disabled** (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`): `coa-slot conf N KEY 1`
      turns one on for the slot (private config, worldserver restart) and `coa-slot conf N KEY 0` restores it.
 8a. **Fresh client cache.** Every `coa-client-lab start` deletes the lab client's `Cache` folder (WDB included), so
