@@ -1449,7 +1449,7 @@ try:
 except Exception:
     pass
 ' "$index" <<< "$json" 2> /dev/null)
-        [[ "$name" == "$character" ]] && return 0
+        [[ "${name,,}" == "${character,,}" ]] && return 0
         xdotool key --window "$WINDOW" Down
         "$SLEEP" 1
         json=$(glue_state) || return 1
