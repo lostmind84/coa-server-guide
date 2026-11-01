@@ -15,8 +15,18 @@ scripts agents use to test it. Read this file first. `README.md` is the server i
 | Why a lab tool works the way it does | `docs/adr/` (one decision per file, never rewritten) |
 | Issue queue workflow | `agents/coa-triage.md`, `agents/git-safety.md` |
 | Backups, restore, production | `docs/backup.md`, `docs/restore.md`, `docs/prod-server.md` |
+| Pitfalls that cost time in past runs | `docs/agent-lessons.md` |
+| Install the tools and check prerequisites | `scripts/install-agent-tools.sh --check` |
 
 `scripts/coa-client-lab commands` prints every lab command with one example; `--help` prints the full usage.
+
+## Platform
+
+The tooling is written for Linux: bash scripts driving Docker, `/srv/coa` and `~/CoaServer` paths, a reflink
+filesystem (btrfs or xfs), gamescope, xdotool and Wine/Proton. It is not supported on Windows, macOS or WSL and was
+never run there. On Windows the client runs natively, so the lab client copy is not the tool to use; `coa-slot` and
+`coa-client-lab` will fail. Tell the user instead of improvising a workaround. `scripts/install-agent-tools.sh
+--check` reports the platform and the missing prerequisites without changing anything.
 
 ## Layout
 

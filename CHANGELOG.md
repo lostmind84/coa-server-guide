@@ -6,6 +6,11 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 ## Unreleased
 
 ### Added
+- `scripts/install-agent-tools.sh [--check] [--codex]`: links scripts, skills and the triage command, reports missing
+  prerequisites and stops with an explanation on native Windows (`--force-platform` to continue).
+- `docs/agent-lessons.md`: technical pitfalls from past runs (preflight, stale harness image, verification cycles, slot
+  and harness traps, test data).
+- A "Platform" section in `AGENTS.md`: Linux only, what to expect elsewhere.
 - `coa-client-lab commands`: every lab command on one line with an example. A test checks it lists each
   dispatcher command.
 - `AGENTS.md` and `CLAUDE.md` at the root: where to look, commands, rules and pitfalls for agents.
