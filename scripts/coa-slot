@@ -39,6 +39,9 @@ Server (the slot must be claimed first):
   start N | stop N              start or stop slot N's containers without rebuilding
   warden N on|off               slots 2-4: set Warden.Enabled in the slot's own worldserver.conf and restart the
                                 worldserver (coa-lab-mem and coa-lab-packets need it off; deploy keeps the setting)
+  classmodel N [coa|hero|wcr]  slots 2-4: set CoA.ClassModel in the slot's own modules/coa.conf and restart the worldserver;
+                                no argument prints it. Mystic Scroll drops need hero or wcr (AscensionMysticEnchant zeroes
+                                them on a "coa" realm)
   tz N [ZONE|off]               slots 2-4: run the slot's worldserver in another local time zone (TZ, e.g. UTC-12 is twelve
                                 hours ahead) so a mechanic gated on the local hour can be checked off-window; no argument
                                 prints the current value. Recreates the worldserver; deploy keeps it
@@ -437,11 +440,37 @@ cmd_warden() {
     require_created
     sed -i "s/^Warden\.Enabled *=.*/Warden.Enabled = $value/" "$ETC/worldserver.conf"
     grep -q "^Warden.Enabled = $value\$" "$ETC/worldserver.conf" || die "Warden.Enabled not found in $ETC/worldserver.conf"
-    since=$(date -u +%Y-%m-%dT%H:%M:%S)
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     compose restart ac-worldserver
     for _ in $(seq 1 120); do
         if grep -q "(worldserver-daemon) ready" < <(docker logs --since "$since" "$WORLD" 2>&1); then
             echo "slot $N: Warden.Enabled = $value, worldserver ready"
+            return 0
+        fi
+        sleep 5
+    done
+    die "$WORLD not ready after 10 minutes, see: coa-slot compose $N logs ac-worldserver"
+}
+
+cmd_classmodel() {
+    load_slot "${1:-}"
+    local model="${2:-}" conf since
+    [[ "$N" != 1 ]] || die "slot 1 shares /srv/coa/etc with the live server: classmodel is only for slots 2-4"
+    case "$model" in coa|hero|wcr) ;; "") ;; *) die "usage: coa-slot classmodel N [coa|hero|wcr]" ;; esac
+    require_claimed
+    require_created
+    conf="$ETC/modules/coa.conf"
+    if [[ -z "$model" ]]; then
+        sed -n 's/^CoA\.ClassModel *= *"\(.*\)"/\1/p' "$conf"
+        return 0
+    fi
+    sed -i "s/^CoA\.ClassModel *=.*/CoA.ClassModel = \"$model\"/" "$conf"
+    grep -q "^CoA.ClassModel = \"$model\"\$" "$conf" || die "CoA.ClassModel not found in $conf"
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    compose restart ac-worldserver
+    for _ in $(seq 1 120); do
+        if grep -q "(worldserver-daemon) ready" < <(docker logs --since "$since" "$WORLD" 2>&1); then
+            echo "slot $N: CoA.ClassModel = \"$model\", worldserver ready"
             return 0
         fi
         sleep 5
@@ -465,7 +494,7 @@ cmd_tz() {
         [[ "$value" =~ ^[A-Za-z0-9_/+:.,-]+$ ]] || die "TZ must be a zone name or a POSIX TZ string such as UTC-12 (note: UTC-12 is twelve hours AHEAD of UTC)"
         printf 'services:\n  ac-worldserver:\n    environment:\n      TZ: %s\n' "$value" > "$SLOT_DIR/compose.tz.yml"
     fi
-    since=$(date -u +%Y-%m-%dT%H:%M:%S)
+    since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     compose up -d --no-deps ac-worldserver
     for _ in $(seq 1 120); do
         if grep -q "(worldserver-daemon) ready" < <(docker logs --since "$since" "$WORLD" 2>&1); then
@@ -542,6 +571,7 @@ main() {
         stop) cmd_stop "$@" ;;
         warden) cmd_warden "$@" ;;
         tz) cmd_tz "$@" ;;
+        classmodel) cmd_classmodel "$@" ;;
         reset-db) cmd_reset_db "$@" ;;
         reseed-test-mysql) cmd_reseed_test_mysql "$@" ;;
         destroy) cmd_destroy "$@" ;;
