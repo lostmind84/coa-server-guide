@@ -8,6 +8,9 @@ CoaProbe.Events = Events
 Events.MAX = 200
 
 function Events.record(log, entry)
+    if entry.clock == nil and type(GetTime) == "function" then
+        entry.clock = math.floor(GetTime() * 1000)
+    end
     log[#log + 1] = entry
     while #log > Events.MAX do
         table.remove(log, 1)

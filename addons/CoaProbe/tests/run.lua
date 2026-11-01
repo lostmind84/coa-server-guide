@@ -628,5 +628,14 @@ check("errors worst case 20 entries never exceeds the relay chunk budget", #size
 check("errors worst case 20 entries reports answer too large",
     decodeField(joined(sizeSent), "error"), "answer too large")
 
+-- log entries carry the client's millisecond clock (GetTime) next to the one-second wall time
+local clockLog = {}
+GetTime = function() return 12.3456 end
+CoaProbe.Events.record(clockLog, { time = 1, kind = "info", text = "a" })
+GetTime = nil
+CoaProbe.Events.record(clockLog, { time = 2, kind = "info", text = "b" })
+check("record stamps the millisecond clock", clockLog[1].clock, 12345)
+check("record leaves the clock out without GetTime", clockLog[2].clock, nil)
+
 print(string.format("\n%d passed, %d failure(s)", passed, failures))
 os.exit(failures > 0 and 1 or 0)
