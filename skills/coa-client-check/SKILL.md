@@ -209,9 +209,13 @@ folder.
      `coa-client-lab hold w 3000 & sleep 1.5; coa-client-lab probe state; wait` (`hold` blocks for its duration; the relay
      probe does not reload, so it can run during the hold). Recipe for a swim buff: put the character in water, check
      `swimming` true, read the speed moving, apply the buff, read it moving again. Verified 2026-11-01 in Baradin Bay
-     (map 0, `.go xyz -2538 -1632 8 0`, found by trying offsets around the `BaradinBay` `.tele` point, which is on the
-     shore and gives `swimming` false): swimming forward 4.72, then 9.44 after `.aura 7840` (Swim Speed Potion). A
+     (map 0, `.go xyz -2538 -1632 8 0`, found by trying offsets around the `game_tele` row `BaradinBay`; `.tele NAME` itself
+     answers "Command 'tele' is ambiguous" in this client's chat, so use `.go xyz`): swimming forward 4.72, then 9.44 after `.aura 7840` (Swim Speed Potion). A
      `.go xyz` over open ground with Z 0 makes the character fall and die: `revive`.
+     Measuring a dash or any short speed burst: `speed.current` sampled every 0.3 s misses it. Compare the distance over a
+     fixed `hold w 3000` instead, from `.gps` lines in `probe log` before and after, restarting each run from the same
+     `.go xyz X Y Z MAP O` (control run without the action, then with it; land 3 s gave 20.1 yd, swimming 14.2 yd, repeatable
+     to 0.5 yd).
 8a0. **Modules that ship disabled** (`CoALegendaryItems.Enable`, `Ascension.Manastorm.Enable`): `coa-slot conf N KEY 1`
      turns one on for the slot (private config, worldserver restart) and `coa-slot conf N KEY 0` restores it.
 8a. **Fresh client cache.** Every `coa-client-lab start` deletes the lab client's `Cache` folder (WDB included), so
