@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# CLI wrapper; coa_obtainable.py is also importable as a library.
+exec python3 "$(dirname "$(readlink -f "$0")")/coa_obtainable.py" "$@"

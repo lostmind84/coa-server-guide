@@ -515,7 +515,8 @@ git clone https://github.com/lostmind84/coa-server-guide.git ~/Projects/coa-serv
 ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint,coa-lab-mem,coa-lab-packets,coa-worktree-cleanup} ~/.local/bin/
 ```
 
-Linux only: on Windows, macOS or WSL the tools below do not run (see "Platform" in [`AGENTS.md`](AGENTS.md)).
+Written and tested on Linux. On Windows, macOS or WSL an agent should adapt the setup to its OS (see "Platform" in
+[`AGENTS.md`](AGENTS.md)).
 `scripts/install-agent-tools.sh --check` lists what your machine lacks and `scripts/install-agent-tools.sh` links the
 tools, skills and the triage command into place.
 
@@ -527,6 +528,8 @@ they need.
 | [Server slots and preflight](docs/tooling/slots-and-preflight.md) | Prerequisites, script configuration, `coa-slot` (parallel isolated servers), `coa-preflight.py` (can a test result be trusted?) |
 | [Client lab for agents](docs/tooling/client-lab.md) | `coa-client-lab`, the lab client copy, characters, probes, screenshots, camera, `goto-spawn`, memory and packet tools |
 | [Headless lab, relay probes and CoaProbe](docs/tooling/relay-probes.md) | The server relay (`relay-setup`), `COA_LAB_PROFILE=minimal`, the in-client addon on its own |
+| [Spell obtainability](docs/tooling/spell-obtainability.md) | `coa-obtainable` and `coa-reference`: was a spell ever obtainable, judged against outside captures |
+| [In-RAM test MySQL](docs/tooling/ram-mysql.md) | Optional: much faster `verify_all` gameplay runs, and the guide tools around it |
 | [Skills, issue workflow and contributing](docs/tooling/agent-workflow.md) | `coa-client-check`, `coa-triage`, worktree cleanup, contributing back, the AzerothCore MCP, useful links |
 | [Decisions](docs/adr) | One ADR per decision about the lab tooling |
 | [Changelog](CHANGELOG.md) | What changed, by pull request |

@@ -7,10 +7,16 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 
 ### Added
 - `scripts/install-agent-tools.sh [--check] [--codex]`: links scripts, skills and the triage command, reports missing
-  prerequisites and stops with an explanation on native Windows (`--force-platform` to continue).
+  prerequisites and, on another platform than Linux, tells the agent to adapt the setup to its OS and report what it
+  could not verify.
 - `docs/agent-lessons.md`: technical pitfalls from past runs (preflight, stale harness image, verification cycles, slot
   and harness traps, test data).
-- A "Platform" section in `AGENTS.md`: Linux only, what to expect elsewhere.
+- A "Platform" section in `AGENTS.md`: written and tested on Linux, adapt the setup elsewhere.
+- `skills/coa-slot-workflow`: the public workflow for slots, preflight, gameplay scenarios, spell obtainability and
+  cleanup (the generic part of a former local skill).
+- `scripts/coa-obtainable` and `scripts/coa-reference` with `docs/tooling/spell-obtainability.md`: was a spell ever
+  obtainable, judged against outside captures. No snapshot is shipped; `coa-reference --update` fetches them.
+- `docs/tooling/ram-mysql.md`: the optional in-RAM test MySQL and the guide tools around it.
 - `coa-client-lab commands`: every lab command on one line with an example. A test checks it lists each
   dispatcher command.
 - `AGENTS.md` and `CLAUDE.md` at the root: where to look, commands, rules and pitfalls for agents.

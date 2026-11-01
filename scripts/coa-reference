@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Refresh the local CoA reference snapshots used to judge whether a spell was ever obtainable.
+
+The CoA server is a reconstruction, so answering "did players have this?" means consulting sources outside the
+repository. Downloading and unpacking them takes a while, so they are cached here and refreshed on demand.
+
+  coa-reference            # show what is cached and how old it is
+  coa-reference --update   # re-fetch everything
+  coa-reference --update bindmysoul sidekick   # only those sources
+
+Sources and what each one is worth are described in README.md next to this script.
+"""
+import argparse, hashlib, io, json, os, sys, tarfile, urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+REF = Path(os.environ.get('COA_REFERENCE_DIR', '~/CoaServer/reference')).expanduser()
+SNAP = REF / 'snapshots'
+MANIFEST = REF / 'MANIFEST.json'
+REPO = 'hertigservices/ascension-data'
+
+# Files to restore out of the ascension-data content-addressed cache, keyed by the path its manifest uses.
+CACHE_WANTED = {
+    'cachedata/lua/harvest/advancement.tsv': 'ascension-data/extracted/advancement.tsv',
+}
+SIMPLE = {
+    'bindmysoul': ('https://bindmysoul.com/conquest/talents.normalized.json',
+                   'bindmysoul/talents.normalized.json'),
+    'sidekick': ('https://ascensionsidekick.com/data.js', 'sidekick/data.js'),
+}
+
+
+def get(url, timeout=300):
+    with urllib.request.urlopen(url, timeout=timeout) as fh:
+        return fh.read()
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_manifest():
+    return json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+
+
+def record(manifest, name, **fields):
+    manifest[name] = {'fetched_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), **fields}
+    MANIFEST.write_text(json.dumps(manifest, indent=1, sort_keys=True) + '\n')
+
+
+def update_simple(manifest, name):
+    url, rel = SIMPLE[name]
+    data = get(url)
+    target = SNAP / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    record(manifest, name, url=url, path=rel, bytes=len(data), sha256=sha256(data))
+    print(f'{name}: {len(data)} bytes -> {rel}')
+
+
+def update_ascension_data(manifest):
+    """Restore the harvested files from the repository's own content-addressed cache manifest."""
+    meta = json.loads(get(f'https://api.github.com/repos/{REPO}').decode())
+    branch = meta.get('default_branch', 'main')
+    cache_url = f'https://raw.githubusercontent.com/{REPO}/{branch}/datasets/cache.json'
+    cache = json.loads(get(cache_url).decode())
+    packs, files = cache['packs'], cache['files']
+    restored, needed = {}, {}
+    for logical, rel in CACHE_WANTED.items():
+        entry = files.get(logical)
+        if not entry:
+            print(f'! {logical} is not in the published cache manifest; skipped', file=sys.stderr)
+            continue
+        for part in entry['parts']:
+            needed.setdefault(part['pack'], []).append((logical, rel, part, entry))
+    for pack, wants in needed.items():
+        url = packs[pack]['url']
+        print(f'fetching {pack} ({packs[pack]["bytes"]} bytes)')
+        blob = get(url)
+        with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+            members = {m.name: m for m in tar.getmembers()}
+            for logical, rel, part, entry in wants:
+                member = members.get(part['sha256'])
+                if member is None:
+                    print(f'! {logical}: blob {part["sha256"][:12]} missing from {pack}', file=sys.stderr)
+                    continue
+                data = tar.extractfile(member).read()
+                restored.setdefault(rel, bytearray()).extend(data)
+    for rel, data in restored.items():
+        target = SNAP / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(bytes(data))
+        print(f'ascension-data: {len(data)} bytes -> {rel}')
+    record(manifest, 'ascension-data', repo=REPO, branch=branch, release=cache.get('release'),
+           snapshot=cache.get('snapshot'), cache_manifest=cache_url,
+           restored={rel: {'bytes': len(d), 'sha256': sha256(bytes(d))} for rel, d in restored.items()},
+           note='Tables under snapshots/ascension-data/tables and exiles-db-export were copied from a clone of '
+                'the same repository; refresh them from supplemental/exiles-db-export per its README.')
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--update', action='store_true')
+    ap.add_argument('sources', nargs='*', choices=sorted(SIMPLE) + ['ascension-data', []], default=[])
+    args = ap.parse_args(argv)
+    manifest = load_manifest()
+
+    if not args.update:
+        if not manifest:
+            print('nothing cached yet; run: coa-reference --update')
+        for name, entry in sorted(manifest.items()):
+            print(f'{name:16} fetched {entry["fetched_at"]}')
+        for probe in ('bindmysoul/talents.normalized.json', 'sidekick/data.js',
+                      'ascension-data/extracted/advancement.tsv', 'ascension-data/tables/class_spell.csv'):
+            path = SNAP / probe
+            print(f'  {"ok " if path.exists() else "MISSING"} {probe}')
+        return 0
+
+    wanted = args.sources or (sorted(SIMPLE) + ['ascension-data'])
+    for name in wanted:
+        try:
+            if name in SIMPLE:
+                update_simple(manifest, name)
+            elif name == 'ascension-data':
+                update_ascension_data(manifest)
+        except Exception as exc:  # a dead source must not abort the rest
+            print(f'! {name}: {exc}', file=sys.stderr)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

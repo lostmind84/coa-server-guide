@@ -5,8 +5,8 @@ Part of the contributor tooling of the CoA server guide (see the [README](../../
 ## Prerequisites
 
 `scripts/install-agent-tools.sh --check` reports which of these are missing on your machine and links the scripts,
-skills and the triage command into place (without `--check`). The tooling is Linux-only: see "Platform" in
-[`AGENTS.md`](../../AGENTS.md) for what to expect on Windows, macOS or WSL.
+skills and the triage command into place (without `--check`). It was written and tested on Linux: see "Platform" in
+[`AGENTS.md`](../../AGENTS.md) for what an agent should do on Windows, macOS or WSL.
 
 | Tool | Needed by | Notes |
 | --- | --- | --- |
