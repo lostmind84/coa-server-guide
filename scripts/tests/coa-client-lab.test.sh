@@ -26,6 +26,7 @@ export COA_PROTONPATH="$WORK/proton"
 export COA_LAB_WINDOW_TIMEOUT=10
 export COA_LAB_SLEEP=true
 export COA_LAB_UI_READY_WAIT=0
+export COA_LAB_PROBE_TIMEOUT=2
 export FAKE_LOG="$WORK/fake.log"
 export FAKE_ETC="$WORK/etc"
 export FAKE_SLOT_STATE="$WORK/slot-state"
@@ -1688,6 +1689,12 @@ FUNCS_FILE=$(source_lab_functions)
 out=$(bash -c "source \"$FUNCS_FILE\"; glue_state() { echo '{\"current_screen\": \"charselect\", \"selection_index\": 0, \"characters\": [\"Cmsuncleric\"]}'; }; select_character_via_memory CMSunCleric; echo rc=\$?" 2>&1)
 [[ "$out" == *"rc=0"* ]] && pass "character selection ignores name case" || fail "character selection ignores name case: got [$out]"
 rm -f "$FUNCS_FILE"
+
+# `commands` lists every dispatcher command, so it cannot silently drift from main().
+run_lab commands
+for name in $(sed -n '/^main() {/,/^}/p' "$SCRIPT" | sed -n 's/^        \([a-z][a-z-]*\)) .*/\1/p' | grep -vx help); do
+    assert_contains "commands lists $name" "$WORK/out" "$name"
+done
 
 printf '\n%s failure(s)\n' "$FAILURES"
 exit $((FAILURES > 0))
