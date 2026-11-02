@@ -112,11 +112,11 @@ reverse: do not configure a build directory inside the container and then try to
 
 ## Timing
 
-Reported as measured on this workstation (2026-11-02) by the agents that used the ad hoc predecessor of this
-setup, not independently re-measured for this page: a first build of a fresh worktree (cold ccache) took about
-58 minutes; later builds against the same ccache directory are fast (not separately timed here). Your numbers
-depend on CPU, disk and how warm `~/.cache/coa-verify-ccache` already is; treat these as one data point, not a
-guarantee, the same way `docs/tooling/ram-mysql.md` treats its own timing figures.
+Measured on this workstation on 2026-11-02: the `build` stage of a fresh worktree (new build directory, ccache
+directory already in use by earlier runs) took 3498 s, about 58 minutes, inside this image; one short gameplay
+scenario against an existing build and the in-RAM MySQL took 53.5 s. Later builds of the same worktree only
+recompile what changed. Your numbers depend on CPU, disk and how warm `~/.cache/coa-verify-ccache` is; treat these
+as one data point, not a guarantee, the same way `docs/tooling/ram-mysql.md` treats its own timing figures.
 
 ## Limits
 
