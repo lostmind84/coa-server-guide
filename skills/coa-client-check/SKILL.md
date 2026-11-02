@@ -45,6 +45,9 @@ A technical failure is never "not reproduced": closing a real issue costs more t
    It skips the gameplay-test `harness` image line (a stale harness image never blocks a client check); a bare
    `coa-slot preflight N` still checks it.
 4. The lab client exists (`coa-client-lab create` once) and no other check holds it (`coa-client-lab status`).
+   Held by someone else? Its lock line names the slot and, if set, `owner=`/`eta=Nm`; take your own instead of
+   waiting (`COA_LAB_INSTANCE=1..9 coa-client-lab create-instance`). Starting your own, name yourself:
+   `coa-client-lab start N --owner <name> --eta-minutes <n>`.
 
 ## 2. Expectation
 

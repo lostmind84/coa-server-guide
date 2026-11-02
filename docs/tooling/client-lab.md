@@ -6,7 +6,11 @@ Part of the contributor tooling of the CoA server guide (see the [README](../../
 [`scripts/coa-client-lab`](../../scripts/coa-client-lab) runs a separate copy
 of the client so an agent can reproduce client-side issues without touching your client. The lab client runs in a
 nested gamescope window (1920x1080) on Hyprland workspace 9; you can watch it there. Keyboard input and screenshots
-go through gamescope's own X display, so your focus and mouse are never used. One lab client runs at a time.
+go through gamescope's own X display, so your focus and mouse are never used. One lab client runs at a time: a
+second `start` fails with "lab client held" and the holder's lock line (`slot N since DATE`, plus `owner=` and
+`eta=Nm` when the holder set them). `status` shows the same lock line and a hint that `COA_LAB_INSTANCE=1..9
+coa-client-lab create-instance` gives a blocked session its own instance instead of waiting on this one
+(client-lab-feedback-f2.md #14).
 
 ```bash
 coa-client-lab create                      # once: reflink copy of the client and prefix (near-zero disk space)
@@ -14,7 +18,8 @@ coa-slot claim 2 "client check"            # the lab client talks to a claimed s
 coa-client-lab character --slot 2 --character Coalabnecro --race 5 --class 23 \
     --level 20 --learn 704723 --items 9701803   # creates/updates its own dedicated account; prints JSON
 coa-client-lab preflight 2                 # server and lab client data must match
-coa-client-lab start 2
+coa-client-lab start 2 --owner CoaFix2 --eta-minutes 45   # --owner/--eta-minutes (or COA_LAB_OWNER/
+                                            #   COA_LAB_ETA_MINUTES) are optional and recorded on the lock line
 coa-client-lab login Coalabnecro           # resolves the dedicated account and its password itself
 coa-client-lab chat "/say hello"
 coa-client-lab screenshot                  # prints the PNG path

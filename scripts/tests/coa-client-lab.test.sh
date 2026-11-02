@@ -307,6 +307,40 @@ run_lab status
 assert_contains "status shows display" "$WORK/out" "display: :77"
 assert_contains "status shows running" "$WORK/out" "gamescope: running (pid"
 
+# f2#14: an optional owner and ETA on the lock, so a session blocked by "lab client held" knows who holds
+# it and for how long, with a hint that it can take its own instance instead of waiting.
+run_lab stop
+run_lab start 3 --owner CoaFix2 --eta-minutes 45
+assert_eq "start with --owner/--eta-minutes exits 0" "$?" "0"
+assert_contains "lock carries the slot prefix unchanged" "$COA_LAB_ROOT/state/lock" "slot 3 since "
+assert_contains "lock carries the owner" "$COA_LAB_ROOT/state/lock" "owner=CoaFix2"
+assert_contains "lock carries the eta" "$COA_LAB_ROOT/state/lock" "eta=45m"
+run_lab status
+assert_contains "status shows the owner" "$WORK/out" "owner=CoaFix2"
+assert_contains "status shows the eta" "$WORK/out" "eta=45m"
+assert_contains "status hints at a separate instance" "$WORK/out" "COA_LAB_INSTANCE=1..9 coa-client-lab create-instance"
+if run_lab start 3; then fail "third start refused while owner holds the lock"; else pass "third start refused while owner holds the lock"; fi
+assert_contains "held message names the owner" "$WORK/out" "owner=CoaFix2"
+assert_contains "held message hints at a separate instance" "$WORK/out" "coa-client-lab create-instance"
+
+run_lab stop
+COA_LAB_OWNER=EnvOwner run_lab start 3
+assert_eq "COA_LAB_OWNER alone is honored" "$?" "0"
+assert_contains "lock carries the env owner" "$COA_LAB_ROOT/state/lock" "owner=EnvOwner"
+assert_not_contains "lock has no eta without one given" "$COA_LAB_ROOT/state/lock" "eta="
+
+run_lab stop
+if run_lab start 3 --owner 'bad owner'; then fail "owner with a space refused"; else pass "owner with a space refused"; fi
+assert_absent "owner with a space never takes the lock" "$COA_LAB_ROOT/state/lock"
+if run_lab start 3 --eta-minutes 0; then fail "eta-minutes 0 refused"; else pass "eta-minutes 0 refused"; fi
+assert_absent "eta-minutes 0 never takes the lock" "$COA_LAB_ROOT/state/lock"
+
+# Leaves the lab running at slot 3 with no owner/eta, as every test below this point expects.
+run_lab stop
+run_lab start 3
+assert_eq "plain start after the owner/eta tests exits 0" "$?" "0"
+assert_not_contains "lock has no owner by default" "$COA_LAB_ROOT/state/lock" "owner="
+
 : > "$FAKE_LOG"
 run_lab chat "/say hello lab"
 assert_contains "chat opens the edit box" "$FAKE_LOG" "xdotool DISPLAY=:77 key --window 4242 Return"

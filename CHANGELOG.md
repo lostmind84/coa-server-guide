@@ -25,6 +25,10 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
   (`GameTooltip:SetBagItem`), with the same shape as `probe item` plus `bag`, `slot` and `present`. Reads a
   scaled worldforged/dropped copy's own stats, which `probe item <id>` cannot (it only ever shows the item
   template's), fixing a wrong "Requires Level" read (#10599). Allowed through the relay like `item`.
+- An optional owner and ETA on the lab lock: `start N --owner NAME --eta-minutes N` (or `COA_LAB_OWNER`/
+  `COA_LAB_ETA_MINUTES`) are recorded on the lock line and shown by `status` and the "lab client held" error,
+  with a hint that `COA_LAB_INSTANCE=1..9 create-instance` gives a blocked session its own instance instead of
+  waiting (#14).
 
 ### Changed
 - `coa-reference` fetches only over https from a fixed list of hosts (redirect targets included) and refuses a downloaded part whose SHA-256 does
