@@ -596,7 +596,10 @@ run_lab_character() {
         "$LAB_CHARACTER_DIR" "$GHOST_REPO" > "$workfile"
     # `|| status=$?`, not a bare statement then `status=$?` on the next line: under this script's
     # `set -e`, a bare failing command exits the whole script before that next line ever runs.
-    ( cd "$LAB_CHARACTER_DIR" && GOSUMDB=off GOPROXY=off GOWORK="$workfile" go test "$@" ) || status=$?
+    # `-count=1` disables the test result cache for every caller (relay-setup, character): without it,
+    # `go test` can print a cached pass after `coa-slot reset-db N` even though the SOAP/lab account the
+    # test would have (re)created no longer exists on the fresh DB (client-lab-feedback-f2.md #1).
+    ( cd "$LAB_CHARACTER_DIR" && GOSUMDB=off GOPROXY=off GOWORK="$workfile" go test -count=1 "$@" ) || status=$?
     rm -f "$workfile"
     return "$status"
 }

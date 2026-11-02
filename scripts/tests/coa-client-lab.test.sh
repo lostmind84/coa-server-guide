@@ -754,6 +754,9 @@ printf 'CoA.Enable = 1\n' > "$FAKE_ETC/modules/coa.conf"
 printf 'PW\n' > "$WORK/soap.password"
 run_lab relay-setup 3 --soap-account COALABSOAP --soap-password-file "$WORK/soap.password"
 assert_eq "relay-setup exits 0" "$?" "0"
+# f2#1: -count=1 disables the go test result cache, or a "reset-db" between two relay-setup runs would
+# leave relay-setup reporting "ok (cached)" without recreating the SOAP account.
+assert_contains "relay-setup disables the go test cache" "$FAKE_LOG" "go test -count=1 -run ^TestLabSoapAccount\$ ."
 run_lab relay-setup 3 --soap-account COALABSOAP --soap-password-file "$WORK/soap.password"
 assert_contains "relay-setup prints the restart" "$WORK/out" "coa-slot compose 3 restart ac-worldserver"
 assert_eq "SOAP.Enabled once" "$(grep -c '^SOAP.Enabled = 1$' "$FAKE_ETC/worldserver.conf")" "1"
@@ -1085,7 +1088,7 @@ FAKE_GO_APPLY_OUT='{"account": "COALAB1", "character": "Coalabnecro", "class": 2
     run_lab character --slot 2 --account coalab1 --character Coalabnecro --race 5 --class 23 \
         --level 20 --learn 704723,704724 --items 9701803
 assert_eq "character (valid request) exits 0" "$?" "0"
-assert_contains "character runs go test for TestLabCharacterApply" "$FAKE_LOG" "go test -run ^TestLabCharacterApply\$ -v ."
+assert_contains "character runs go test for TestLabCharacterApply" "$FAKE_LOG" "go test -count=1 -run ^TestLabCharacterApply\$ -v ."
 assert_contains "character request has the account" "$FAKE_LOG" '"account": "coalab1"'
 assert_contains "character request has the character name" "$FAKE_LOG" '"character": "Coalabnecro"'
 assert_contains "character request has the class" "$FAKE_LOG" '"class": 23'

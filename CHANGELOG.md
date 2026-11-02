@@ -33,6 +33,10 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 - `skills/coa-client-check/SKILL.md` shrinks from 338 to about 220 lines; the recipes moved to `references/`.
 - The lab script tests run in about 3 minutes instead of 5 (`COA_LAB_PROBE_TIMEOUT=2` in the test environment).
 
+### Fixed
+- `relay-setup`/`character`'s Go helper now runs with `go test -count=1`: without it, a cached pass after
+  `coa-slot reset-db N` could report success without recreating the COALABSOAP account, leaving SOAP at 401.
+
 ## Pull requests
 
 - #26 Split `coa-client-check` into a core file and `references/`.
