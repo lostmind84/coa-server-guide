@@ -46,13 +46,18 @@ RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
 # failure to run it (missing python3, guard refusal, unexpected output) falls back to the pixel-check path below.
 LAB_MEM="${COA_LAB_MEM:-$SCRIPT_DIR/coa-lab-mem}"
 # Commands the server relay and the addon accept over addon whispers; everything else keeps the /reload path.
-RELAY_COMMANDS=" ping spell item auras spellbook known log state ca frame errors "
+RELAY_COMMANDS=" ping spell item bagitem auras spellbook known log state ca frame errors "
 # The Ghost e2e harness checkout `character` and `login`'s character-select navigation build against
 # (scripts/lab-character). Overridable so the Go module in this guide never hard-codes one user's home.
 GHOST_REPO="${COA_GHOST_REPO:-$HOME/Projects/ConquestOfAzerothGhost}"
 LAB_CHARACTER_DIR="$SCRIPT_DIR/lab-character"
 PROFILE="${COA_LAB_PROFILE:-readable}"
 FPS="${COA_LAB_FPS:-10}"
+# Recorded on the lock line so a session blocked by `start` knows who to ask and how long to expect to wait
+# (client-lab-feedback-f2.md #14); both stay optional and empty by default so a scripted `start N` keeps working
+# unchanged. `start --owner`/`--eta-minutes` override these for one call.
+OWNER="${COA_LAB_OWNER:-}"
+ETA_MINUTES="${COA_LAB_ETA_MINUTES:-}"
 # 800x600 cuts the character pane's Ranged block off the bottom of the window (confirmed live, slot 2,
 # 2026-10-26, level 20 character, C key). 1024x768 (still 4:3: a non-4:3 height such as 800x720
 # letterboxes, confirmed live, and the game renders its glue/world scenes into the letterboxed area only)
@@ -87,6 +92,7 @@ SOUND_CVARS=(
 )
 STATE_DIR="$LAB_ROOT/state${INSTANCE:+/$INSTANCE}"
 LOCK="$STATE_DIR/lock"
+LAB_LOCK_HINT="need it now? a separate instance avoids waiting on this lock: COA_LAB_INSTANCE=1..9 coa-client-lab create-instance"
 
 usage() {
     cat <<'EOF'
@@ -103,9 +109,13 @@ Instances (several lab clients side by side; select one with COA_LAB_INSTANCE=1.
   destroy-instance --yes   remove that instance's client and prefix (refused while it runs)
 
 Running (one lab client per instance):
-  start N                  point the lab client at slot N's authserver and launch it (env: COA_LAB_PROFILE
+  start N [--owner NAME] [--eta-minutes N]
+                           point the lab client at slot N's authserver and launch it (env: COA_LAB_PROFILE
                            readable|minimal, COA_LAB_DISPLAY nested|headless (minimal defaults to headless),
-                           COA_LAB_WIDTH/HEIGHT, COA_LAB_FPS)
+                           COA_LAB_WIDTH/HEIGHT, COA_LAB_FPS). --owner/COA_LAB_OWNER and --eta-minutes/
+                           COA_LAB_ETA_MINUTES are both optional and recorded on the lock line so a session
+                           blocked by "lab client held" knows who holds it and for how long; a blocked session
+                           can also use COA_LAB_INSTANCE=1..9 create-instance instead of waiting
   login ACCOUNT PASSWORD [CHARACTER]
                            keyboard login and world entry; dismisses a leftover glue modal first. With
                            CHARACTER, navigates the character list to it before entering the world (falls
@@ -166,7 +176,7 @@ Running (one lab client per instance):
                            (default 10) instead of discrete frames
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
-  probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
+  probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, bagitem BAG SLOT, auras [UNIT], spellbook, known ID,
                            ca [ENTRY], log [n], state, frame NAME, actionbar, perf start [MS]|stop, errors [N] [previous] [locals],
                            pksend OPCODE [u32:N u8:N s:TEXT ...],
                            pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
@@ -216,10 +226,10 @@ coa-client-lab commands (one line each; `coa-client-lab --help` has the full usa
   rbac-grant --account NAME              grant instant logout to an older lab account   coa-client-lab rbac-grant --account COALABLABX
   relay-setup N --soap-account NAME --soap-password-file PATH   enable relay probes on slot N
   status | stop | mute                   lock holder, stop, audio off    coa-client-lab stop
-Probe commands: ping, spell ID, item ID, auras [UNIT], spellbook, known ID, ca [ENTRY], log [n], state, frame NAME,
-  actionbar, perf start [MS]|stop, errors [N] [previous] [locals], pksend, pkwatch, pkmeta, pkfind, evwatch EVENT,
-  evunwatch EVENT, eval EXPR, pkunwatch OPCODE. Relay (no reload): ping spell item auras spellbook known log state ca
-  frame errors. Everything else reloads the UI.
+Probe commands: ping, spell ID, item ID, bagitem BAG SLOT, auras [UNIT], spellbook, known ID, ca [ENTRY], log [n],
+  state, frame NAME, actionbar, perf start [MS]|stop, errors [N] [previous] [locals], pksend, pkwatch, pkmeta,
+  pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR, pkunwatch OPCODE. Relay (no reload): ping spell item bagitem
+  auras spellbook known log state ca frame errors. Everything else reloads the UI.
 EOF
 }
 
@@ -447,8 +457,23 @@ warden_status_line() {
 }
 
 cmd_start() {
-    local n="${1:-}" auth pid display window waited
-    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: coa-client-lab start N (a coa-slot slot number)"
+    local n="${1:-}" auth pid display window waited usage
+    usage="usage: coa-client-lab start N [--owner NAME] [--eta-minutes N]"
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --owner) [[ $# -ge 2 ]] || die "$usage"; OWNER="$2"; shift 2 ;;
+            --eta-minutes) [[ $# -ge 2 ]] || die "$usage"; ETA_MINUTES="$2"; shift 2 ;;
+            *) die "$usage" ;;
+        esac
+    done
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "$usage"
+    # Kept to a single token (no spaces): the lock line is parsed by splitting on whitespace (coa-lab-mem's
+    # slot-from-lock, cmd_status, this die message below), so a space in owner would swallow the eta field.
+    [[ -z "$OWNER" || "$OWNER" =~ ^[A-Za-z0-9_.:-]+$ ]] \
+        || die "--owner/COA_LAB_OWNER must be one token: letters, digits, _ . : -"
+    [[ -z "$ETA_MINUTES" || "$ETA_MINUTES" =~ ^[1-9][0-9]*$ ]] \
+        || die "--eta-minutes/COA_LAB_ETA_MINUTES must be a positive integer"
     [[ "$PROFILE" == readable || "$PROFILE" == minimal ]] || die "COA_LAB_PROFILE must be readable or minimal"
     [[ "$DISPLAY_MODE" == nested || "$DISPLAY_MODE" == headless ]] || die "COA_LAB_DISPLAY must be nested or headless"
     [[ "$WIDTH$HEIGHT$FPS" =~ ^[0-9]+$ ]] || die "COA_LAB_WIDTH, COA_LAB_HEIGHT and COA_LAB_FPS must be numbers"
@@ -459,8 +484,13 @@ cmd_start() {
     auth=$(coa-slot env "$n" | sed -n 's/^AUTH_ADDR=//p')
     [[ -n "$auth" ]] || die "coa-slot env $n gave no AUTH_ADDR"
     mkdir -p "$STATE_DIR"
-    if ! (set -o noclobber; echo "slot $n since $(date -Is)" > "$LOCK") 2>/dev/null; then
-        die "lab client held: $(cat "$LOCK")"
+    # Lock line prefix "slot N since DATE" is unchanged and still the only part coa-lab-mem's
+    # _slot_from_lock depends on; owner/eta are optional trailing fields appended after it.
+    local lock_line="slot $n since $(date -Is)"
+    [[ -z "$OWNER" ]] || lock_line="$lock_line owner=$OWNER"
+    [[ -z "$ETA_MINUTES" ]] || lock_line="$lock_line eta=${ETA_MINUTES}m"
+    if ! (set -o noclobber; echo "$lock_line" > "$LOCK") 2>/dev/null; then
+        die "lab client held: $(cat "$LOCK") -- $LAB_LOCK_HINT"
     fi
     rm -f "$STATE_DIR/gamescope.pid" "$STATE_DIR/display" "$STATE_DIR/window" "$STATE_DIR/gamescope.starttime"
     touch "$STATE_DIR/started"
@@ -470,10 +500,11 @@ cmd_start() {
     fi
     # Recorded so a later restart_client (possibly a different script invocation, e.g. a `login` with an
     # account switch, with none of these variables in its own environment) launches with the settings this
-    # start actually used, not whatever COA_LAB_PROFILE/COA_LAB_DISPLAY/COA_LAB_WIDTH/HEIGHT/FPS its own
-    # caller happens to have (or not have). See docs/adr/0015-lab-restart-keeps-start-profile.md.
-    printf 'PROFILE=%s\nDISPLAY_MODE=%s\nWIDTH=%s\nHEIGHT=%s\nFPS=%s\n' \
-        "$PROFILE" "$DISPLAY_MODE" "$WIDTH" "$HEIGHT" "$FPS" > "$STATE_DIR/profile"
+    # start actually used, not whatever COA_LAB_PROFILE/COA_LAB_DISPLAY/COA_LAB_WIDTH/HEIGHT/FPS/OWNER/
+    # ETA_MINUTES its own caller happens to have (or not have). See
+    # docs/adr/0015-lab-restart-keeps-start-profile.md.
+    printf 'PROFILE=%s\nDISPLAY_MODE=%s\nWIDTH=%s\nHEIGHT=%s\nFPS=%s\nOWNER=%s\nETA_MINUTES=%s\n' \
+        "$PROFILE" "$DISPLAY_MODE" "$WIDTH" "$HEIGHT" "$FPS" "$OWNER" "$ETA_MINUTES" > "$STATE_DIR/profile"
     warden_status_line "$n"
 
     apply_profile
@@ -560,6 +591,7 @@ cmd_status() {
     fi
     echo "display: $(cat "$STATE_DIR/display" 2>/dev/null || echo unknown)"
     echo "window: $(cat "$STATE_DIR/window" 2>/dev/null || echo unknown)"
+    echo "hint: $LAB_LOCK_HINT"
 }
 
 cmd_type() {
@@ -596,7 +628,10 @@ run_lab_character() {
         "$LAB_CHARACTER_DIR" "$GHOST_REPO" > "$workfile"
     # `|| status=$?`, not a bare statement then `status=$?` on the next line: under this script's
     # `set -e`, a bare failing command exits the whole script before that next line ever runs.
-    ( cd "$LAB_CHARACTER_DIR" && GOSUMDB=off GOPROXY=off GOWORK="$workfile" go test "$@" ) || status=$?
+    # `-count=1` disables the test result cache for every caller (relay-setup, character): without it,
+    # `go test` can print a cached pass after `coa-slot reset-db N` even though the SOAP/lab account the
+    # test would have (re)created no longer exists on the fresh DB (client-lab-feedback-f2.md #1).
+    ( cd "$LAB_CHARACTER_DIR" && GOSUMDB=off GOPROXY=off GOWORK="$workfile" go test -count=1 "$@" ) || status=$?
     rm -f "$workfile"
     return "$status"
 }

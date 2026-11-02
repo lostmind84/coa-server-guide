@@ -12,10 +12,14 @@ local MAX_ERRORS = 20
 local MAX_ERROR_MESSAGE = 500
 local MAX_ERROR_TEXT = 1500
 
-local function tooltipLines(api, link)
+-- Reads the tooltip NumLines/GameTooltipTextLeft/Right currently shows, after `set` has pointed the
+-- tooltip at something (a hyperlink or, for `bagitem`, the actual bag item). A hyperlink's tooltip is the
+-- item template; the bag item's tooltip is the instance in the bag, which carries scaling the template
+-- does not (the "Requires Level" seen for a scaled bag copy, client-lab-feedback-f2.md #3).
+local function tooltipLinesFrom(api, set)
     local tip = api.GameTooltip
     tip:SetOwner(api.UIParent, "ANCHOR_NONE")
-    tip:SetHyperlink(link)
+    set(tip)
     local lines = {}
     for i = 1, tip:NumLines() do
         local left = api["GameTooltipTextLeft" .. i]
@@ -27,6 +31,10 @@ local function tooltipLines(api, link)
     end
     tip:Hide()
     return lines
+end
+
+local function tooltipLines(api, link)
+    return tooltipLinesFrom(api, function(tip) tip:SetHyperlink(link) end)
 end
 
 local function numberArg(args, usage)
@@ -68,6 +76,29 @@ Commands.handlers.item = function(api, args)
     local retrieving = tooltip[1] ~= nil and tooltip[1].left == api.RETRIEVING_ITEM_INFO
     return {
         id = id, name = name, link = link, quality = quality,
+        cached = name ~= nil, retrieving = retrieving, tooltip = tooltip,
+    }
+end
+
+-- bagitem <bag> <slot>: the tooltip of the actual item sitting in a bag slot (GameTooltip:SetBagItem),
+-- not the item template `item <id>` reads. A scaled worldforged/dropped copy carries its own level/stats
+-- baked into the instance, so only this tooltip reports them correctly (#10599).
+Commands.handlers.bagitem = function(api, args)
+    local bag = tonumber(args[1])
+    local slot = tonumber(args[2])
+    if not bag or not slot then
+        return nil, "usage: bagitem <bag> <slot>"
+    end
+    local link = api.GetContainerItemLink(bag, slot)
+    if not link then
+        return { bag = bag, slot = slot, present = false }
+    end
+    local id = tonumber(link:match("item:(%d+)"))
+    local tooltip = tooltipLinesFrom(api, function(tip) tip:SetBagItem(bag, slot) end)
+    local name, _, quality = api.GetItemInfo(id)
+    local retrieving = tooltip[1] ~= nil and tooltip[1].left == api.RETRIEVING_ITEM_INFO
+    return {
+        bag = bag, slot = slot, present = true, id = id, link = link, name = name, quality = quality,
         cached = name ~= nil, retrieving = retrieving, tooltip = tooltip,
     }
 end

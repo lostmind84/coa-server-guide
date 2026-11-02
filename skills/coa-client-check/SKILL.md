@@ -45,6 +45,9 @@ A technical failure is never "not reproduced": closing a real issue costs more t
    It skips the gameplay-test `harness` image line (a stale harness image never blocks a client check); a bare
    `coa-slot preflight N` still checks it.
 4. The lab client exists (`coa-client-lab create` once) and no other check holds it (`coa-client-lab status`).
+   Held by someone else? Its lock line names the slot and, if set, `owner=`/`eta=Nm`; take your own instead of
+   waiting (`COA_LAB_INSTANCE=1..9 coa-client-lab create-instance`). Starting your own, name yourself:
+   `coa-client-lab start N --owner <name> --eta-minutes <n>`.
 
 ## 2. Expectation
 
@@ -54,6 +57,8 @@ what will be observed, with which probe, and which result means the issue is rep
 - `probe spell 706240` — tooltip line 1 is the spell name and the description says the debuff lands on the target.
 - `probe auras target` after casting 706240 — the aura is on the target, not on the player.
 - `probe item 6948` — the tooltip has a "Use:" line.
+- `probe bagitem 0 1` — a scaled item's own bag tooltip, not the item template, for a "wrong Requires Level"
+  report (`references/probes-and-ui.md` 8a6).
 
 If the issue cannot be turned into an expectation (no spell id, no reproduction path, a symptom nobody can see
 twice), ask the question in the issue and stop with **inconclusive**.

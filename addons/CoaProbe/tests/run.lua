@@ -67,6 +67,15 @@ local function makeApi()
                 lines = { link, "second line" }
             end
         end,
+        -- bag 0 slot 1 is a scaled copy whose bag tooltip disagrees with its template ("Requires Level 25"
+        -- vs. the template's 22, as #10599 reported); bag 0 slot 2 is empty.
+        SetBagItem = function(_, bag, slot)
+            if bag == 0 and slot == 1 then
+                lines = { "Worldforged Blade", "Requires Level 25" }
+            else
+                lines = {}
+            end
+        end,
         NumLines = function() return #lines end,
         Hide = function() end,
     }
@@ -84,6 +93,11 @@ local function makeApi()
     api.RETRIEVING_ITEM_INFO = "Retrieving item information"
     api.GetItemInfo = function(id)
         if id == 6948 then return "Hearthstone", "|cffffffff|Hitem:6948|h[Hearthstone]|h|r", 1 end
+        if id == 777001 then return "Worldforged Blade", "|cffffffff|Hitem:777001|h[Worldforged Blade]|h|r", 2 end
+    end
+    api.GetContainerItemLink = function(bag, slot)
+        if bag == 0 and slot == 1 then return "|cffffffff|Hitem:777001|h[Worldforged Blade]|h|r" end
+        return nil
     end
     api.UnitAura = function(unit, index, filter)
         if unit == "player" and index == 1 and filter == "HELPFUL" then
@@ -133,6 +147,22 @@ answer = run(api, "r5b item 9999999")
 check("uncached item name", answer.result.name, nil)
 check("uncached item flag", answer.result.cached, false)
 check("uncached item retrieving", answer.result.retrieving, true)
+
+answer = run(api, "r5c bagitem 0 1")
+check("bagitem present", answer.result.present, true)
+check("bagitem id", answer.result.id, 777001)
+check("bagitem link", answer.result.link, "|cffffffff|Hitem:777001|h[Worldforged Blade]|h|r")
+check("bagitem name", answer.result.name, "Worldforged Blade")
+check("bagitem tooltip reads the bag instance, not the template", answer.result.tooltip[1].left,
+    "Worldforged Blade")
+check("bagitem tooltip carries the scaled level", answer.result.tooltip[2].left, "Requires Level 25")
+
+answer = run(api, "r5d bagitem 0 2")
+check("empty bag slot reports absent", answer.result.present, false)
+check("empty bag slot has no tooltip", answer.result.tooltip, nil)
+
+answer = run(api, "r5e bagitem 0")
+check("bagitem usage", answer.error, "usage: bagitem <bag> <slot>")
 
 answer = run(api, "r6 auras")
 check("auras unit", answer.result.unit, "player")

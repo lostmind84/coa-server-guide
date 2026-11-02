@@ -10,7 +10,7 @@ Relay.PREFIX = "CoaProbe"
 Relay.CHUNK = 200
 Relay.MAX_CHUNKS = 64
 Relay.READ_ONLY = {
-    ping = true, spell = true, item = true, auras = true, spellbook = true, known = true,
+    ping = true, spell = true, item = true, bagitem = true, auras = true, spellbook = true, known = true,
     log = true, state = true, ca = true, frame = true, errors = true,
 }
 
