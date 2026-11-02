@@ -45,6 +45,7 @@ class CacheOnlyTest(unittest.TestCase):
         main = self.tmp / "coa"
         (main / "src/server/coa").mkdir(parents=True)
         (main / "src/server/coa/keep").write_text("x")
+        (main / ".gitignore").write_text(".cache/\nbuild/\nenv/\n")
         run("git", "init", "-q", cwd=main)
         run("git", "add", ".", cwd=main)
         run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=main)
@@ -56,6 +57,7 @@ class CacheOnlyTest(unittest.TestCase):
         self.metadata.write_text(json.dumps({"world_id": WORLD_ID, "token": "t1", "state": "ready"}))
         self.mysql = FakeMysql()
         self.saved = cleanup.mysql, cleanup.merged_pull_request
+        self.foreign_directory = cleanup.foreign_directory
         cleanup.mysql = self.mysql
         cleanup.merged_pull_request = lambda *args: None
 
@@ -101,6 +103,36 @@ class CacheOnlyTest(unittest.TestCase):
         code, _, err = self.main("--cache-only", "--yes")
         self.assertEqual(code, 1)
         self.assertIn("connection", err)
+
+    def test_refuses_foreign_owned_directory_before_dropping_anything(self):
+        cleanup.foreign_directory = lambda root: str(self.metadata.parent)
+        try:
+            code, _, err = self.main("--cache-only", "--yes")
+        finally:
+            cleanup.foreign_directory = self.foreign_directory
+        self.assertEqual(code, 1)
+        self.assertIn("owned by another user", err)
+        self.assertIn("chown -R", err)
+        self.assertFalse(any("DROP" in s for s in self.mysql.statements))
+        self.assertTrue(self.metadata.exists())
+
+    def test_owned_tree_has_no_foreign_directory(self):
+        self.assertIsNone(cleanup.foreign_directory(self.worktree))
+
+    def test_full_cleanup_deletes_pushed_branch_when_main_checkout_lags(self):
+        remote = self.tmp / "remote.git"
+        run("git", "init", "-q", "--bare", str(remote), cwd=self.tmp)
+        main = self.tmp / "coa"
+        run("git", "remote", "add", "origin", str(remote), cwd=main)
+        (self.worktree / "src/server/coa/fix").write_text("y")
+        run("git", "add", ".", cwd=self.worktree)
+        run("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "fix", cwd=self.worktree)
+        run("git", "push", "-q", "origin", "work", cwd=self.worktree)
+        code, out, err = self.main("--yes")
+        self.assertEqual(code, 0, out + err)
+        self.assertFalse(self.worktree.exists())
+        branches = subprocess.run(["git", "branch", "--list", "work"], cwd=main, capture_output=True, text=True)
+        self.assertEqual(branches.stdout.strip(), "")
 
     def test_cache_only_refuses_main_checkout(self):
         self.worktree = self.tmp / "coa"

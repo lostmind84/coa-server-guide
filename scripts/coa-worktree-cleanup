@@ -16,8 +16,12 @@ Steps, in order; the first refusal stops everything and nothing after it runs:
    test MySQL (`coa-test-mysql`) is dropped only if no `lease.json` holds it, its state is `ready` or
    `invalid`, the schema's owner token matches the metadata, and no MySQL connection uses it. A cache whose
    schema is not in that server (for example one built against a slot database) is left alone and reported.
-4. `git worktree remove` (never forced), then `git branch -d` of its branch (`-D` only when step 2 found a
-   merged pull request whose head is this HEAD, since a squash merge leaves the branch unmerged for git).
+   Before anything is dropped, every directory it must delete has to be owned by the caller: a directory a
+   root container wrote (a `world.json` cache dir, a build dir) is refused with the chown to run, instead of
+   failing halfway after the schema is already gone.
+4. `git worktree remove` (never forced), then `git branch -D` of its branch. Step 2 proved HEAD is on a remote
+   branch or is the head of a merged pull request, so nothing is lost; `-d` would compare with whatever the
+   main checkout has checked out, which refuses a published branch whenever that local `main` lags behind.
 
 `--cache-only` runs step 1 and step 3 only: it frees the test MySQL for a worktree whose work is still going on
 (unpushed, dirty, or with an agent inside it). The next gameplay run rebuilds the cache (a few minutes).
@@ -104,6 +108,20 @@ def check_published(worktree: Path):
     return branch, merged
 
 
+def foreign_directory(root: Path):
+    result = subprocess.run(["find", str(root), "-xdev", "-type", "d", "!", "-user", str(os.getuid()),
+                             "-print", "-quit"], capture_output=True, text=True)
+    return result.stdout.strip() or None
+
+
+def check_owned(root: Path):
+    foreign = foreign_directory(root)
+    if foreign:
+        raise Refused(f"{foreign} is owned by another user (a root container wrote it), so it cannot be removed: "
+                      f"chown it back first, e.g. docker run --rm -v {root}:/d coa-verify-env:24.04 "
+                      f"chown -R {os.getuid()}:{os.getgid()} /d")
+
+
 def world_caches(worktree: Path):
     for metadata_path in sorted((worktree / CACHE_ROOT).glob("**/world.json")):
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -142,6 +160,8 @@ def main(argv=None) -> int:
         check_linked(worktree)
         branch, merged = (None, None) if args.cache_only else check_published(worktree)
         caches = [(path, *check_cache(path, metadata)) for path, metadata in world_caches(worktree)]
+        for root in ([path.parent for path, _, _ in caches] if args.cache_only else [worktree]):
+            check_owned(root)
     except Refused as refusal:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
@@ -169,7 +189,7 @@ def main(argv=None) -> int:
         main_checkout = Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()).parent
         git(main_checkout, "worktree", "remove", str(worktree))
         if branch:
-            git(main_checkout, "branch", "-D" if merged else "-d", branch)
+            git(main_checkout, "branch", "-D", branch)
     except Refused as refusal:
         print(f"FAILED: {refusal}", file=sys.stderr)
         return 1
