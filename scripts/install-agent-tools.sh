@@ -88,6 +88,13 @@ check_prerequisites() {
         problem "docker compose not available (coa-slot)"
     fi
     need gh "triage and PR workflow" optional
+    local verify_image="${COA_VERIFY_IMAGE:-coa-verify-env:24.04}"
+    if have docker && docker image inspect "$verify_image" > /dev/null 2>&1; then
+        ok "docker image $verify_image (coa-verify)"
+    else
+        warn "docker image $verify_image not found (coa-verify; build with: docker build -t $verify_image -f" \
+             "docker/coa-verify-env/Dockerfile docker/coa-verify-env)"
+    fi
     need go "coa-slot create, coa-client-lab character (Ghost e2e harness)"
     need mpqcli "preflight DBC checks (--skip-dbc skips them)"
     need lua5.1 "CoaProbe addon tests only" optional
@@ -131,7 +138,7 @@ link() { # link TARGET LINKPATH
 link_all() {
     local script skill
     say "== Scripts into $BIN_DIR"
-    for script in coa-slot coa-client-lab coa-lab-relay coa-lab-footprint coa-lab-mem coa-lab-packets coa-worktree-cleanup coa-obtainable coa-reference; do
+    for script in coa-slot coa-client-lab coa-lab-relay coa-lab-footprint coa-lab-mem coa-lab-packets coa-worktree-cleanup coa-obtainable coa-reference coa-verify; do
         link "$ROOT/scripts/$script" "$BIN_DIR/$script"
     done
     case ":$PATH:" in

@@ -17,6 +17,7 @@ scripts agents use to test it. Read this file first. `README.md` is the server i
 | Backups, restore, production | `docs/backup.md`, `docs/restore.md`, `docs/prod-server.md` |
 | Was this spell ever obtainable? (outside captures) | `docs/tooling/spell-obtainability.md` (`coa-obtainable`) |
 | Faster gameplay verification (optional in-RAM MySQL) | `docs/tooling/ram-mysql.md` |
+| Running `tools/verify_all.py` without the native build deps on the host | `docs/tooling/verify-container.md`, `scripts/coa-verify` |
 | Pitfalls that cost time in past runs | `docs/agent-lessons.md` |
 | Install the tools and check prerequisites | `scripts/install-agent-tools.sh --check` |
 

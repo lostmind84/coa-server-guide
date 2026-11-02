@@ -512,7 +512,7 @@ and made configurable afterwards: defaults assume the layout of Part 1 (`~/Proje
 
 ```bash
 git clone https://github.com/lostmind84/coa-server-guide.git ~/Projects/coa-server-guide
-ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint,coa-lab-mem,coa-lab-packets,coa-worktree-cleanup} ~/.local/bin/
+ln -s ~/Projects/coa-server-guide/scripts/{coa-slot,coa-client-lab,coa-lab-relay,coa-lab-footprint,coa-lab-mem,coa-lab-packets,coa-worktree-cleanup,coa-verify} ~/.local/bin/
 ```
 
 Written and tested on Linux. On Windows, macOS or WSL an agent should adapt the setup to its OS (see "Platform" in
@@ -530,6 +530,7 @@ they need.
 | [Headless lab, relay probes and CoaProbe](docs/tooling/relay-probes.md) | The server relay (`relay-setup`), `COA_LAB_PROFILE=minimal`, the in-client addon on its own |
 | [Spell obtainability](docs/tooling/spell-obtainability.md) | `coa-obtainable` and `coa-reference`: was a spell ever obtainable, judged against outside captures |
 | [In-RAM test MySQL](docs/tooling/ram-mysql.md) | Optional: much faster `verify_all` gameplay runs, and the guide tools around it |
+| [Reproducible `verify_all` container](docs/tooling/verify-container.md) | `docker/coa-verify-env`, `coa-verify`: run the server repository's verification in a versioned image instead of native host deps, setup on a new PC |
 | [Skills, issue workflow and contributing](docs/tooling/agent-workflow.md) | `coa-client-check`, `coa-triage`, worktree cleanup, contributing back, the AzerothCore MCP, useful links |
 | [Decisions](docs/adr) | One ADR per decision about the lab tooling |
 | [Changelog](CHANGELOG.md) | What changed, by pull request |

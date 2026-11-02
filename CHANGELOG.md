@@ -6,6 +6,11 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 ## Unreleased
 
 ### Added
+- `docker/coa-verify-env/Dockerfile`, `scripts/coa-verify` and `docs/tooling/verify-container.md`: a versioned,
+  rebuildable image and wrapper for running the server repository's `tools/verify_all.py` on a machine where the
+  native build deps (Boost, …) are not installable, replacing per-task ad hoc `docker run` wrappers. `--ram`
+  opts into the in-RAM test MySQL without copying secrets into the worktree. See
+  [ADR 0018](docs/adr/0018-verify-inside-a-versioned-container-image.md).
 - `scripts/install-agent-tools.sh [--check] [--codex]`: links scripts, skills and the triage command, reports missing
   prerequisites and, on another platform than Linux, tells the agent to adapt the setup to its OS and report what it
   could not verify.
