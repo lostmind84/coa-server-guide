@@ -46,7 +46,7 @@ RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
 # failure to run it (missing python3, guard refusal, unexpected output) falls back to the pixel-check path below.
 LAB_MEM="${COA_LAB_MEM:-$SCRIPT_DIR/coa-lab-mem}"
 # Commands the server relay and the addon accept over addon whispers; everything else keeps the /reload path.
-RELAY_COMMANDS=" ping spell item auras spellbook known log state ca frame errors "
+RELAY_COMMANDS=" ping spell item bagitem auras spellbook known log state ca frame errors "
 # The Ghost e2e harness checkout `character` and `login`'s character-select navigation build against
 # (scripts/lab-character). Overridable so the Go module in this guide never hard-codes one user's home.
 GHOST_REPO="${COA_GHOST_REPO:-$HOME/Projects/ConquestOfAzerothGhost}"
@@ -166,7 +166,7 @@ Running (one lab client per instance):
                            (default 10) instead of discrete frames
   hold KEY MILLISECONDS    hold a key down (walk with w/s, turn with Left/Right)
   mute                     mute this lab client's audio streams (start does it too)
-  probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, auras [UNIT], spellbook, known ID,
+  probe COMMAND [ARGS...]  ask the CoaProbe addon (ping, spell ID, item ID, bagitem BAG SLOT, auras [UNIT], spellbook, known ID,
                            ca [ENTRY], log [n], state, frame NAME, actionbar, perf start [MS]|stop, errors [N] [previous] [locals],
                            pksend OPCODE [u32:N u8:N s:TEXT ...],
                            pkwatch OPCODE [BYTES], pkmeta, pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR,
@@ -216,10 +216,10 @@ coa-client-lab commands (one line each; `coa-client-lab --help` has the full usa
   rbac-grant --account NAME              grant instant logout to an older lab account   coa-client-lab rbac-grant --account COALABLABX
   relay-setup N --soap-account NAME --soap-password-file PATH   enable relay probes on slot N
   status | stop | mute                   lock holder, stop, audio off    coa-client-lab stop
-Probe commands: ping, spell ID, item ID, auras [UNIT], spellbook, known ID, ca [ENTRY], log [n], state, frame NAME,
-  actionbar, perf start [MS]|stop, errors [N] [previous] [locals], pksend, pkwatch, pkmeta, pkfind, evwatch EVENT,
-  evunwatch EVENT, eval EXPR, pkunwatch OPCODE. Relay (no reload): ping spell item auras spellbook known log state ca
-  frame errors. Everything else reloads the UI.
+Probe commands: ping, spell ID, item ID, bagitem BAG SLOT, auras [UNIT], spellbook, known ID, ca [ENTRY], log [n],
+  state, frame NAME, actionbar, perf start [MS]|stop, errors [N] [previous] [locals], pksend, pkwatch, pkmeta,
+  pkfind, evwatch EVENT, evunwatch EVENT, eval EXPR, pkunwatch OPCODE. Relay (no reload): ping spell item bagitem
+  auras spellbook known log state ca frame errors. Everything else reloads the UI.
 EOF
 }
 

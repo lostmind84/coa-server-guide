@@ -36,7 +36,15 @@ coa-client-lab revive [CHARACTER]           # revive a dead/ghost lab character 
                                             #   refuses all input, GM commands included, while dead. Default: last logged-in character
 coa-client-lab probe perf start 250|stop    # client-side frame timer: `hitch` entries (ms) and 5 s `perf` summaries in `probe log`
 coa-client-lab probe item ID                 # name/link/quality, cached (client holds it) and retrieving (still waiting for the server);
-                                            #   probe twice ~5 s apart: an id that stays retrieving has no server item_template
+                                            #   probe twice ~5 s apart: an id that stays retrieving has no server item_template.
+                                            #   This reads the item TEMPLATE tooltip: a first read can be stale (#10667 showed
+                                            #   "Requires Level 8" until the item was equipped, then 12) -- re-read after a
+                                            #   /reload, or take a second read, before concluding
+coa-client-lab probe bagitem BAG SLOT        # tooltip of the actual item instance sitting in a bag slot (SetBagItem, not the
+                                            #   template): the one way to read a scaled worldforged/dropped copy's own stats,
+                                            #   since `item ID` only ever shows the template's (#10599); same name/link/quality/
+                                            #   cached/retrieving/tooltip shape as `item`, plus bag, slot and present (false
+                                            #   when the slot is empty)
 coa-client-lab probe state                  # also the player's movement: speed.current (yd/s, read while a key is held), swimming, falling, mounted
 coa-client-lab probe actionbar               # every filled action slot (id, spell, cooldown) and the bar buttons with their slot
                                             #   (reload path); `probe frame NAME` also lists the hidden parents and the rect
@@ -72,7 +80,7 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
   wheel reaches the rest at any resolution). Keep `COA_LAB_WIDTH`/`COA_LAB_HEIGHT` at the same 4:3 ratio: a
   taller-than-4:3 pair (800x720 was tried) letterboxes the whole client, including the login-screen pixel check
   `login` now does (next paragraph).
-- Only read-only commands go through the relay (`ping spell item auras spellbook known log state ca frame
+- Only read-only commands go through the relay (`ping spell item bagitem auras spellbook known log state ca frame
   errors`); every relay answer carries `loadId` (changes on each UI load) and the answering `character`.
   **Everything else reloads the UI** — `eval`, `pksend`, `pkwatch`/`pkmeta`/`pkfind`/`evwatch`/`evunwatch` (the
   watches), and any command at all once `COA_LAB_TRANSPORT=reload` forces that path (useful to debug a relay

@@ -21,6 +21,10 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
   dispatcher command.
 - `AGENTS.md` and `CLAUDE.md` at the root: where to look, commands, rules and pitfalls for agents.
 - `skills/coa-client-check/references/`: probe, measurement and lab-state recipes, read on demand.
+- `probe bagitem <bag> <slot>`: the tooltip of the actual item instance sitting in a bag slot
+  (`GameTooltip:SetBagItem`), with the same shape as `probe item` plus `bag`, `slot` and `present`. Reads a
+  scaled worldforged/dropped copy's own stats, which `probe item <id>` cannot (it only ever shows the item
+  template's), fixing a wrong "Requires Level" read (#10599). Allowed through the relay like `item`.
 
 ### Changed
 - `coa-reference` fetches only over https from a fixed list of hosts (redirect targets included) and refuses a downloaded part whose SHA-256 does
@@ -32,6 +36,8 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
   drops from 1,259 to about 520 lines and keeps an index. Text moved unchanged; relative links were rewritten.
 - `skills/coa-client-check/SKILL.md` shrinks from 338 to about 220 lines; the recipes moved to `references/`.
 - The lab script tests run in about 3 minutes instead of 5 (`COA_LAB_PROBE_TIMEOUT=2` in the test environment).
+- `docs/tooling/relay-probes.md`/`skills/coa-client-check`: a first item tooltip read (`probe item`, `probe
+  bagitem`) can be stale (#10667); re-read after a `/reload` or take a second read before concluding.
 
 ### Fixed
 - `relay-setup`/`character`'s Go helper now runs with `go test -count=1`: without it, a cached pass after

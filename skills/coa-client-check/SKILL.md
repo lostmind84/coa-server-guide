@@ -54,6 +54,8 @@ what will be observed, with which probe, and which result means the issue is rep
 - `probe spell 706240` — tooltip line 1 is the spell name and the description says the debuff lands on the target.
 - `probe auras target` after casting 706240 — the aura is on the target, not on the player.
 - `probe item 6948` — the tooltip has a "Use:" line.
+- `probe bagitem 0 1` — a scaled item's own bag tooltip, not the item template, for a "wrong Requires Level"
+  report (`references/probes-and-ui.md` 8a6).
 
 If the issue cannot be turned into an expectation (no spell id, no reproduction path, a symptom nobody can see
 twice), ask the question in the issue and stop with **inconclusive**.

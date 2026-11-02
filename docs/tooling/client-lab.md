@@ -20,7 +20,8 @@ coa-client-lab chat "/say hello"
 coa-client-lab screenshot                  # prints the PNG path
 coa-client-lab hold w 300                  # hold a key down for milliseconds (walk with w/s, turn with Left/Right)
 coa-client-lab mute                        # mute this lab client's audio streams by pid (start does it too)
-coa-client-lab probe spell 501281          # ask the CoaProbe addon; prints JSON (ping, spell, item, auras, spellbook, known)
+coa-client-lab probe spell 501281          # ask the CoaProbe addon; prints JSON (ping, spell, item, bagitem, auras, spellbook, known)
+coa-client-lab probe bagitem 0 1           # tooltip of the bag instance, not the template: the scaled copy's own stats (#10599)
 coa-client-lab probe log 20                # the addon's capture of UI errors, system messages and casts
 coa-client-lab probe state                 # snapshot of the player and current target together
 coa-client-lab probe pkwatch 1618 48       # log the next packets with that opcode (48 bytes each) -- survives /reload

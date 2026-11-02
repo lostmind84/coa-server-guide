@@ -58,3 +58,17 @@ answered with an item, which is what a missing `item_template` row looks like (v
 no row: still `retrieving` after several probes). The client cannot tell "the server said unknown" from "no
 answer yet": confirm in the database (`select entry from item_template where entry = ID`) before calling it a
 missing template, and a `cached` true item whose chest is still empty is a loot-table problem instead.
+
+`probe item ID` reads the item TEMPLATE's tooltip, not any particular instance of it. A tooltip value tied to the
+item instance (notably "Requires Level" on a scaled worldforged/dropped item) can also be stale on the very first
+read (#10667: a freshly looted item showed "Requires Level 8" until it was equipped, then 12) -- re-read after a
+`/reload`, or take a second read before concluding, whichever probe is in use.
+
+## 8a6. A scaled item in a bag shows the wrong "Requires Level": read the bag instance, not the template
+
+`probe item ID` always answers from the item template, so a scaled copy (worldforged, some drops) that raised its
+own level above the template's shows the template's lower value (#10599). `probe bagitem BAG SLOT` reads the
+tooltip of the actual item sitting in that bag slot (`GameTooltip:SetBagItem`), which carries the instance's own
+scaling. Same answer shape as `item` (`id`, `name`, `link`, `quality`, `cached`, `retrieving`, `tooltip`), plus
+`bag`, `slot` and `present` (false, with no `tooltip`, when the slot is empty). `probe actionbar` or `state` give
+the bag/slot indexes of a visible item if they are not already known.
