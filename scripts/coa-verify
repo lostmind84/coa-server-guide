@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Run the CoA server repository's `tools/verify_all.py` inside the versioned `coa-verify-env` container,
+from (or against) a worktree of that repository. Replaces the ad hoc per-task `verify.sh` wrappers agents wrote
+by hand (see docs/tooling/verify-container.md and ADR 0018).
+
+    coa-verify [--worktree DIR] [--ram] [VERIFY_ALL_ARGS...]
+
+`--worktree DIR` selects the CoA checkout to run against; default is the current directory. The main checkout
+(holding `.git`) is derived with `git -C DIR rev-parse --git-common-dir`, so this works from a linked worktree or
+from the main checkout itself. Everything after the recognised options is passed through to
+`tools/verify_all.py` unchanged, for example `--stages source` or `--ram --stages gameplay --scenario <id>`.
+
+`--ram` points the run at the in-RAM test MySQL (docs/tooling/ram-mysql.md in this guide; the authoritative setup
+is `docs/coa/verification.md`, "Optional: in-RAM test database", in the server repository) instead of copying the
+worldserver config and MySQL client file into the worktree: it mounts the secrets directory read-only, creates
+the worktree's `server_modules_dir`, writes a `--settings` JSON into the worktree's gitignored `.cache/`, and
+checks the test MySQL container is running before it hands off to `tools/verify_all.py`.
+
+Refuses (prints the fix, changes nothing) when: the image named by `COA_VERIFY_IMAGE` is missing (prints the
+`docker build` command), or `--ram` is given but the test MySQL container is not running (prints how to start and
+reseed it). Paths are overridable by environment variables; the defaults match this workstation's layout.
+
+Environment variables:
+    COA_VERIFY_IMAGE          image tag to run                           (coa-verify-env:24.04)
+    COA_VERIFY_CCACHE_DIR     host ccache directory, created if missing  (~/.cache/coa-verify-ccache)
+    COA_SRV_COA               read-only server data/etc/env-file root    (/srv/coa)
+    COA_TEST_MYSQL            in-RAM test MySQL container name           (coa-test-mysql)
+    COA_TEST_MYSQL_SECRETS    directory with worldserver.ram.conf and
+                              ram-client.cnf, mounted read-only          (~/CoaServer/test-mysql/secrets)
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+IMAGE = os.environ.get("COA_VERIFY_IMAGE", "coa-verify-env:24.04")
+CCACHE_DIR = Path(os.environ.get("COA_VERIFY_CCACHE_DIR", str(Path.home() / ".cache/coa-verify-ccache")))
+SRV_COA = Path(os.environ.get("COA_SRV_COA", "/srv/coa"))
+TEST_MYSQL = os.environ.get("COA_TEST_MYSQL", "coa-test-mysql")
+TEST_MYSQL_SECRETS = Path(os.environ.get("COA_TEST_MYSQL_SECRETS", str(Path.home() / "CoaServer/test-mysql/secrets")))
+
+BUILD_HINT = (
+    "docker build -t {image} -f docker/coa-verify-env/Dockerfile docker/coa-verify-env"
+    "   # from this guide's checkout"
+)
+
+
+class Refused(Exception):
+    pass
+
+
+def run_git(worktree: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Refused(f"git {' '.join(args)} failed in {worktree}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def main_checkout(worktree: Path) -> Path:
+    common_dir = Path(run_git(worktree, "rev-parse", "--git-common-dir"))
+    if not common_dir.is_absolute():
+        common_dir = (worktree / common_dir).resolve()
+    return common_dir.parent
+
+
+def image_present(image: str, docker=subprocess.run) -> bool:
+    result = docker(["docker", "image", "inspect", image], capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def mysql_running(container: str, docker=subprocess.run) -> bool:
+    result = docker(["docker", "ps", "--filter", f"name=^{container}$", "--format", "{{.Names}}"],
+                     capture_output=True, text=True)
+    return result.returncode == 0 and container in result.stdout.split()
+
+
+def ram_settings(tree: Path, secrets: Path = TEST_MYSQL_SECRETS, srv_coa: Path = SRV_COA) -> dict:
+    return {
+        "worldserver_config": str(secrets / "worldserver.ram.conf"),
+        "modules_config_dir": str(srv_coa / "etc/modules"),
+        "server_modules_dir": str(tree / "env/dist/etc/modules"),
+        "mysql": "/usr/bin/mysql",
+        "mysqldump": "/usr/bin/mysqldump",
+        "database_client_config": str(secrets / "ram-client.cnf"),
+        "dbc_directory": str(srv_coa / "server-data/dbc"),
+    }
+
+
+def write_settings(tree: Path, settings: dict) -> Path:
+    settings_dir = tree / ".cache/coa-verify"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.ram.json"
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    return settings_path
+
+
+def build_docker_command(repo: Path, tree: Path, ccache_dir: Path, image: str, verify_args: list,
+                          srv_coa: Path = SRV_COA, ram_secrets: Path = None) -> list:
+    command = ["docker", "run", "--rm", "--init", "--network", "host",
+               "--user", f"{os.getuid()}:{os.getgid()}"]
+    mounts = {str(repo): str(repo)}
+    if str(tree) != str(repo):
+        mounts[str(tree)] = str(tree)
+    mounts[str(ccache_dir)] = "/ccache"
+    for source, target in mounts.items():
+        command += ["-v", f"{source}:{target}"]
+    if (srv_coa / "server-data").is_dir():
+        command += ["-v", f"{srv_coa / 'server-data'}:{srv_coa / 'server-data'}:ro"]
+    if (srv_coa / "etc").is_dir():
+        command += ["-v", f"{srv_coa / 'etc'}:{srv_coa / 'etc'}:ro"]
+    if ram_secrets is not None:
+        command += ["-v", f"{ram_secrets}:{ram_secrets}:ro"]
+    env_file = srv_coa / "coa.env"
+    if env_file.is_file():
+        command += ["--env-file", str(env_file)]
+    command += [
+        "-e", "HOME=/tmp",
+        "-e", "CCACHE_DIR=/ccache",
+        "-e", "CCACHE_MAXSIZE=20G",
+        "-e", "GIT_CONFIG_COUNT=1",
+        "-e", "GIT_CONFIG_KEY_0=safe.directory",
+        "-e", "GIT_CONFIG_VALUE_0=*",
+        "-e", "CMAKE_CXX_COMPILER_LAUNCHER=ccache",
+        "-e", "CMAKE_C_COMPILER_LAUNCHER=ccache",
+        "-w", str(tree),
+        image,
+        "python3", "-B", "tools/verify_all.py", *verify_args,
+    ]
+    return command
+
+
+def run_docker(command: list) -> subprocess.CompletedProcess:
+    return subprocess.run(command)
+
+
+def main(argv: list) -> int:
+    worktree = Path(".").resolve()
+    ram = False
+    passthrough = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--worktree":
+            if i + 1 >= len(argv):
+                print("ERROR: --worktree needs a directory", file=sys.stderr)
+                return 2
+            worktree = Path(argv[i + 1]).resolve()
+            i += 2
+            continue
+        if arg == "--ram":
+            ram = True
+            i += 1
+            continue
+        if arg in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        passthrough.append(arg)
+        i += 1
+
+    try:
+        repo = main_checkout(worktree)
+    except Refused as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    if not image_present(IMAGE):
+        print(f"ERROR: image {IMAGE} not found. Build it first:\n  {BUILD_HINT.format(image=IMAGE)}",
+              file=sys.stderr)
+        return 2
+
+    ram_secrets = None
+    if ram:
+        if not mysql_running(TEST_MYSQL):
+            print(
+                f"ERROR: container {TEST_MYSQL} is not running. Start it and reseed it before using --ram\n"
+                f"  (see docs/tooling/ram-mysql.md in this guide and docs/coa/verification.md in the server "
+                f"repository, \"Optional: in-RAM test database\"; reseed with `coa-slot reseed-test-mysql`).",
+                file=sys.stderr,
+            )
+            return 2
+        settings = ram_settings(worktree)
+        (worktree / "env/dist/etc/modules").mkdir(parents=True, exist_ok=True)
+        settings_path = write_settings(worktree, settings)
+        ram_secrets = TEST_MYSQL_SECRETS
+        if not any(a == "--settings" or a.startswith("--settings=") for a in passthrough):
+            passthrough += ["--settings", str(settings_path)]
+
+    CCACHE_DIR.mkdir(parents=True, exist_ok=True)
+    command = build_docker_command(repo, worktree, CCACHE_DIR, IMAGE, passthrough, ram_secrets=ram_secrets)
+    return run_docker(command).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
