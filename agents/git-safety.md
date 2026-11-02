@@ -52,7 +52,8 @@ made, in the same task, without asking:
    worktree's gameplay world caches from the in-RAM test MySQL (`coa-test-mysql`, 12 GB, about 1.3 GB per cache),
    removes the worktree and deletes its local branch. It refuses, and changes nothing, while the worktree has
    uncommitted or untracked work, an unpushed HEAD (unless it is the head of a merged PR), a leased or in-use
-   cache, or a process running inside it. A refusal is reported, never forced.
+   cache, a directory owned by another user (a root container wrote it: the refusal prints the chown), or a
+   process running inside it. A refusal is reported, never forced.
 2. `coa-client-lab stop` for the agent's own lab instance, then erase its throwaway accounts and characters.
 3. `coa-slot stop N` (unless the user wants the server up) and `coa-slot release N`.
 
