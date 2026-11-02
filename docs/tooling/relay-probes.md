@@ -45,6 +45,8 @@ coa-client-lab probe bagitem BAG SLOT        # tooltip of the actual item instan
                                             #   since `item ID` only ever shows the template's (#10599); same name/link/quality/
                                             #   cached/retrieving/tooltip shape as `item`, plus bag, slot and present (false
                                             #   when the slot is empty)
+                                            #   Relay needs a worldserver whose relay allowlist has bagitem (CoA server
+                                            #   fix/probe-relay-bagitem); on an older one use COA_LAB_TRANSPORT=reload
 coa-client-lab probe state                  # also the player's movement: speed.current (yd/s, read while a key is held), swimming, falling, mounted
 coa-client-lab probe actionbar               # every filled action slot (id, spell, cooldown) and the bar buttons with their slot
                                             #   (reload path); `probe frame NAME` also lists the hidden parents and the rect
