@@ -67,8 +67,8 @@ shell snippet per worktree.
    ```
 
    Every argument that is not `--worktree`, `--ram`, `--pch` or `--nopch` passes straight through to
-   `tools/verify_all.py`, so `docs/coa/verification.md` in the server repository (stage selection, `--settings`, exit codes, `report.json`)
-   remains the reference for everything past the container itself. Before a PR, also run
+   `tools/verify_all.py`, so `docs/coa/verification.md` in the server repository (stage selection, `--settings`,
+   exit codes, `report.json`) remains the reference for everything past the container itself. Before a PR, also run
    `coa-verify --stages source --base origin/main` per that repository's `AGENTS.md`; run every stage only when a
    full verification is explicitly requested.
 
