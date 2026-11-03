@@ -121,6 +121,26 @@ links against the wrong libraries. Give the container its own build directory â€
 configured inside this same image â€” never a `build_directory` a host build has touched. The same applies in
 reverse: do not configure a build directory inside the container and then try to build it natively.
 
+## Building without precompiled headers (`--nopch`)
+
+`coa-verify --nopch ...` configures a separate `build-nopch` directory with `-DNOPCH=1` (the server builds this way
+since server PR #10999). Without precompiled headers every object depends only on the sources, so a worktree reuses
+almost everything another worktree compiled at the same sources; with them, each worktree builds its own `.gch` and
+every file that uses it misses the cache. It cannot be combined with your own `--settings` (it writes one); it does
+combine with `--ram`.
+
+Measured on this workstation on 2026-11-03 at server 2a14cd00f5, `--stages build`, an empty ccache per mode, two
+fresh worktrees each (one run per cell):
+
+| Mode | First worktree (cold cache) | Second worktree (same commit) | Cache used |
+|---|---|---|---|
+| default (PCH) | 762 s, 0/1895 hits | 407 s, 778/1895 hits (41%) | 4.0 GiB |
+| `--nopch` | 870 s, 0/1890 hits | 148 s, 1785/1890 hits (94%) | 2.1 GiB |
+
+A first cold NOPCH attempt stopped on a compiler segfault (internal compiler error in one object, cause unknown, not
+reproduced on the rerun). The gain assumes worktrees close to the same commit; sources that differ recompile in
+both modes.
+
 ## Timing
 
 Measured on this workstation on 2026-11-02: the `build` stage of a fresh worktree (new build directory, ccache
