@@ -125,6 +125,16 @@ class BuildDockerCommandTest(unittest.TestCase):
         w_index = command.index("-w")
         self.assertEqual(command[w_index + 2:w_index + 5], ["coa-verify-env:24.04", "python3", "-B"])
 
+    def test_ccache_shares_objects_across_sibling_worktrees(self):
+        tree = self.tmp / "coa-wt"
+        command = coa_verify.build_docker_command(self.repo, tree, self.ccache, "coa-verify-env:24.04", [],
+                                                    srv_coa=self.srv)
+        env = [command[i + 1] for i, a in enumerate(command) if a == "-e"]
+        self.assertIn(f"CCACHE_BASEDIR={self.tmp}", env)
+        self.assertIn("CCACHE_NOHASHDIR=1", env)
+        self.assertIn("CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime", env)
+        self.assertIn("CCACHE_MAXSIZE=50G", env)
+
     def test_srv_coa_dirs_mounted_readonly_when_present(self):
         (self.srv / "server-data").mkdir(parents=True)
         (self.srv / "etc").mkdir(parents=True)

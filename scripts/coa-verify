@@ -23,6 +23,9 @@ reseed it). Paths are overridable by environment variables; the defaults match t
 Environment variables:
     COA_VERIFY_IMAGE          image tag to run                           (coa-verify-env:24.04)
     COA_VERIFY_CCACHE_DIR     host ccache directory, created if missing  (~/.cache/coa-verify-ccache)
+    COA_VERIFY_CCACHE_MAXSIZE ccache size limit                          (50G)
+    COA_VERIFY_CCACHE_BASEDIR ccache base directory: hits across
+                              worktrees below it   (common parent of the main checkout and the worktree)
     COA_SRV_COA               read-only server data/etc/env-file root    (/srv/coa)
     COA_TEST_MYSQL            in-RAM test MySQL container name           (coa-test-mysql)
     COA_TEST_MYSQL_SECRETS    directory with worldserver.ram.conf and
@@ -36,6 +39,9 @@ from pathlib import Path
 
 IMAGE = os.environ.get("COA_VERIFY_IMAGE", "coa-verify-env:24.04")
 CCACHE_DIR = Path(os.environ.get("COA_VERIFY_CCACHE_DIR", str(Path.home() / ".cache/coa-verify-ccache")))
+CCACHE_MAXSIZE = os.environ.get("COA_VERIFY_CCACHE_MAXSIZE", "50G")
+CCACHE_BASEDIR = os.environ.get("COA_VERIFY_CCACHE_BASEDIR")
+CCACHE_SLOPPINESS = "pch_defines,time_macros,include_file_mtime,include_file_ctime"
 SRV_COA = Path(os.environ.get("COA_SRV_COA", "/srv/coa"))
 TEST_MYSQL = os.environ.get("COA_TEST_MYSQL", "coa-test-mysql")
 TEST_MYSQL_SECRETS = Path(os.environ.get("COA_TEST_MYSQL_SECRETS", str(Path.home() / "CoaServer/test-mysql/secrets")))
@@ -114,10 +120,14 @@ def build_docker_command(repo: Path, tree: Path, ccache_dir: Path, image: str, v
     env_file = srv_coa / "coa.env"
     if env_file.is_file():
         command += ["--env-file", str(env_file)]
+    basedir = CCACHE_BASEDIR or os.path.commonpath([str(repo.parent), str(tree.parent)])
     command += [
         "-e", "HOME=/tmp",
         "-e", "CCACHE_DIR=/ccache",
-        "-e", "CCACHE_MAXSIZE=20G",
+        "-e", f"CCACHE_MAXSIZE={CCACHE_MAXSIZE}",
+        "-e", f"CCACHE_SLOPPINESS={CCACHE_SLOPPINESS}",
+        "-e", f"CCACHE_BASEDIR={basedir}",
+        "-e", "CCACHE_NOHASHDIR=1",
         "-e", "GIT_CONFIG_COUNT=1",
         "-e", "GIT_CONFIG_KEY_0=safe.directory",
         "-e", "GIT_CONFIG_VALUE_0=*",
