@@ -232,5 +232,33 @@ class MainTest(unittest.TestCase):
         self.assertEqual(command[-2:], ["--settings", "custom.json"])
 
 
+    def test_nopch_builds_in_its_own_directory_without_pch(self):
+        coa_verify.image_present = lambda image: True
+        code, _, _ = self.call("--nopch", "--stages", "build")
+        self.assertEqual(code, 0)
+        settings_path = self.worktree / ".cache/coa-verify/settings.nopch.json"
+        settings = json.loads(settings_path.read_text())
+        self.assertEqual(settings["build_directory"], "build-nopch")
+        self.assertIn("-DNOPCH=1", settings["cmake_args"])
+        self.assertIn(f"-DCMAKE_INSTALL_PREFIX={self.worktree / 'env/dist'}", settings["cmake_args"])
+        self.assertEqual(self.fake_run.commands[0][-4:], ["--stages", "build", "--settings", str(settings_path)])
+
+    def test_nopch_with_ram_writes_one_merged_settings_file(self):
+        coa_verify.image_present = lambda image: True
+        coa_verify.mysql_running = lambda container: True
+        code, _, _ = self.call("--ram", "--nopch", "--stages", "gameplay")
+        self.assertEqual(code, 0)
+        settings = json.loads((self.worktree / ".cache/coa-verify/settings.ram.json").read_text())
+        self.assertEqual(settings["build_directory"], "build-nopch")
+        self.assertIn("worldserver_config", settings)
+
+    def test_nopch_refuses_explicit_settings(self):
+        coa_verify.image_present = lambda image: True
+        code, _, err = self.call("--nopch", "--settings", "custom.json")
+        self.assertEqual(code, 2)
+        self.assertIn("--nopch", err)
+        self.assertEqual(self.fake_run.commands, [])
+
+
 if __name__ == "__main__":
     unittest.main()

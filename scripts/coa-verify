@@ -3,7 +3,7 @@
 from (or against) a worktree of that repository. Replaces the ad hoc per-task `verify.sh` wrappers agents wrote
 by hand (see docs/tooling/verify-container.md and ADR 0018).
 
-    coa-verify [--worktree DIR] [--ram] [VERIFY_ALL_ARGS...]
+    coa-verify [--worktree DIR] [--ram] [--nopch] [VERIFY_ALL_ARGS...]
 
 `--worktree DIR` selects the CoA checkout to run against; default is the current directory. The main checkout
 (holding `.git`) is derived with `git -C DIR rev-parse --git-common-dir`, so this works from a linked worktree or
@@ -15,6 +15,10 @@ is `docs/coa/verification.md`, "Optional: in-RAM test database", in the server r
 worldserver config and MySQL client file into the worktree: it mounts the secrets directory read-only, creates
 the worktree's `server_modules_dir`, writes a `--settings` JSON into the worktree's gitignored `.cache/`, and
 checks the test MySQL container is running before it hands off to `tools/verify_all.py`.
+
+`--nopch` builds without precompiled headers (`-DNOPCH=1`) in a separate `build-nopch` directory, so ccache can
+reuse objects compiled in any other worktree at the same sources; it cannot be combined with a `--settings` of your
+own (the settings file it writes carries `build_directory` and `cmake_args`).
 
 Refuses (prints the fix, changes nothing) when: the image named by `COA_VERIFY_IMAGE` is missing (prints the
 `docker build` command), or `--ram` is given but the test MySQL container is not running (prints how to start and
@@ -93,10 +97,19 @@ def ram_settings(tree: Path, secrets: Path = TEST_MYSQL_SECRETS, srv_coa: Path =
     }
 
 
-def write_settings(tree: Path, settings: dict) -> Path:
+def nopch_settings(tree: Path) -> dict:
+    return {
+        "build_directory": "build-nopch",
+        "cmake_args": ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DAPPS_BUILD=world-only",
+                       "-DSCRIPTS=static", "-DMODULES=static", "-DBUILD_TESTING=ON",
+                       f"-DCMAKE_INSTALL_PREFIX={tree / 'env/dist'}", "-DNOPCH=1"],
+    }
+
+
+def write_settings(tree: Path, settings: dict, name: str = "settings.ram.json") -> Path:
     settings_dir = tree / ".cache/coa-verify"
     settings_dir.mkdir(parents=True, exist_ok=True)
-    settings_path = settings_dir / "settings.ram.json"
+    settings_path = settings_dir / name
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
     return settings_path
 
@@ -147,6 +160,7 @@ def run_docker(command: list) -> subprocess.CompletedProcess:
 def main(argv: list) -> int:
     worktree = Path(".").resolve()
     ram = False
+    nopch = False
     passthrough = []
     i = 0
     while i < len(argv):
@@ -160,6 +174,10 @@ def main(argv: list) -> int:
             continue
         if arg == "--ram":
             ram = True
+            i += 1
+            continue
+        if arg == "--nopch":
+            nopch = True
             i += 1
             continue
         if arg in ("-h", "--help"):
@@ -179,7 +197,14 @@ def main(argv: list) -> int:
               file=sys.stderr)
         return 2
 
+    own_settings = any(a == "--settings" or a.startswith("--settings=") for a in passthrough)
+    if nopch and own_settings:
+        print("ERROR: --nopch writes its own --settings file; add build_directory and cmake_args with -DNOPCH=1 to "
+              "yours instead", file=sys.stderr)
+        return 2
+
     ram_secrets = None
+    settings = {}
     if ram:
         if not mysql_running(TEST_MYSQL):
             print(
@@ -189,12 +214,14 @@ def main(argv: list) -> int:
                 file=sys.stderr,
             )
             return 2
-        settings = ram_settings(worktree)
+        settings.update(ram_settings(worktree))
         (worktree / "env/dist/etc/modules").mkdir(parents=True, exist_ok=True)
-        settings_path = write_settings(worktree, settings)
         ram_secrets = TEST_MYSQL_SECRETS
-        if not any(a == "--settings" or a.startswith("--settings=") for a in passthrough):
-            passthrough += ["--settings", str(settings_path)]
+    if nopch:
+        settings.update(nopch_settings(worktree))
+    if settings and not own_settings:
+        settings_path = write_settings(worktree, settings, "settings.ram.json" if ram else "settings.nopch.json")
+        passthrough += ["--settings", str(settings_path)]
 
     CCACHE_DIR.mkdir(parents=True, exist_ok=True)
     command = build_docker_command(repo, worktree, CCACHE_DIR, IMAGE, passthrough, ram_secrets=ram_secrets)
