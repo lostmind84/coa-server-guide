@@ -198,7 +198,7 @@ class MainTest(unittest.TestCase):
 
     def test_passes_through_args_when_image_present(self):
         coa_verify.image_present = lambda image: True
-        code, _, _ = self.call("--stages", "source")
+        code, _, _ = self.call("--pch", "--stages", "source")
         self.assertEqual(code, 0)
         self.assertEqual(len(self.fake_run.commands), 1)
         self.assertEqual(self.fake_run.commands[0][-2:], ["--stages", "source"])
@@ -232,9 +232,9 @@ class MainTest(unittest.TestCase):
         self.assertEqual(command[-2:], ["--settings", "custom.json"])
 
 
-    def test_nopch_builds_in_its_own_directory_without_pch(self):
+    def test_default_builds_without_pch_in_its_own_directory(self):
         coa_verify.image_present = lambda image: True
-        code, _, _ = self.call("--nopch", "--stages", "build")
+        code, _, _ = self.call("--stages", "build")
         self.assertEqual(code, 0)
         settings_path = self.worktree / ".cache/coa-verify/settings.nopch.json"
         settings = json.loads(settings_path.read_text())
@@ -243,22 +243,50 @@ class MainTest(unittest.TestCase):
         self.assertIn(f"-DCMAKE_INSTALL_PREFIX={self.worktree / 'env/dist'}", settings["cmake_args"])
         self.assertEqual(self.fake_run.commands[0][-4:], ["--stages", "build", "--settings", str(settings_path)])
 
-    def test_nopch_with_ram_writes_one_merged_settings_file(self):
+    def test_nopch_flag_is_the_default(self):
+        coa_verify.image_present = lambda image: True
+        code, _, _ = self.call("--nopch", "--stages", "build")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fake_run.commands[0][-2], "--settings")
+
+    def test_pch_builds_with_verify_all_defaults(self):
+        coa_verify.image_present = lambda image: True
+        code, _, _ = self.call("--pch", "--stages", "build")
+        self.assertEqual(code, 0)
+        self.assertNotIn("--settings", self.fake_run.commands[0])
+        self.assertFalse((self.worktree / ".cache/coa-verify/settings.nopch.json").exists())
+
+    def test_pch_with_ram_keeps_the_default_build_directory(self):
         coa_verify.image_present = lambda image: True
         coa_verify.mysql_running = lambda container: True
-        code, _, _ = self.call("--ram", "--nopch", "--stages", "gameplay")
+        code, _, _ = self.call("--ram", "--pch", "--stages", "gameplay")
+        self.assertEqual(code, 0)
+        settings = json.loads((self.worktree / ".cache/coa-verify/settings.ram.json").read_text())
+        self.assertNotIn("build_directory", settings)
+        self.assertNotIn("cmake_args", settings)
+
+    def test_ram_default_writes_one_merged_settings_file(self):
+        coa_verify.image_present = lambda image: True
+        coa_verify.mysql_running = lambda container: True
+        code, _, _ = self.call("--ram", "--stages", "gameplay")
         self.assertEqual(code, 0)
         settings = json.loads((self.worktree / ".cache/coa-verify/settings.ram.json").read_text())
         self.assertEqual(settings["build_directory"], "build-nopch")
         self.assertIn("worldserver_config", settings)
 
-    def test_nopch_refuses_explicit_settings(self):
+    def test_explicit_settings_pass_through_untouched(self):
         coa_verify.image_present = lambda image: True
-        code, _, err = self.call("--nopch", "--settings", "custom.json")
-        self.assertEqual(code, 2)
-        self.assertIn("--nopch", err)
-        self.assertEqual(self.fake_run.commands, [])
+        code, _, _ = self.call("--settings", "custom.json")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fake_run.commands[0][-2:], ["--settings", "custom.json"])
+        self.assertEqual(self.fake_run.commands[0].count("--settings"), 1)
 
+    def test_pch_and_nopch_exclude_each_other(self):
+        coa_verify.image_present = lambda image: True
+        code, _, err = self.call("--pch", "--nopch")
+        self.assertEqual(code, 2)
+        self.assertIn("exclude", err)
+        self.assertEqual(self.fake_run.commands, [])
 
 if __name__ == "__main__":
     unittest.main()

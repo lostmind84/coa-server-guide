@@ -8,7 +8,7 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 ### Added
 - `coa-verify --nopch`: builds without precompiled headers in `build-nopch`, so worktrees at the same sources share
   ccache objects (measured: second worktree 148 s with 94% hits, against 407 s and 41% with PCH; cold build 870 s
-  against 762 s). The default is unchanged.
+  against 762 s).
 - `docker/coa-verify-env/Dockerfile`, `scripts/coa-verify` and `docs/tooling/verify-container.md`: a versioned,
   rebuildable image and wrapper for running the server repository's `tools/verify_all.py` on a machine where the
   native build deps (Boost, …) are not installable, replacing per-task ad hoc `docker run` wrappers. `--ram`
@@ -39,6 +39,9 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
   waiting (#14).
 
 ### Changed
+- `coa-verify` builds without precompiled headers by default (`build-nopch`; measured second worktree 148 s instead
+  of 407 s, cold build 870 s instead of 762 s). `--pch` builds with them in `build`; `--nopch` is now a no-op. A
+  worktree built in `build` rebuilds in `build-nopch` unless `--pch` is passed.
 - `coa-reference` fetches only over https from a fixed list of hosts (redirect targets included) and refuses a downloaded part whose SHA-256 does
   not match the cache manifest; the platform note tells agents to show adapted commands and to ask before adapting
   destructive ones.

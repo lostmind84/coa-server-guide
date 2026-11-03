@@ -66,9 +66,9 @@ shell snippet per worktree.
    coa-verify --ram --stages gameplay --scenario primalist-everlasting-rage   # against the in-RAM test MySQL
    ```
 
-   Every argument that is not `--worktree` or `--ram` passes straight through to `tools/verify_all.py`, so
-   `docs/coa/verification.md` in the server repository (stage selection, `--settings`, exit codes, `report.json`)
-   remains the reference for everything past the container itself. Before a PR, also run
+   Every argument that is not `--worktree`, `--ram`, `--pch` or `--nopch` passes straight through to
+   `tools/verify_all.py`, so `docs/coa/verification.md` in the server repository (stage selection, `--settings`,
+   exit codes, `report.json`) remains the reference for everything past the container itself. Before a PR, also run
    `coa-verify --stages source --base origin/main` per that repository's `AGENTS.md`; run every stage only when a
    full verification is explicitly requested.
 
@@ -121,25 +121,42 @@ links against the wrong libraries. Give the container its own build directory â€
 configured inside this same image â€” never a `build_directory` a host build has touched. The same applies in
 reverse: do not configure a build directory inside the container and then try to build it natively.
 
-## Building without precompiled headers (`--nopch`)
+## Precompiled headers: off by default, `--pch` to turn them on
 
-`coa-verify --nopch ...` configures a separate `build-nopch` directory with `-DNOPCH=1` (the server builds this way
-since server PR #10999). Without precompiled headers every object depends only on the sources, so a worktree reuses
-almost everything another worktree compiled at the same sources; with them, each worktree builds its own `.gch` and
-every file that uses it misses the cache. It cannot be combined with your own `--settings` (it writes one); it does
-combine with `--ram`.
+`coa-verify` builds without precompiled headers by default: it configures a separate `build-nopch` directory with
+`-DNOPCH=1` (the server builds this way since server PR #10999). Without precompiled headers every object depends
+only on the sources, so a worktree reuses almost everything another worktree compiled at the same sources; with them,
+each worktree builds its own `.gch` and every file that uses it misses the cache. `--pch` builds with precompiled
+headers in `build`, `verify_all.py`'s own defaults; `--nopch` is still accepted and changes nothing. A `--settings`
+file of your own is passed through untouched, so its `build_directory` and `cmake_args` decide.
+
+The two modes build in different directories: a worktree already built in `build` (before this default, or with
+`--pch`) rebuilds from scratch in `build-nopch` on its next default run. Pass `--pch` to keep using that build, for
+example for a `--stages gameplay` run without a build stage.
 
 Measured on this workstation on 2026-11-03 at server 2a14cd00f5, `--stages build`, an empty ccache per mode, two
-fresh worktrees each (one run per cell):
+fresh worktrees each (one run per cell); these numbers decided the default:
 
 | Mode | First worktree (cold cache) | Second worktree (same commit) | Cache used |
 |---|---|---|---|
-| default (PCH) | 762 s, 0/1895 hits | 407 s, 778/1895 hits (41%) | 4.0 GiB |
-| `--nopch` | 870 s, 0/1890 hits | 148 s, 1785/1890 hits (94%) | 2.1 GiB |
+| `--pch` | 762 s, 0/1895 hits | 407 s, 778/1895 hits (41%) | 4.0 GiB |
+| default (no PCH) | 870 s, 0/1890 hits | 148 s, 1785/1890 hits (94%) | 2.1 GiB |
 
-A first cold NOPCH attempt stopped on a compiler segfault (internal compiler error in one object, cause unknown, not
-reproduced on the rerun). The gain assumes worktrees close to the same commit; sources that differ recompile in
-both modes.
+The gain assumes worktrees close to the same commit; sources that differ recompile in both modes.
+
+### Known unreproduced failure: compiler segfault
+
+The first cold no-PCH build of that measurement stopped after 216 s on a crash of the compiler itself, not a source
+error:
+
+```
+FAILED: src/server/coa/CMakeFiles/coa.dir/AscensionCallboardCache.cpp.o
+../src/common/Collision/Models/GameObjectModel.h:61:72: internal compiler error: Segmentation fault
+```
+
+The same tree, rebuilt from an empty `build-nopch` and an empty ccache, passed; the cause is unknown (no kernel
+log entry was found). If it happens again: rerun the build once before suspecting the change, and if it recurs, note
+the object, the free memory and the machine load, and report it to the guide/lab owner so the cases can be compared.
 
 ## Timing
 
