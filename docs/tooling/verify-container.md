@@ -87,6 +87,17 @@ the ad hoc `verify.sh` wrappers agents used to write per task:
 - Sets `HOME=/tmp` (the container has no home directory of its own for the caller's uid), points
   `CCACHE_DIR`/`CMAKE_*_COMPILER_LAUNCHER` at the mounted ccache, trusts the mounted repositories for git
   (`safe.directory=*`), and runs as the caller's uid:gid so nothing it writes becomes root-owned.
+- Lets ccache reuse objects across builds and worktrees: the server builds with precompiled headers
+  (`USE_COREPCH`/`USE_SCRIPTPCH`), which ccache refuses without `CCACHE_SLOPPINESS=pch_defines,time_macros,
+  include_file_mtime,include_file_ctime`; `CCACHE_BASEDIR` (default: the common parent of the main checkout and the
+  worktree, `COA_VERIFY_CCACHE_BASEDIR` overrides it) and `CCACHE_NOHASHDIR=1` make paths in sibling worktrees
+  hash alike. `CCACHE_MAXSIZE` defaults to 50G (`COA_VERIFY_CCACHE_MAXSIZE`): 20G filled up on this workstation.
+  Measured 2026-11-03 at server 042b38a436 with a fresh cache: 54% of compiler calls were uncacheable
+  ("Could not use precompiled header") and the hit rate was 8.7% before; after, a cold worktree built in 925 s
+  with no uncacheable call and a second worktree of the same commit in 497 s with 41% hits (each worktree still
+  builds its own precompiled headers, so the files that use them miss).
+- Several gameplay scenarios in one run share one worldserver boot: pass them all to one `--scenario`
+  (`--scenario A B C`) instead of one run per scenario.
 - Refuses immediately, printing the `docker build` command above, when `COA_VERIFY_IMAGE` (default
   `coa-verify-env:24.04`) is not present locally — never an unexplained docker error.
 - With `--ram`: checks the in-RAM test MySQL container (`COA_TEST_MYSQL`, default `coa-test-mysql`) is running

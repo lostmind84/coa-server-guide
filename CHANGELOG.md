@@ -49,6 +49,9 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
   bagitem`) can be stale (#10667); re-read after a `/reload` or take a second read before concluding.
 
 ### Fixed
+- `coa-verify` builds hit ccache again: it sets `CCACHE_SLOPPINESS` for the server's precompiled headers (54% of
+  calls were uncacheable), `CCACHE_BASEDIR` and `CCACHE_NOHASHDIR` so sibling worktrees share objects, and raises
+  `CCACHE_MAXSIZE` from 20G to 50G (`COA_VERIFY_CCACHE_MAXSIZE`, `COA_VERIFY_CCACHE_BASEDIR` override them).
 - `coa-worktree-cleanup` refuses up front, with the chown to run, when a directory it must delete is owned by another
   user (a root container's world cache or build dir), instead of failing after the cache schema was dropped; and it
   deletes the published branch with `branch -D`, since `-d` refused it whenever the main checkout's `main` lagged.
