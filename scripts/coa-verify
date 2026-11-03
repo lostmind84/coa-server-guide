@@ -17,9 +17,10 @@ the worktree's `server_modules_dir`, writes a `--settings` JSON into the worktre
 checks the test MySQL container is running before it hands off to `tools/verify_all.py`.
 
 By default the build has no precompiled headers (`-DNOPCH=1`) and lives in `build-nopch`, so ccache reuses objects
-compiled in any other worktree at the same sources. `--pch` builds with precompiled headers in `build` instead
-(`verify_all.py`'s own defaults). `--nopch` is accepted and changes nothing. A `--settings` of your own is passed
-through untouched: its `build_directory` and `cmake_args` apply, not these.
+compiled in any other worktree at the same sources. A HEAD older than server commit 2a14cd00f5 (#10999, the includes
+this mode needs) falls back to precompiled headers with a note. `--pch` builds with precompiled headers in `build`
+(`verify_all.py`'s own defaults); `--nopch` forces the default mode, with a warning on such an older HEAD. A
+`--settings` of your own is passed through untouched: its `build_directory` and `cmake_args` apply, not these.
 
 Refuses (prints the fix, changes nothing) when: the image named by `COA_VERIFY_IMAGE` is missing (prints the
 `docker build` command), or `--ram` is given but the test MySQL container is not running (prints how to start and
@@ -66,6 +67,15 @@ def run_git(worktree: Path, *args: str) -> str:
     if result.returncode != 0:
         raise Refused(f"git {' '.join(args)} failed in {worktree}: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+NOPCH_BUILDABLE_SINCE = "2a14cd00f5"
+
+
+def builds_without_pch(worktree: Path) -> bool:
+    result = subprocess.run(["git", "-C", str(worktree), "merge-base", "--is-ancestor", NOPCH_BUILDABLE_SINCE, "HEAD"],
+                            capture_output=True, text=True)
+    return result.returncode == 0
 
 
 def main_checkout(worktree: Path) -> Path:
@@ -204,6 +214,15 @@ def main(argv: list) -> int:
         print("ERROR: --pch and --nopch exclude each other", file=sys.stderr)
         return 2
     own_settings = any(a == "--settings" or a.startswith("--settings=") for a in passthrough)
+    if nopch and not own_settings and not builds_without_pch(worktree):
+        if "--nopch" in pch_flags:
+            print(f"WARNING: HEAD does not contain {NOPCH_BUILDABLE_SINCE} (server PR #10999): a build without "
+                  "precompiled headers is expected to fail; rebase on main or use --pch", file=sys.stderr)
+        else:
+            print(f"NOTE: HEAD does not contain {NOPCH_BUILDABLE_SINCE} (server PR #10999), which the build without "
+                  "precompiled headers needs: building with them in build/ (as --pch). Rebase on main to share "
+                  "the cache across worktrees.", file=sys.stderr)
+            nopch = False
 
     ram_secrets = None
     settings = {}

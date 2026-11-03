@@ -55,6 +55,8 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
   bagitem`) can be stale (#10667); re-read after a `/reload` or take a second read before concluding.
 
 ### Fixed
+- `coa-verify` falls back to precompiled headers, with a note, when the worktree's HEAD is older than server commit
+  2a14cd00f5 (#10999): such branches do not build without them (`boss_drakkisath.cpp:94`, missing `SpellInfo.h`).
 - `coa-verify` builds hit ccache again: it sets `CCACHE_SLOPPINESS` for the server's precompiled headers (54% of
   calls were uncacheable), `CCACHE_BASEDIR` and `CCACHE_NOHASHDIR` so sibling worktrees share objects, and raises
   `CCACHE_MAXSIZE` from 20G to 50G (`COA_VERIFY_CCACHE_MAXSIZE`, `COA_VERIFY_CCACHE_BASEDIR` override them).
