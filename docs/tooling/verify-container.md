@@ -130,6 +130,12 @@ each worktree builds its own `.gch` and every file that uses it misses the cache
 headers in `build`, `verify_all.py`'s own defaults; `--nopch` is still accepted and changes nothing. A `--settings`
 file of your own is passed through untouched, so its `build_directory` and `cmake_args` decide.
 
+Branches older than server commit 2a14cd00f5 (#10999, which added the includes this mode needs) do not build
+without precompiled headers (for example `boss_drakkisath.cpp:94: invalid use of incomplete type 'const class
+SpellInfo'`). `coa-verify` checks `git merge-base --is-ancestor 2a14cd00f5 HEAD` in the worktree: when the commit is
+missing it prints a note and builds with precompiled headers in `build`, as `--pch` would; an explicit `--nopch`
+keeps the default mode and warns instead. Rebase such a branch on main to get the shared cache.
+
 The two modes build in different directories: a worktree already built in `build` (before this default, or with
 `--pch`) rebuilds from scratch in `build-nopch` on its next default run. Pass `--pch` to keep using that build, for
 example for a `--stages gameplay` run without a build stage.

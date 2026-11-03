@@ -174,14 +174,15 @@ class MainTest(unittest.TestCase):
         self.worktree = self.tmp / "coa-wt"
         run("git", "worktree", "add", "-q", "-b", "work", str(self.worktree), cwd=self.main_repo)
         self.saved = (coa_verify.image_present, coa_verify.mysql_running, coa_verify.run_docker,
-                      coa_verify.CCACHE_DIR)
+                      coa_verify.CCACHE_DIR, coa_verify.builds_without_pch)
+        coa_verify.builds_without_pch = lambda worktree: True
         coa_verify.CCACHE_DIR = self.tmp / "ccache"
         self.fake_run = FakeRun()
         coa_verify.run_docker = self.fake_run
 
     def tearDown(self):
         (coa_verify.image_present, coa_verify.mysql_running, coa_verify.run_docker,
-         coa_verify.CCACHE_DIR) = self.saved
+         coa_verify.CCACHE_DIR, coa_verify.builds_without_pch) = self.saved
 
     def call(self, *args):
         out, err = io.StringIO(), io.StringIO()
@@ -280,6 +281,26 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.fake_run.commands[0][-2:], ["--settings", "custom.json"])
         self.assertEqual(self.fake_run.commands[0].count("--settings"), 1)
+
+    def test_head_older_than_the_nopch_fix_falls_back_to_pch(self):
+        coa_verify.image_present = lambda image: True
+        coa_verify.builds_without_pch = lambda worktree: False
+        code, _, err = self.call("--stages", "build")
+        self.assertEqual(code, 0)
+        self.assertIn(coa_verify.NOPCH_BUILDABLE_SINCE, err)
+        self.assertNotIn("--settings", self.fake_run.commands[0])
+
+    def test_explicit_nopch_on_an_older_head_warns_and_keeps_nopch(self):
+        coa_verify.image_present = lambda image: True
+        coa_verify.builds_without_pch = lambda worktree: False
+        code, _, err = self.call("--nopch", "--stages", "build")
+        self.assertEqual(code, 0)
+        self.assertIn("WARNING", err)
+        self.assertEqual(self.fake_run.commands[0][-2], "--settings")
+
+    def test_builds_without_pch_needs_the_fix_commit_in_head(self):
+        original_builds_without_pch = self.saved[-1]
+        self.assertFalse(original_builds_without_pch(self.worktree))
 
     def test_pch_and_nopch_exclude_each_other(self):
         coa_verify.image_present = lambda image: True
