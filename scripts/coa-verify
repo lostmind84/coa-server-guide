@@ -3,7 +3,7 @@
 from (or against) a worktree of that repository. Replaces the ad hoc per-task `verify.sh` wrappers agents wrote
 by hand (see docs/tooling/verify-container.md and ADR 0018).
 
-    coa-verify [--worktree DIR] [--ram] [--nopch] [VERIFY_ALL_ARGS...]
+    coa-verify [--worktree DIR] [--ram] [--pch] [VERIFY_ALL_ARGS...]
 
 `--worktree DIR` selects the CoA checkout to run against; default is the current directory. The main checkout
 (holding `.git`) is derived with `git -C DIR rev-parse --git-common-dir`, so this works from a linked worktree or
@@ -16,9 +16,10 @@ worldserver config and MySQL client file into the worktree: it mounts the secret
 the worktree's `server_modules_dir`, writes a `--settings` JSON into the worktree's gitignored `.cache/`, and
 checks the test MySQL container is running before it hands off to `tools/verify_all.py`.
 
-`--nopch` builds without precompiled headers (`-DNOPCH=1`) in a separate `build-nopch` directory, so ccache can
-reuse objects compiled in any other worktree at the same sources; it cannot be combined with a `--settings` of your
-own (the settings file it writes carries `build_directory` and `cmake_args`).
+By default the build has no precompiled headers (`-DNOPCH=1`) and lives in `build-nopch`, so ccache reuses objects
+compiled in any other worktree at the same sources. `--pch` builds with precompiled headers in `build` instead
+(`verify_all.py`'s own defaults). `--nopch` is accepted and changes nothing. A `--settings` of your own is passed
+through untouched: its `build_directory` and `cmake_args` apply, not these.
 
 Refuses (prints the fix, changes nothing) when: the image named by `COA_VERIFY_IMAGE` is missing (prints the
 `docker build` command), or `--ram` is given but the test MySQL container is not running (prints how to start and
@@ -160,7 +161,8 @@ def run_docker(command: list) -> subprocess.CompletedProcess:
 def main(argv: list) -> int:
     worktree = Path(".").resolve()
     ram = False
-    nopch = False
+    nopch = True
+    pch_flags = set()
     passthrough = []
     i = 0
     while i < len(argv):
@@ -176,8 +178,9 @@ def main(argv: list) -> int:
             ram = True
             i += 1
             continue
-        if arg == "--nopch":
-            nopch = True
+        if arg in ("--pch", "--nopch"):
+            pch_flags.add(arg)
+            nopch = arg == "--nopch"
             i += 1
             continue
         if arg in ("-h", "--help"):
@@ -197,11 +200,10 @@ def main(argv: list) -> int:
               file=sys.stderr)
         return 2
 
-    own_settings = any(a == "--settings" or a.startswith("--settings=") for a in passthrough)
-    if nopch and own_settings:
-        print("ERROR: --nopch writes its own --settings file; add build_directory and cmake_args with -DNOPCH=1 to "
-              "yours instead", file=sys.stderr)
+    if len(pch_flags) > 1:
+        print("ERROR: --pch and --nopch exclude each other", file=sys.stderr)
         return 2
+    own_settings = any(a == "--settings" or a.startswith("--settings=") for a in passthrough)
 
     ram_secrets = None
     settings = {}
