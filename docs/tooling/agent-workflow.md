@@ -78,9 +78,10 @@ Its first step, the topical batch table, is deterministic and does not need an a
 keeps a local copy of the open issues in `~/.cache/coa-triage/issues.json`, asks GitHub only for the issues
 updated since its last sync (the API's `since` filter: open ones are upserted, closed ones dropped) and prints the
 table. The first run fetches everything, about 20 s; later runs take under a second and say on stderr what changed.
-Audit reports are grouped by class; the rest go to crashes, then to their class label (`multi-class` when an issue
-carries several), then to a class named in the title, then to a keyword theme; issues that carry an assignee are counted
-separately so a batch already taken is visible. This table is a stable topic index, not an execution order or a
+Audit reports are grouped by class; the rest go to crashes, then to Manastorm (its label or title), then to their
+class label (`multi-class` when an issue carries several), then to a class named in the title, then to a keyword
+theme; issues that carry an assignee are counted separately so a batch already taken is visible.
+This table is a stable topic index, not an execution order or a
 cost estimate. After the user selects a batch, the workflow makes a compact issue ledger and orders work by
 evidence cost: fast dispositions, source-only fixes, shared runtime proof, individual runtime/client proof, then
 unclear or blocked reports. It batches deploy/build/preflight cycles at the shared-proof cohort boundary and

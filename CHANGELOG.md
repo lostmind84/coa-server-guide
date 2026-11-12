@@ -6,6 +6,9 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 ## Unreleased
 
 ### Added
+- `coa-triage-table.py`: a `manastorm` row right after crashes, from the `Manastorm` label or the title, so the mode's
+  reports form one batch instead of spreading across class rows, systems-modes and unsorted (30 open issues on
+  2026-11-12).
 - `coa-verify --nopch`: builds without precompiled headers in `build-nopch`, so worktrees at the same sources share
   ccache objects (measured: second worktree 148 s with 94% hits, against 407 s and 41% with PCH; cold build 870 s
   against 762 s).

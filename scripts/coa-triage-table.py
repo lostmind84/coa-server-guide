@@ -2,7 +2,8 @@
 """Print the CoA issue triage table in seconds: sync the open issues incrementally, group deterministically.
 
 Audit reports ('<Class>: "<Spell>" (Spell ID: N) ...') are grouped by class. For the rest, crashes come first, then
-the issue's class label, then a class named at the start of the title, then a keyword theme on the title.
+Manastorm (label or title), then the issue's class label, then a class named at the start of the title, then a
+keyword theme on the title.
 The first run fetches every open issue; later runs ask GitHub only for issues updated since the last sync
 (`since=`), upsert the open ones and drop the closed ones. Cache: ~/.cache/coa-triage/issues.json.
 Usage: coa-triage-table.py [--refresh] [--repo owner/name]   (--refresh discards the cache and refetches all)
@@ -28,6 +29,7 @@ CLASSES = {"Barbarian", "Bloodmage", "Chronomancer", "Cultist", "Felsworn", "Gua
            "Sun Cleric", "Templar", "Tinker", "Venomancer", "Witch Doctor", "Witch Hunter"}
 THEMES = [
     ("crashes", r"crash|freeze|segfault|assert|disconnect(?!ed talents)|kick", "server stability first"),
+    ("manastorm", r"mana ?storm|manstorm", "Manastorm mode (label or title), any class"),
     ("resources", r"\brage\b|\bmana\b|energy|runic|focus|essence|heat|static|soul|combo|cost|resource|regen",
      "power and aura costs and gains"),
     ("summons-pets", r"\bpet\b|summon|minion|companion|imp\b|hound|totem|guardian(?! class)|ghoul", "pets and summons"),
@@ -36,7 +38,7 @@ THEMES = [
      "items, bank and cosmetics"),
     ("quests-world", r"quest|npc|creature|spawn|zone|loot|drop|boss|instance|dungeon|raid|flight|portal|vendor|trainer",
      "quests, world and creatures"),
-    ("systems-modes", r"rdf|lfg|dungeon finder|manastorm|war mode|warmode|\bgm\b|rest|xp|experience|scaling|level|"
+    ("systems-modes", r"rdf|lfg|dungeon finder|war mode|warmode|\bgm\b|rest|xp|experience|scaling|level|"
                       r"challenge|pvp|arena|battleground|group|guild|mail|auction", "game systems and modes"),
     ("client-ui", r"\bui\b|tooltip|icon|model|display|visual|nameplate|frame|addon|lua|interface|chooser|popup",
      "displayed in the client, not testable by a protocol bot"),
@@ -117,6 +119,9 @@ def main():
         title = r["title"].lower()
         if re.search(THEMES[0][1], title):
             themes[THEMES[0][0]].append(r["number"])
+            continue
+        if "Manastorm" in r["labels"] or re.search(THEMES[1][1], title):
+            themes[THEMES[1][0]].append(r["number"])
             continue
         if len(labeled) > 1:
             themes["multi-class"].append(r["number"])
