@@ -5,6 +5,14 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 
 ## Unreleased
 
+### Changed
+- `coa-verify` builds a server branch that carries the development profile (server PR #12170) in `build-dev` with
+  `verify_all.py`'s own defaults, instead of `build-nopch` with `-DNOPCH=1`. Older branches keep the previous
+  behaviour. Measured: cold 881.7 s to 421.3 s, second worktree 153.6 s to 47.0 s. See
+  [ADR 0019](docs/adr/0019-coa-verify-follows-the-server-development-profile.md).
+- `docker/coa-verify-env/Dockerfile` installs `mold`, which the server's profile uses as the linker when present.
+  Rebuild the image.
+
 ### Added
 - `coa-triage-table.py`: a `manastorm` row right after crashes, from the `Manastorm` label or the title, so the mode's
   reports form one batch instead of spreading across class rows, systems-modes and unsorted (30 open issues on

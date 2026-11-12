@@ -174,15 +174,16 @@ class MainTest(unittest.TestCase):
         self.worktree = self.tmp / "coa-wt"
         run("git", "worktree", "add", "-q", "-b", "work", str(self.worktree), cwd=self.main_repo)
         self.saved = (coa_verify.image_present, coa_verify.mysql_running, coa_verify.run_docker,
-                      coa_verify.CCACHE_DIR, coa_verify.builds_without_pch)
+                      coa_verify.CCACHE_DIR, coa_verify.has_dev_profile, coa_verify.builds_without_pch)
         coa_verify.builds_without_pch = lambda worktree: True
+        coa_verify.has_dev_profile = lambda worktree: False
         coa_verify.CCACHE_DIR = self.tmp / "ccache"
         self.fake_run = FakeRun()
         coa_verify.run_docker = self.fake_run
 
     def tearDown(self):
         (coa_verify.image_present, coa_verify.mysql_running, coa_verify.run_docker,
-         coa_verify.CCACHE_DIR, coa_verify.builds_without_pch) = self.saved
+         coa_verify.CCACHE_DIR, coa_verify.has_dev_profile, coa_verify.builds_without_pch) = self.saved
 
     def call(self, *args):
         out, err = io.StringIO(), io.StringIO()
@@ -301,6 +302,43 @@ class MainTest(unittest.TestCase):
     def test_builds_without_pch_needs_the_fix_commit_in_head(self):
         original_builds_without_pch = self.saved[-1]
         self.assertFalse(original_builds_without_pch(self.worktree))
+
+    def test_dev_profile_branch_builds_with_verify_all_defaults_in_build_dev(self):
+        coa_verify.image_present = lambda image: True
+        coa_verify.has_dev_profile = lambda worktree: True
+        code, _, _ = self.call("--stages", "build")
+        self.assertEqual(code, 0)
+        settings_path = self.worktree / ".cache/coa-verify/settings.dev.json"
+        self.assertEqual(json.loads(settings_path.read_text()), {"build_directory": "build-dev"})
+        self.assertEqual(self.fake_run.commands[0][-4:], ["--stages", "build", "--settings", str(settings_path)])
+
+    def test_dev_profile_with_ram_merges_build_dev_into_the_ram_settings(self):
+        coa_verify.image_present = lambda image: True
+        coa_verify.mysql_running = lambda container: True
+        coa_verify.has_dev_profile = lambda worktree: True
+        code, _, _ = self.call("--ram", "--stages", "gameplay")
+        self.assertEqual(code, 0)
+        settings = json.loads((self.worktree / ".cache/coa-verify/settings.ram.json").read_text())
+        self.assertEqual(settings["build_directory"], "build-dev")
+        self.assertNotIn("cmake_args", settings)
+        self.assertIn("worldserver_config", settings)
+
+    def test_explicit_nopch_on_a_dev_profile_branch_keeps_nopch(self):
+        coa_verify.image_present = lambda image: True
+        coa_verify.has_dev_profile = lambda worktree: True
+        code, _, _ = self.call("--nopch", "--stages", "build")
+        self.assertEqual(code, 0)
+        settings = json.loads((self.worktree / ".cache/coa-verify/settings.nopch.json").read_text())
+        self.assertEqual(settings["build_directory"], "build-nopch")
+
+    def test_dev_profile_is_detected_from_the_worktree_verify_all(self):
+        original_has_dev_profile = self.saved[-2]
+        self.assertFalse(original_has_dev_profile(self.worktree))
+        (self.worktree / "tools").mkdir()
+        (self.worktree / "tools/verify_all.py").write_text("def other():\n    pass\n")
+        self.assertFalse(original_has_dev_profile(self.worktree))
+        (self.worktree / "tools/verify_all.py").write_text("def linux_development_arguments(environment):\n    pass\n")
+        self.assertTrue(original_has_dev_profile(self.worktree))
 
     def test_pch_and_nopch_exclude_each_other(self):
         coa_verify.image_present = lambda image: True
