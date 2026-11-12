@@ -89,12 +89,13 @@ Do not list or group the issues yourself: the queue holds well over a thousand o
 titles costs minutes and gives a different grouping each run. The script keeps a local copy of the open issues
 with their labels (`~/.cache/coa-triage/issues.json`), asks GitHub only for the issues updated since its last sync
 (adding or removing a label counts as an update), and groups deterministically, first match wins: spell audit
-reports ("no script or aura handler") by class, from their class label or else their title; crashes; the issue's
-class label (`class <Class> mechanics`, or `multi-class` when it carries several); a class named at the start of
-the title; then keyword theme (resources; summons and pets; talents and specs; items, bank and vanity; quests,
-world and creatures; systems and modes; client UI; unsorted). Its first line on stderr says what the sync
-changed. Use its table as the batch table. Class labels are set by maintainers and are the most reliable signal;
-the keyword themes are a starting point, so a row's issues are read when the batch is worked, not before. A
+reports ("no script or aura handler") by class, from their class label or else their title; crashes; Manastorm,
+from the `Manastorm` label or the title, whatever the class; the issue's class label (`class <Class> mechanics`, or
+`multi-class` when it carries several); a class named at the start of the title; then keyword theme (resources;
+summons and pets; talents and specs; items, bank and vanity; quests, world and creatures; systems and modes;
+client UI; unsorted). Its first line on stderr says what the sync changed. Use its table as the batch table.
+Class labels are set by maintainers and are the most reliable signal; the keyword themes are a starting point, so
+a row's issues are read when the batch is worked, not before. A
 `multi-class` issue is often a shared mechanic or a mislabel: check which class it belongs to when it is worked. A class too large for one reviewable PR is split by spec at that point, as in PR #2521.
 
 Before working an issue, re-read its state, assignees and the PRs referencing it. Claim it: with `triage` or
