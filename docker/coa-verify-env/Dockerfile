@@ -10,12 +10,15 @@
 # with `docker history --no-trunc coa-verify-env:24.04` on 2026-11-02): same base image, same env, same apt
 # package list and order, same symlink. Any future change to this file is a new decision, not a silent drift
 # from that baseline.
+#
+# Changes since that baseline:
+# - mold, picked up by tools/verify_all.py as the linker when present (ADR 0019).
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ccache libtool cmake-data ninja-build cmake clang git lsb-base curl unzip \
+    build-essential ccache libtool cmake-data ninja-build cmake clang git lsb-base curl unzip mold \
     default-mysql-client openssl default-libmysqlclient-dev libboost-all-dev libssl-dev libmysql++-dev \
     libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev liblzma-dev python3 ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/* \

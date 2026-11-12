@@ -25,10 +25,13 @@ shell snippet per worktree.
    ```
 
    This installs the exact Ubuntu 24.04 package set `verify_all.py`'s build and test stages need: a C/C++
-   toolchain, ccache, CMake, Ninja, clang, git, the MySQL client and `libmysqlclient`/`libmysql++` dev headers,
+   toolchain, ccache, CMake, Ninja, clang, mold, git, the MySQL client and `libmysqlclient`/`libmysql++` dev headers,
    `libboost-all-dev`, OpenSSL, readline, zlib, bzip2, ncurses, lzma and Python 3 (symlinked to `python`, since
    `verify_all.py` invokes `python` for some sub-steps). No source is copied into the image: it is a toolchain
    layer only, built once per machine (or whenever the Dockerfile changes) and reused by every worktree.
+   Rebuild it after pulling a change to the Dockerfile: an image without mold still works, but the server's
+   development profile then links with the default `ld`. Measured in the server's experiments: the worldserver link
+   took 10.7 to 11.6 s with `-g1` and `ld`, against 0.5 to 0.9 s with mold and thin archives.
 
 2. **Create the ccache directory** the container will reuse across runs and worktrees:
 
@@ -95,7 +98,8 @@ the ad hoc `verify.sh` wrappers agents used to write per task:
   Measured 2026-11-03 at server 042b38a436 with a fresh cache: 54% of compiler calls were uncacheable
   ("Could not use precompiled header") and the hit rate was 8.7% before; after, a cold worktree built in 925 s
   with no uncacheable call and a second worktree of the same commit in 497 s with 41% hits (each worktree still
-  builds its own precompiled headers, so the files that use them miss).
+  builds its own precompiled headers, so the files that use them miss). On server branches with the development
+  profile the precompiled headers hit too: see [Build modes](#build-modes-the-servers-development-profile-by-default).
 - Several gameplay scenarios in one run share one worldserver boot: pass them all to one `--scenario`
   (`--scenario A B C`) instead of one run per scenario.
 - Refuses immediately, printing the `docker build` command above, when `COA_VERIFY_IMAGE` (default
@@ -121,32 +125,57 @@ links against the wrong libraries. Give the container its own build directory â€
 configured inside this same image â€” never a `build_directory` a host build has touched. The same applies in
 reverse: do not configure a build directory inside the container and then try to build it natively.
 
-## Precompiled headers: off by default, `--pch` to turn them on
+## Build modes: the server's development profile by default
 
-`coa-verify` builds without precompiled headers by default: it configures a separate `build-nopch` directory with
-`-DNOPCH=1` (the server builds this way since server PR #10999). Without precompiled headers every object depends
-only on the sources, so a worktree reuses almost everything another worktree compiled at the same sources; with them,
-each worktree builds its own `.gch` and every file that uses it misses the cache. `--pch` builds with precompiled
-headers in `build`, `verify_all.py`'s own defaults; `--nopch` is still accepted and changes nothing. A `--settings`
-file of your own is passed through untouched, so its `build_directory` and `cmake_args` decide.
+`coa-verify` picks the build mode from the worktree it runs against:
 
-Branches older than server commit 2a14cd00f5 (#10999, which added the includes this mode needs) do not build
-without precompiled headers (for example `boss_drakkisath.cpp:94: invalid use of incomplete type 'const class
-SpellInfo'`). `coa-verify` checks `git merge-base --is-ancestor 2a14cd00f5 HEAD` in the worktree: when the commit is
-missing it prints a note and builds with precompiled headers in `build`, as `--pch` would; an explicit `--nopch`
-keeps the default mode and warns instead. Rebase such a branch on main to get the shared cache.
+| Worktree | Default mode | Build directory | Configure |
+|---|---|---|---|
+| `tools/verify_all.py` defines `linux_development_arguments` (server PR #12170) | development profile | `build-dev` | `verify_all.py`'s own defaults |
+| older, but contains 2a14cd00f5 (#10999) | no precompiled headers | `build-nopch` | `-DNOPCH=1` |
+| older than 2a14cd00f5 | precompiled headers, with a note | `build` | `verify_all.py`'s own defaults |
 
-The two modes build in different directories: a worktree already built in `build` (before this default, or with
-`--pch`) rebuilds from scratch in `build-nopch` on its next default run. Pass `--pch` to keep using that build, for
-example for a `--stages gameplay` run without a build stage.
+- The development profile is the server repository's: precompiled headers, `-g1`, a unity build of `game`, thin
+  archives and mold when the image has it. The server repository documents it in `docs/coa/verification.md` and
+  `docs/coa/build-performance.md`.
+  - On these branches, the server defines `_CONF_DIR` for `Config.cpp` only and keeps the unit tests out of coverage
+    by default.
+  - So precompiled headers no longer stop a second worktree from reusing the cache, the reason this guide built
+    without them since #38.
+  - `coa-verify` only names the build directory and lets `verify_all.py` configure it.
+- The profile is detected from the file content, not from an ancestor commit, so it works on every branch that
+  carries the change, before and after it is merged.
+- Every flag overrides the automatic choice:
+  - `--pch` builds with `verify_all.py`'s defaults in `build`.
+  - `--nopch` forces `build-nopch` and `-DNOPCH=1`, with a warning on a HEAD older than 2a14cd00f5.
+  - A `--settings` file of your own is passed through untouched, so its `build_directory` and `cmake_args` decide.
 
-Measured on this workstation on 2026-11-03 at server 2a14cd00f5, `--stages build`, an empty ccache per mode, two
-fresh worktrees each (one run per cell); these numbers decided the default:
+Branches older than server commit 2a14cd00f5 do not build without precompiled headers (for example
+`boss_drakkisath.cpp:94: invalid use of incomplete type 'const class SpellInfo'`). `coa-verify` checks
+`git merge-base --is-ancestor 2a14cd00f5 HEAD` in the worktree; rebase such a branch on main to get the shared cache.
+
+Each mode has its own directory, so switching modes rebuilds from scratch once. An existing directory is never
+reconfigured, so `build-dev` must be created fresh to get the profile; `coa-verify` never reuses `build` or
+`build-nopch` for it. Pass the old mode's flag (`--pch` or `--nopch`) to keep using an existing build, for example for
+a `--stages gameplay` run without a build stage. Delete `build-nopch` once a worktree has moved to `build-dev`: each
+holds 2 to 21 GiB.
+
+Measured on this workstation on 2026-11-12, `--stages build,unit`, an empty ccache, then a second worktree at the
+same commit with the same cache. One run per cell; wall time varied by 8 to 10 % between identical runs:
+
+| Mode | Server commit | First worktree (cold cache) | Second worktree | Build directory |
+|---|---|---|---|---|
+| no precompiled headers (previous default) | dfc249177c | 881.7 s | 153.6 s, 1818/1931 hits (94.2 %) | 20.5 GiB |
+| development profile | #12170 (`48350fd6ac`) | 421.3 s | 47.0 s, 1615/1655 hits (97.6 %) | 2.7 GiB |
+
+The measurement that made the build without precompiled headers the default in #38 was taken on 2026-11-03 at
+server 2a14cd00f5, with `--stages build`, an empty ccache per mode and two fresh worktrees each (one run per cell).
+Its 41 % came from `_CONF_DIR`, which the development profile's branches no longer pass to every file:
 
 | Mode | First worktree (cold cache) | Second worktree (same commit) | Cache used |
 |---|---|---|---|
 | `--pch` | 762 s, 0/1895 hits | 407 s, 778/1895 hits (41%) | 4.0 GiB |
-| default (no PCH) | 870 s, 0/1890 hits | 148 s, 1785/1890 hits (94%) | 2.1 GiB |
+| no PCH | 870 s, 0/1890 hits | 148 s, 1785/1890 hits (94%) | 2.1 GiB |
 
 The gain assumes worktrees close to the same commit; sources that differ recompile in both modes.
 
