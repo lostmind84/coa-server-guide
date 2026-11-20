@@ -6,6 +6,8 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 ## Unreleased
 
 ### Changed
+- `coa-triage-table.py` groups PvP and Battleground issues (label or title) into their own `pvp` and `battleground`
+  batches, ahead of the class grouping.
 - `coa-verify` builds a server branch that carries the development profile (server PR #12170) in `build-dev` with
   `verify_all.py`'s own defaults, instead of `build-nopch` with `-DNOPCH=1`. Older branches keep the previous
   behaviour. Measured: cold 881.7 s to 421.3 s, second worktree 153.6 s to 47.0 s. See
