@@ -2,8 +2,8 @@
 """Print the CoA issue triage table in seconds: sync the open issues incrementally, group deterministically.
 
 Audit reports ('<Class>: "<Spell>" (Spell ID: N) ...') are grouped by class. For the rest, crashes come first, then
-Manastorm (label or title), then the issue's class label, then a class named at the start of the title, then a
-keyword theme on the title.
+Manastorm (label or title), Battleground and PvP (label or title), then the issue's class label, then a class named
+at the start of the title, then a keyword theme on the title.
 The first run fetches every open issue; later runs ask GitHub only for issues updated since the last sync
 (`since=`), upsert the open ones and drop the closed ones. Cache: ~/.cache/coa-triage/issues.json.
 Usage: coa-triage-table.py [--refresh] [--repo owner/name]   (--refresh discards the cache and refetches all)
@@ -30,6 +30,8 @@ CLASSES = {"Barbarian", "Bloodmage", "Chronomancer", "Cultist", "Felsworn", "Gua
 THEMES = [
     ("crashes", r"crash|freeze|segfault|assert|disconnect(?!ed talents)|kick", "server stability first"),
     ("manastorm", r"mana ?storm|manstorm", "Manastorm mode (label or title), any class"),
+    ("battleground", r"battleground", "Battleground mode (label or title), any class"),
+    ("pvp", r"\bpvp\b|arena", "PvP and arena (label or title), any class"),
     ("resources", r"\brage\b|\bmana\b|energy|runic|focus|essence|heat|static|soul|combo|cost|resource|regen",
      "power and aura costs and gains"),
     ("summons-pets", r"\bpet\b|summon|minion|companion|imp\b|hound|totem|guardian(?! class)|ghoul", "pets and summons"),
@@ -39,11 +41,13 @@ THEMES = [
     ("quests-world", r"quest|npc|creature|spawn|zone|loot|drop|boss|instance|dungeon|raid|flight|portal|vendor|trainer",
      "quests, world and creatures"),
     ("systems-modes", r"rdf|lfg|dungeon finder|war mode|warmode|\bgm\b|rest|xp|experience|scaling|level|"
-                      r"challenge|pvp|arena|battleground|group|guild|mail|auction", "game systems and modes"),
+                      r"challenge|group|guild|mail|auction", "game systems and modes"),
     ("client-ui", r"\bui\b|tooltip|icon|model|display|visual|nameplate|frame|addon|lua|interface|chooser|popup",
      "displayed in the client, not testable by a protocol bot"),
 ]
 
+
+LABEL_THEMES = [("battleground", "Battleground"), ("pvp", "PvP")]
 
 CACHE = Path.home() / ".cache" / "coa-triage" / "issues.json"
 FIELDS = "{number, title, state, assignees: [.assignees[].login], labels: [.labels[].name]}"
@@ -122,6 +126,12 @@ def main():
             continue
         if "Manastorm" in r["labels"] or re.search(THEMES[1][1], title):
             themes[THEMES[1][0]].append(r["number"])
+            continue
+        label_theme = next((key for key, label in LABEL_THEMES if label in r["labels"]), None)
+        if label_theme is None:
+            label_theme = next((key for key, pattern, _ in THEMES[2:4] if re.search(pattern, title)), None)
+        if label_theme:
+            themes[label_theme].append(r["number"])
             continue
         if len(labeled) > 1:
             themes["multi-class"].append(r["number"])
