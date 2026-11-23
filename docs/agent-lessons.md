@@ -38,6 +38,15 @@ check before relying on an item. Nothing here is specific to one person or machi
   shared core file (stats, `Unit`, `SpellMgr`, a load-time contract) or an upstream merge touching what the scenarios
   exercise: re-run the whole suite. A reflexive full re-run of a two-hour suite after two documentation commits has
   zero information value.
+- **Reuse a valid existing result before rebuilding an already-fixed report.** A merged fix settles implementation,
+  not closure: look for a `verify_all.py` report with the same commit, settings, scenario and clock. Reuse it when it
+  covers the reported behavior; otherwise run the focused verification required for closure. Check the resolved
+  worldserver revision before building: an up-to-date binary needs no rebuild, while a stale one cannot verify the
+  current `main`.
+- **Do not share a host CMake cache with `coa-verify-env`.** Cache entries hold absolute library paths from the host
+  (for example `/usr/lib/libmariadb.so`), which may not exist in the Ubuntu image and can fail at link time after
+  most of the compilation. Use a separate build directory for containerized `verify_all.py` and leave the host cache
+  untouched.
 
 ## Harness and slot pitfalls
 
