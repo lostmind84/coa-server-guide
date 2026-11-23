@@ -36,7 +36,8 @@ Global options: --pid (override discovery, still guarded), --instance (or COA_LA
 layout matches `coa-client-lab`: `$COA_LAB_ROOT/state[/INSTANCE]`).
 
 Guards enforced before any read (refused with a plain error otherwise):
-  1. the target pid maps an `Ascension.exe` under `$COA_LAB_ROOT` (never the user's own client);
+  1. the target pid maps an `Ascension.exe` under `$COA_LAB_ROOT` (never the user's own client, the folder
+     `COA_CLIENT_DIR` names, exported or in `~/.config/coa/client.env`; refused when none is configured);
   2. the lab lock names a slot;
   3. that slot's `worldserver.conf` (the `ETC` directory `coa-slot env N` reports) has `Warden.Enabled = 0`.
 
@@ -79,6 +80,7 @@ listed above; untouched columns (the other ~225 of 234) are not read.
 """
 import argparse
 import ctypes
+import importlib.util
 import json
 import os
 import re
@@ -268,7 +270,16 @@ LOGIN_RESULT_NAMES = {
     39: "LOGIN_NO_GAME_ACCOUNTS_IN_REGION", 40: "LOGIN_ACCOUNT_LOCKED",
 }
 
-USER_CLIENT_DEFAULT = Path.home() / "CoaServer/client/ascension-live"
+def _load_client_dir_module():
+    """scripts/coa_client_dir.py: the client-folder parser every tool shares (docs/adr/0020)."""
+    path = Path(__file__).resolve().parent / "coa_client_dir.py"
+    spec = importlib.util.spec_from_file_location("coa_client_dir", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+client_dir = _load_client_dir_module()
 
 
 class GuardError(Exception):
@@ -370,7 +381,10 @@ def check_pid_is_lab_client(pid: int, lab_root: Path, proc_root: Path = Path("/p
     exe_path = _exe_path_for_pid(pid, proc_root)
     lab_root_real = lab_root.resolve()
     exe_real = exe_path.resolve()
-    user_client = Path(os.environ.get("COA_USER_CLIENT", USER_CLIENT_DEFAULT)).resolve()
+    try:
+        user_client = client_dir.resolve().path.resolve()
+    except client_dir.ClientDirError as error:
+        raise GuardError(f"cannot tell the user's client from the lab's: {error}") from None
     if not str(exe_real).startswith(str(lab_root_real) + os.sep) and exe_real != lab_root_real:
         raise GuardError(f"pid {pid} runs {exe_real}, not under the lab root {lab_root_real}")
     if str(exe_real).startswith(str(user_client) + os.sep) or exe_real == user_client:

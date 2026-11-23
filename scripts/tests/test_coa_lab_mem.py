@@ -639,14 +639,28 @@ class GuardsTest(unittest.TestCase):
     def test_pid_is_lab_client_rejects_user_client(self):
         proc_root = self.root / "proc"
         lab_root = self.root / "CoaServer/client-lab"
-        user_client = self.root / "CoaServer/client/ascension-live"
+        user_client = self.root / "Games/user-client"
         lab_root.mkdir(parents=True)
-        user_client.mkdir(parents=True)
+        (user_client / "Data").mkdir(parents=True)
         (proc_root / "123").mkdir(parents=True)
         (proc_root / "123" / "maps").write_text(
             f"00400000-00401000 r-xp 00000000 08:01 1 {user_client}/Ascension.exe\n")
-        with self.assertRaises(mem.GuardError):
-            mem.check_pid_is_lab_client(123, lab_root, proc_root)
+        with unittest.mock.patch.dict(mem.os.environ, {"COA_CLIENT_DIR": str(user_client)}):
+            with self.assertRaises(mem.GuardError):
+                mem.check_pid_is_lab_client(123, lab_root, proc_root)
+
+    def test_pid_is_lab_client_refuses_without_a_client_folder(self):
+        proc_root = self.root / "proc"
+        lab_exe_dir = self.root / "CoaServer/client-lab/ascension-lab"
+        lab_exe_dir.mkdir(parents=True)
+        (self.root / "home").mkdir()
+        (proc_root / "123").mkdir(parents=True)
+        (proc_root / "123" / "maps").write_text(
+            f"00400000-00401000 r-xp 00000000 08:01 1 {lab_exe_dir}/Ascension.exe\n")
+        with unittest.mock.patch.dict(mem.os.environ, {"HOME": str(self.root / "home")}, clear=True):
+            with self.assertRaises(mem.GuardError) as caught:
+                mem.check_pid_is_lab_client(123, self.root / "CoaServer/client-lab", proc_root)
+        self.assertIn("COA_CLIENT_DIR is not set", str(caught.exception))
 
     def test_pid_is_lab_client_accepts_lab_path(self):
         proc_root = self.root / "proc"
@@ -656,7 +670,10 @@ class GuardsTest(unittest.TestCase):
         (proc_root / "123").mkdir(parents=True)
         (proc_root / "123" / "maps").write_text(
             f"00400000-00401000 r-xp 00000000 08:01 1 {lab_exe_dir}/Ascension.exe\n")
-        result = mem.check_pid_is_lab_client(123, lab_root, proc_root)
+        user_client = self.root / "Games/user-client"
+        (user_client / "Data").mkdir(parents=True)
+        with unittest.mock.patch.dict(mem.os.environ, {"COA_CLIENT_DIR": str(user_client)}):
+            result = mem.check_pid_is_lab_client(123, lab_root, proc_root)
         self.assertEqual(result, (lab_exe_dir / "Ascension.exe").resolve())
 
     def test_check_warden_disabled_passes_when_zero(self):

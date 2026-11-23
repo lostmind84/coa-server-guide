@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export COA_USER_CLIENT="$WORK/user/ascension-live"
+export COA_CLIENT_DIR="$WORK/user/client"
 export COA_USER_PREFIX="$WORK/user/prefix"
 export COA_LAB_ROOT="$WORK/lab"
 export COA_LAB_PREFIX="$WORK/lab-prefix"
@@ -56,13 +56,13 @@ gamescope_starttime_from_script() {
 }
 
 make_user_client() {
-    mkdir -p "$COA_USER_CLIENT"/{Data/enUS,WTF/Account/LOCAL,WTF/Custom,Cache,Interface/AddOns} "$COA_USER_PREFIX"
-    touch "$COA_USER_CLIENT/Ascension.exe" "$COA_USER_CLIENT/WTF/Account/LOCAL/SavedVariables.lua" \
-        "$COA_USER_CLIENT/WTF/Custom/GlueConfig.json" "$COA_USER_CLIENT/Cache/wdb" "$COA_USER_PREFIX/system.reg"
-    printf 'set realmlist 127.0.0.1:3824\r\n' > "$COA_USER_CLIENT/Data/enUS/realmlist.wtf"
+    mkdir -p "$COA_CLIENT_DIR"/{Data/enUS,WTF/Account/LOCAL,WTF/Custom,Cache,Interface/AddOns} "$COA_USER_PREFIX"
+    touch "$COA_CLIENT_DIR/Ascension.exe" "$COA_CLIENT_DIR/WTF/Account/LOCAL/SavedVariables.lua" \
+        "$COA_CLIENT_DIR/WTF/Custom/GlueConfig.json" "$COA_CLIENT_DIR/Cache/wdb" "$COA_USER_PREFIX/system.reg"
+    printf 'set realmlist 127.0.0.1:3824\r\n' > "$COA_CLIENT_DIR/Data/enUS/realmlist.wtf"
     printf 'SET realmList "127.0.0.1:3824"\nSET gxResolution "800x600"\nSET accountName "someone"\n' \
-        > "$COA_USER_CLIENT/WTF/Config.wtf"
-    cp "$COA_USER_CLIENT/WTF/Config.wtf" "$WORK/user-config-before.wtf"
+        > "$COA_CLIENT_DIR/WTF/Config.wtf"
+    cp "$COA_CLIENT_DIR/WTF/Config.wtf" "$WORK/user-config-before.wtf"
 }
 
 make_fakes() {
@@ -218,6 +218,28 @@ EOF
 make_user_client
 make_fakes
 
+# The client folder has no default (docs/adr/0020): unset, missing or without Data/, create stops before copying.
+# HOME points at an empty folder so the machine's own ~/.config/coa/client.env is never read.
+mkdir -p "$WORK/nohome" "$WORK/no-data-client"
+if (unset COA_CLIENT_DIR; HOME="$WORK/nohome" run_lab create); then fail "create without a client folder refused"
+else pass "create without a client folder refused"; fi
+assert_contains "unset message names the variable" "$WORK/out" "COA_CLIENT_DIR is not set"
+assert_contains "unset message names the file" "$WORK/out" "~/.config/coa/client.env"
+assert_contains "unset message gives an example line" "$WORK/out" "COA_CLIENT_DIR=/path/to/your/client"
+assert_absent "nothing copied without a client folder" "$COA_LAB_ROOT/ascension-lab"
+if COA_CLIENT_DIR="$WORK/missing-client" run_lab create; then fail "create with a missing folder refused"
+else pass "create with a missing folder refused"; fi
+assert_contains "missing folder message" "$WORK/out" "does not exist"
+if COA_CLIENT_DIR="$WORK/no-data-client" run_lab create; then fail "create with a folder without Data/ refused"
+else pass "create with a folder without Data/ refused"; fi
+assert_contains "no Data/ message" "$WORK/out" "has no Data/ directory"
+mkdir -p "$WORK/nohome/.config/coa"
+printf 'COA_CLIENT_DIR=%s\n' "$WORK/missing-from-file" > "$WORK/nohome/.config/coa/client.env"
+if (unset COA_CLIENT_DIR; HOME="$WORK/nohome" run_lab create); then fail "create reads client.env"
+else pass "create reads client.env"; fi
+assert_contains "client.env value used" "$WORK/out" "missing-from-file (from ~/.config/coa/client.env) does not exist"
+rm -f "$WORK/nohome/.config/coa/client.env"
+
 # create
 run_lab create
 assert_eq "create exits 0" "$?" "0"
@@ -228,14 +250,19 @@ assert_absent "glue config dropped" "$COA_LAB_ROOT/ascension-lab/WTF/Custom"
 assert_absent "cache dropped" "$COA_LAB_ROOT/ascension-lab/Cache"
 assert_contains "lab resolution" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" 'SET gxResolution "1920x1080"'
 assert_not_contains "lab drops remembered account" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" "accountName"
-assert_contains "user account kept" "$COA_USER_CLIENT/WTF/Config.wtf" 'SET accountName "someone"'
+assert_contains "user account kept" "$COA_CLIENT_DIR/WTF/Config.wtf" 'SET accountName "someone"'
 assert_file "lab root marker written" "$COA_LAB_ROOT/.coa-client-lab"
 assert_file "lab prefix marker written" "$COA_LAB_PREFIX/.coa-client-lab"
-cmp -s "$COA_USER_CLIENT/WTF/Config.wtf" "$WORK/user-config-before.wtf" \
+cmp -s "$COA_CLIENT_DIR/WTF/Config.wtf" "$WORK/user-config-before.wtf" \
     && pass "user Config.wtf unchanged" || fail "user Config.wtf changed"
 
 if run_lab create; then fail "second create refused"; else pass "second create refused"; fi
 assert_contains "second create message" "$WORK/out" "already exists"
+if (alias_dir="$COA_CLIENT_DIR"; unset COA_CLIENT_DIR; COA_USER_CLIENT="$alias_dir" HOME="$WORK/nohome" run_lab create)
+then fail "deprecated alias: create still refused over an existing lab"
+else pass "deprecated alias: create still refused over an existing lab"; fi
+assert_contains "deprecated alias warns" "$WORK/out" "COA_USER_CLIENT is deprecated"
+assert_contains "deprecated alias is used" "$WORK/out" "already exists"
 
 # destroy
 if run_lab destroy; then fail "destroy without --yes refused"; else pass "destroy without --yes refused"; fi
@@ -243,7 +270,7 @@ assert_file "destroy without --yes leaves lab client" "$COA_LAB_ROOT/ascension-l
 run_lab destroy --yes
 assert_absent "lab client removed" "$COA_LAB_ROOT"
 assert_absent "lab prefix removed" "$COA_LAB_PREFIX"
-assert_file "user client kept" "$COA_USER_CLIENT/Ascension.exe"
+assert_file "user client kept" "$COA_CLIENT_DIR/Ascension.exe"
 
 # same-path guard in create
 if COA_LAB_PREFIX="$COA_USER_PREFIX" run_lab create; then fail "create over user prefix refused"; else pass "create over user prefix refused"; fi
@@ -284,7 +311,7 @@ run_lab start 3
 assert_eq "start exits 0" "$?" "0"
 assert_contains "lab realmList" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf" 'SET realmList "127.0.0.1:3924"'
 assert_contains "lab realmlist.wtf" "$COA_LAB_ROOT/ascension-lab/Data/enUS/realmlist.wtf" "set realmlist 127.0.0.1:3924"
-assert_contains "user realmList untouched" "$COA_USER_CLIENT/WTF/Config.wtf" 'SET realmList "127.0.0.1:3824"'
+assert_contains "user realmList untouched" "$COA_CLIENT_DIR/WTF/Config.wtf" 'SET realmList "127.0.0.1:3824"'
 # Sound is silenced at every start, readable profile included (reports/l7): the client rewrites Config.wtf
 # on exit, so this has to be reasserted every time, not only at `create`.
 for setting in 'Sound_EnableAllSound "0"' 'Sound_EnableSFX "0"' 'Sound_EnableAmbience "0"' \
@@ -506,7 +533,7 @@ assert_contains "preflight on lab data" "$FAKE_LOG" "coa-slot preflight 3 --clie
 
 gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid")
 sleep 1
-touch "$COA_USER_CLIENT/WTF/Account/LOCAL/SavedVariables.lua"
+touch "$COA_CLIENT_DIR/WTF/Account/LOCAL/SavedVariables.lua"
 run_lab stop
 assert_eq "stop exits 0" "$?" "0"
 assert_contains "stop warns about user client" "$WORK/out" "WARN"
@@ -516,6 +543,15 @@ kill -0 "$gs_pid" 2>/dev/null && fail "gamescope stopped" || pass "gamescope sto
 
 run_lab stop
 assert_contains "stop when not running" "$WORK/out" "not running"
+
+# stop never refuses to stop: without a client folder it only skips the user-client change check.
+mkdir -p "$COA_LAB_ROOT/state"
+: > "$COA_LAB_ROOT/state/lock"
+touch "$COA_LAB_ROOT/state/started"
+(unset COA_CLIENT_DIR; HOME="$WORK/nohome" run_lab stop)
+assert_eq "stop without a client folder exits 0" "$?" "0"
+assert_contains "stop without a client folder warns" "$WORK/out" "the user's client was not checked for changes"
+assert_absent "stop without a client folder releases the lock" "$COA_LAB_ROOT/state/lock"
 
 run_lab start 3
 gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid")
@@ -532,7 +568,7 @@ assert_absent "stale lock released" "$COA_LAB_ROOT/state/lock"
 mkdir -p "$COA_LAB_ROOT/state"
 : > "$COA_LAB_ROOT/state/lock"
 touch "$COA_LAB_ROOT/state/started"
-bash -c 'exec -a "X:\ascension-live\Ascension.exe" sleep 600' &
+bash -c 'exec -a "X:\user-client\Ascension.exe" sleep 600' &
 unrelated_pid=$!
 echo "$unrelated_pid" > "$COA_LAB_ROOT/state/gamescope.pid"
 rm -f "$COA_LAB_ROOT/state/gamescope.starttime"

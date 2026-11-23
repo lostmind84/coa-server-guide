@@ -1,14 +1,16 @@
 #!/bin/bash
 # Launch the Conquest of Azeroth (Ascension) client with umu-launcher + GE-Proton.
-# Install: cp scripts/coa-client ~/.local/bin/ && chmod +x ~/.local/bin/coa-client
-# Paths can be overridden with COA_CLIENT_DIR, COA_WINEPREFIX, COA_PROTONPATH and COA_LOG.
+# Install: ln -s "$PWD/scripts/coa-client" ~/.local/bin/coa-client (a link: it reads scripts/coa_client_dir.py).
+# The client folder is COA_CLIENT_DIR, from the environment or ~/.config/coa/client.env (no default).
+# Other paths can be overridden with COA_WINEPREFIX, COA_PROTONPATH and COA_LOG.
 
-CLIENT_DIR="${COA_CLIENT_DIR:-$HOME/CoaServer/client/ascension-live}"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PREFIX="${COA_WINEPREFIX:-$HOME/Games/umu/coa-client}"
 PROTON="${COA_PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64}"
 LOG="${COA_LOG:-$HOME/CoaServer/logs/client.log}"
 
 DEBUG=0
+KILL=0
 
 case "${1:-}" in
   --debug)
@@ -17,8 +19,7 @@ case "${1:-}" in
     DEBUG=1
     ;;
   --kill)
-    pkill -f 'ascension-live\\Ascension.exe' && echo "Client stopped." || echo "Client is not running."
-    exit 0
+    KILL=1
     ;;
   -h|--help)
     cat <<'EOF'
@@ -45,12 +46,34 @@ notify() {
   command -v notify-send >/dev/null && notify-send "CoA client" "$1"
 }
 
+# The folder comes from scripts/coa_client_dir.py (one parser for every tool); it stops when none is configured.
+if [[ ! -f $SCRIPT_DIR/coa_client_dir.py ]]; then
+  notify "coa-client needs $SCRIPT_DIR/coa_client_dir.py: install coa-client as a link to the repository's copy"
+  exit 1
+fi
+if ! resolved=$(python3 "$SCRIPT_DIR/coa_client_dir.py" 2>&1); then
+  notify "$resolved"
+  exit 1
+fi
+CLIENT_DIR=${resolved##*$'\n'}
+[[ $resolved == *$'\n'* ]] && echo "${resolved%$'\n'*}" >&2
+
+# Wine shows the process as X:\...\<client folder name>\Ascension.exe: match that folder name only, so the lab
+# client (another folder) and other Wine games are never matched.
+folder_regex=$(printf '%s' "${CLIENT_DIR##*/}" | sed 's/[][\.*^$+?(){}|/]/\\&/g')
+PROCESS_PATTERN="\\\\${folder_regex}\\\\Ascension\\.exe"
+
+if (( KILL )); then
+  pkill -f "$PROCESS_PATTERN" && echo "Client stopped." || echo "Client is not running."
+  exit 0
+fi
+
 if [[ ! -f $CLIENT_DIR/Ascension.exe ]]; then
   notify "Ascension.exe not found in $CLIENT_DIR"
   exit 1
 fi
 
-if pgrep -f 'ascension-live\\Ascension.exe' >/dev/null; then
+if pgrep -f "$PROCESS_PATTERN" >/dev/null; then
   notify "The client is already running (coa-client --kill to stop it)."
   exit 1
 fi

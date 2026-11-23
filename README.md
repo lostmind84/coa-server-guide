@@ -101,7 +101,7 @@ work on a VPS. Workstation-only files stay in the home directory.
 ├── logs/                           server, import and build logs
 └── backups/                        MySQL dumps
 ~/CoaServer/                        workstation only, never on a server
-├── client/                         ascension-live/ (client) + CoA-Client-Patch/
+├── client/                         CoA-Client-Patch/ (your client folder can live here or anywhere)
 ├── repack/                         CoA-Repack/: reference, never executed
 ├── downloads/
 └── backups/                        replaced client files
@@ -138,6 +138,20 @@ docker run --rm --entrypoint /azerothcore/env/dist/bin/worldserver acore/ac-wotl
 The fork author shares the client, client patch and repack in the project's Discord channel. Extract them into
 `~/CoaServer/client/` and `~/CoaServer/repack/`.
 
+The guide's tools and the commands below find your client folder (the one holding `Ascension.exe` and `Data/`)
+through one variable, `COA_CLIENT_DIR`. Write it once per machine in `~/.config/coa/client.env`, outside any
+repository, and load it in the shell you run the steps from:
+
+```bash
+mkdir -p ~/.config/coa
+echo 'COA_CLIENT_DIR=/path/to/your/client' > ~/.config/coa/client.env   # your client folder, absolute path
+set -a; source ~/.config/coa/client.env; set +a
+```
+
+There is no default: `coa-client`, `coa-client-lab create`, `coa-lab-mem` and `coa-preflight.py` stop with a message
+naming the variable and the file when it is set nowhere, when the folder does not exist or when it has no `Data/`.
+An exported `COA_CLIENT_DIR` wins over the file. See [ADR 0020](docs/adr/0020-one-per-machine-client-folder.md).
+
 **Do not run any `.bat` or `.exe`.** Checks performed:
 
 - The 9 repack `.bat` files only call `Runtime/python/python.exe Scripts/manage.py <action>`.
@@ -168,14 +182,13 @@ Useful repack content:
 ## 7. Apply the client patch
 
 ```bash
-cd ~/CoaServer/client
+c="$COA_CLIENT_DIR"                         # your client folder (step 6)
+patch=~/CoaServer/client/CoA-Client-Patch   # where you extracted the client patch
 mkdir -p ~/CoaServer/backups/client-before-rev3
-cp -a ascension-live/Ascension.exe ascension-live/Data/patch-B.MPQ ascension-live/Data/patch-T.MPQ \
-      ~/CoaServer/backups/client-before-rev3/
-cp -a CoA-Client-Patch/Ascension.exe CoA-Client-Patch/Extensions.dll ascension-live/
-cp -a CoA-Client-Patch/Data/. ascension-live/Data/
-sha256sum ascension-live/Ascension.exe ascension-live/Extensions.dll \
-          ascension-live/Data/patch-B.MPQ ascension-live/Data/patch-T.MPQ
+cp -a "$c/Ascension.exe" "$c/Data/patch-B.MPQ" "$c/Data/patch-T.MPQ" ~/CoaServer/backups/client-before-rev3/
+cp -a "$patch/Ascension.exe" "$patch/Extensions.dll" "$c/"
+cp -a "$patch/Data/." "$c/Data/"
+sha256sum "$c/Ascension.exe" "$c/Extensions.dll" "$c/Data/patch-B.MPQ" "$c/Data/patch-T.MPQ"
 ```
 
 Hashes must match the table in step 6. `Data/enUS/realmlist.wtf` already contains `set realmlist 127.0.0.1`.
@@ -184,7 +197,7 @@ Since #1498 the server and players use the original client DBC set, and players 
 `patch-T.MPQ` (its only archive with DBC files). The launcher keeps its untouched copy as `patch-T.MPQ.ORIGINAL`:
 
 ```bash
-cd ~/CoaServer/client/ascension-live/Data
+cd "$COA_CLIENT_DIR/Data"
 mkdir -p ~/CoaServer/backups/client-rev4 && mv patch-T.MPQ ~/CoaServer/backups/client-rev4/
 cp patch-T.MPQ.ORIGINAL patch-T.MPQ
 ```
@@ -203,7 +216,7 @@ It needs [mpqcli](https://github.com/TheGrayDot/mpqcli) (Linux release binary, e
 ```bash
 cd ~/Projects/azerothcore-wotlk-coa
 out=~/CoaServer/client-dbc/original-$(date +%F)
-python3 apps/coa-dbc/client_dbc.py extract ~/CoaServer/client/ascension-live/Data "$out" --original \
+python3 apps/coa-dbc/client_dbc.py extract "$COA_CLIENT_DIR/Data" "$out" --original \
   --mpqcli "$(command -v mpqcli)"                       # ends with "110 core tables checked, 0 problems"
 cp -a --reflink=auto /srv/coa/server-data/dbc /srv/coa/backups/dbc-$(date +%F)
 cp "$out"/*.dbc /srv/coa/server-data/dbc/
@@ -367,7 +380,7 @@ The console needs the account name and the password twice; `.account set passwor
 (variables from `umu(1)`), **with `DivxTac.dll` disabled**:
 
 ```bash
-cd ~/CoaServer/client/ascension-live
+cd "$COA_CLIENT_DIR"                         # your client folder
 WINEPREFIX="$HOME/Games/umu/coa-client" GAMEID=0 \
 PROTONPATH="$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64" \
 WINEDLLOVERRIDES="divxtac=d" \
@@ -386,13 +399,15 @@ Verified on 2026-09-15: login, character creation (custom class 23) and world en
 [`scripts/coa-client`](scripts/coa-client) wraps this command:
 
 ```bash
-cp scripts/coa-client ~/.local/bin/ && chmod +x ~/.local/bin/coa-client
+ln -s "$PWD/scripts/coa-client" ~/.local/bin/coa-client   # a link: it reads scripts/coa_client_dir.py
 coa-client            # launch (output to ~/CoaServer/logs/client.log when not in a terminal)
 coa-client --debug    # launch with a Proton log (~/CoaServer/logs/steam-0.log)
 coa-client --kill     # stop a frozen client only
 ```
 
-It refuses to start a second client and warns when no authserver answers on `127.0.0.1:3724`. For a desktop menu
+It launches the client in `COA_CLIENT_DIR` (step 6) and stops when none is configured. A copy installed with `cp`
+before this change keeps its old built-in path: replace it with the link above. It refuses to start a second client
+and warns when no authserver answers on `127.0.0.1:3724`. For a desktop menu
 entry, copy [`scripts/coa-client.desktop`](scripts/coa-client.desktop) to `~/.local/share/applications/`, replace
 `USER`, then run `update-desktop-database ~/.local/share/applications`.
 

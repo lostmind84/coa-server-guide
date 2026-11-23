@@ -28,16 +28,17 @@ Every default can be overridden with an environment variable:
 | `COA_GHOST_REPO` | `~/Projects/ConquestOfAzerothGhost` | `coa-slot` |
 | `COA_SLOTS_ROOT` | `~/CoaServer/slots` | `coa-slot` |
 | `COA_REPACK_DUMP` | `~/CoaServer/repack/CoA-Repack/Database/Clean/databases.sql.gz` | `coa-slot create`, `reset-db` |
-| `COA_USER_CLIENT` | `~/CoaServer/client/ascension-live` | `coa-client-lab create` |
+| `COA_CLIENT_DIR` | none: exported, or a line in `~/.config/coa/client.env` ([ADR 0020](../adr/0020-one-per-machine-client-folder.md)); `COA_USER_CLIENT` is a deprecated alias | `coa-client`, `coa-client-lab create`/`destroy`/instances, `coa-lab-mem`, `coa-preflight.py` |
 | `COA_USER_PREFIX` | `~/Games/umu/coa-client` | `coa-client-lab create` |
 | `COA_LAB_ROOT`, `COA_LAB_PREFIX` | `~/CoaServer/client-lab`, `~/Games/umu/coa-client-lab` | `coa-client-lab` |
 | `COA_PROTONPATH` | `~/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64` | `coa-client`, `coa-client-lab` |
 | `COA_LAB_WORKSPACE` | `9` | `coa-client-lab` |
-| `COA_CLIENT_DIR`, `COA_WINEPREFIX`, `COA_LOG` | see `scripts/coa-client` | `coa-client` |
+| `COA_WINEPREFIX`, `COA_LOG` | see `scripts/coa-client` | `coa-client` |
 
 Fixed paths: slot build clones are `~/Projects/azerothcore-wotlk-coa-build-sN`, and slot 1 uses `/srv/coa`.
 `coa-preflight.py` takes `--repo`, `--client-data`, `--server-dbc`, `--expected`, `--worldserver` and `--database`
-options instead (`--help`).
+options instead (`--help`); `--client-data` defaults to `COA_CLIENT_DIR/Data`, and the report's first line names
+the client data it compares with.
 
 ## Parallel work: server slots
 
