@@ -3,8 +3,8 @@
 Part of the contributor tooling of the CoA server guide (see the [README](../../README.md#part-2-contributor-tooling)). The headless relay mode is in [relay-probes.md](relay-probes.md).
 
 
-[`scripts/coa-client-lab`](../../scripts/coa-client-lab) runs a separate copy
-of the client so an agent can reproduce client-side issues without touching your client. The lab client runs in a
+[`scripts/coa-client-lab`](../../scripts/coa-client-lab) runs a separate lab
+client so an agent can reproduce client-side issues without touching your client. The lab client runs in a
 nested gamescope window (1920x1080) on Hyprland workspace 9; you can watch it there. Keyboard input and screenshots
 go through gamescope's own X display, so your focus and mouse are never used. `start` finds the client window on
 that display by the `Ascension.exe` process, whatever the client titles it (the current client: "Descension");
@@ -15,7 +15,7 @@ coa-client-lab create-instance` gives a blocked session its own instance instead
 (client-lab-feedback-f2.md #14).
 
 ```bash
-coa-client-lab create                      # once: reflink copy of the client and prefix (near-zero disk space)
+coa-client-lab create                      # once: links to your client's files, reflink copy of the prefix
 coa-slot claim 2 "client check"            # the lab client talks to a claimed slot
 coa-client-lab character --slot 2 --character Coalabnecro --race 5 --class 23 \
     --level 20 --learn 704723 --items 9701803   # creates/updates its own dedicated account; prints JSON
@@ -79,8 +79,42 @@ guard, see scripts/coa-lab-mem's docstring) until Warden is off. coa-lab-packets
 log and has no Warden check.
 ```
 
-The lab copy drops your accounts, remembered login and caches. After a client patch, recreate it:
-`coa-client-lab destroy --yes && coa-client-lab create`. The lab client needs an account and a character on the
+### The lab references your client ([ADR 0022](../adr/0022-lab-references-the-client.md))
+
+The lab client is not a copy: it holds symlinks to the files the CoA launcher installed in your client folder
+(`COA_CLIENT_DIR`) and its own private files, so there is one client install to keep up to date.
+
+| In the lab | What it is |
+|---|---|
+| `Data/**/*.MPQ`, `Data/Content`, `Data/area-52`, cinematics... | symlinks to the client's files |
+| `*.exe`, `*.dll` (`COA_LAB_COPY`) | private copies, replaced at every `start` when the client's changed. `coa-lab-mem` identifies the lab client by the real path of its mapped `Ascension.exe`, so the executable cannot be a link |
+| `WTF/`, `Cache/`, `Logs/`, `DLL_Logs/`, `Errors/`, `Screenshots/`, `Interface/` (CoaProbe), `Data/enUS/realmlist.wtf`, `MemoryBridge.log` | private: the lab or the client writes them, never linked whatever a list says |
+| `.coa-lab-links.json` | what the last sync referenced: size, mtime and inode of each client file |
+
+Which files are referenced: the `files` of `COA_CLIENT_DIR/.coa-launcher/state.json`, the launcher's record of
+what it installed; archives you added by hand (HD mods) are not in it. Without that file, the files matching
+`COA_LAB_LINK_PATTERNS` (space-separated case-sensitive globs, default
+`Ascension.exe Extensions.dll Data/*.MPQ Data/area-52/* Data/Content/*`; `*` also matches `/`). Then
+`COA_LAB_LINK_EXCLUDE` drops some (default: `CoA64.exe x64/*` and the DXVK renderer files `d3d8.dll d3d9.dll
+d3d9.dll.DISABLED d3d10core.dll d3d11.dll dxgi.dll dxvk.conf`, which the launcher parks or restores with its DXVK
+setting; the lab runs `Ascension.exe` through its own Wine prefix). `python3 scripts/coa_lab_links.py select
+"$COA_CLIENT_DIR"` prints the selection.
+
+`start` syncs before launching: new launcher files are linked, links to files the launcher dropped are removed,
+copies of executables are refreshed. A lab file that differs from the client's and was not written by the sync
+(a local patch) is kept and reported, never overwritten. The launcher replaces a file by renaming a downloaded
+`.part` over it, so a running lab client keeps reading the files it opened at start (files it opens later, such as
+cinematics, are the new ones). `coa-client-lab links-check` lists what changed since the start (`CHANGED`,
+`MISSING`, `NEW`, `PRIVATE`) and exits 1 if anything did; restart the lab client to pick it up.
+
+A lab made before this change copies the client. `coa-client-lab convert-links --dry-run`, then
+`coa-client-lab convert-links`, converts the base lab and every instance (refused while any lab client runs): a lab
+file is replaced by a link only when its size and sha256 equal the client's; a file that differs is kept, listed
+as `KEPT`, and the command exits 1. The secrets, relay, state, screenshots and instances stay. To make a kept file
+follow the client, move it out of the lab and run `start`. Under btrfs the space comes back once every instance is
+converted (instances share their blocks with the base lab).
+
+The lab drops your accounts, remembered login and caches: it takes only your `WTF/Config.wtf`. The lab client needs an account and a character on the
 slot; `coa-client-lab character` (above) creates or updates one through the Ghost e2e harness in one command
 (race/class/level/spec/spells/items) on any slot and refuses to change an existing character's class.
 It needs [`scripts/lab-character`](../../scripts/lab-character) (a Go module driven as `go test`, since the Ghost

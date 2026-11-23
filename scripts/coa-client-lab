@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run a lab copy of the CoA client for agents: nested gamescope on its own Hyprland workspace, keyboard input
-# and screenshots through gamescope's X display, one lab client at a time. The user's client is never modified;
-# it is only read by `create`. Design: docs/design/client-issue-agent.md.
+# Run a lab CoA client for agents: nested gamescope on its own Hyprland workspace, keyboard input and screenshots
+# through gamescope's X display, one lab client at a time. The lab references the user's client (symlinks to its
+# launcher-managed archives, private copies of its executables; docs/adr/0022) and never writes to it.
+# Design: docs/design/client-issue-agent.md.
 set -euo pipefail
 
 # The user's client folder (COA_CLIENT_DIR, or ~/.config/coa/client.env; no default): resolved on first use by
@@ -47,6 +48,8 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ADDON_SRC="$SCRIPT_DIR/../addons/CoaProbe"
 PROBE_READER="$SCRIPT_DIR/coa-probe-read.py"
 RELAY="${COA_LAB_RELAY:-$SCRIPT_DIR/coa-lab-relay}"
+# Which client files a lab references and how (docs/adr/0022-lab-references-the-client.md).
+LAB_LINKS="$SCRIPT_DIR/coa_lab_links.py"
 # Read-only glue/world memory reader (scripts/coa-lab-mem): same guards as every other read (lab exe under the
 # lab root, lab slot from the lock, Warden.Enabled = 0). `login` treats it as advisory, never required: any
 # failure to run it (missing python3, guard refusal, unexpected output) falls back to the pixel-check path below.
@@ -105,15 +108,25 @@ usage() {
 Usage: coa-client-lab <command> [arguments]
 (`coa-client-lab commands` lists every command on one line with an example)
 
-Lab copy:
-  create                   reflink-copy the user's client and Wine prefix, drop accounts, glue config and cache,
-                           set 1920x1080. The user's client folder is COA_CLIENT_DIR, exported or written in
-                           ~/.config/coa/client.env (no default: create, destroy and the instance commands
-                           stop without it)
-  destroy --yes           remove the lab client and prefix (refused while the lab client runs)
+Lab client:
+  create                   make the lab client: symlinks to the user's launcher-managed client files (the list in
+                           .coa-launcher/state.json, else COA_LAB_LINK_PATTERNS; minus COA_LAB_LINK_EXCLUDE),
+                           private copies of its .exe/.dll and Config.wtf (accounts and glue config dropped, set
+                           1920x1080); reflink-copy the Wine prefix. The user's client folder is COA_CLIENT_DIR,
+                           exported or written in ~/.config/coa/client.env (no default: create, destroy and the
+                           instance commands stop without it)
+  destroy --yes           remove the lab client and prefix (refused while the lab client runs; links are removed,
+                           never followed)
+  links-check              list the referenced client files the launcher changed since the last sync (`start` syncs
+                           before launching, so a running lab client still uses the older ones); exit 1 if any
+  convert-links [--dry-run]
+                           turn a lab made by copying the client (base and every instance) into references: a lab
+                           file is replaced by a link only when its size and sha256 equal the client's; one that
+                           differs is kept and reported. Secrets, relay, state and instances are kept. Refused
+                           while any lab client runs
 
 Instances (several lab clients side by side; select one with COA_LAB_INSTANCE=1..9 for every command):
-  create-instance          reflink-copy the base lab client and prefix for COA_LAB_INSTANCE
+  create-instance          reflink-copy the base lab client (its links stay links) and prefix for COA_LAB_INSTANCE
   destroy-instance --yes   remove that instance's client and prefix (refused while it runs)
 
 Running (one lab client per instance):
@@ -216,7 +229,8 @@ EOF
 commands() {
     cat <<'EOF'
 coa-client-lab commands (one line each; `coa-client-lab --help` has the full usage)
-  create | destroy --yes                 lab copy of the client          coa-client-lab create
+  create | destroy --yes                 lab client (links to the client) coa-client-lab create
+  links-check | convert-links [--dry-run]  is the lab up to date / un-copy   coa-client-lab links-check
   create-instance | destroy-instance     extra lab clients               COA_LAB_INSTANCE=2 coa-client-lab create-instance
   start N                                launch against slot N           COA_LAB_PROFILE=minimal coa-client-lab start 2
   character --slot N --character C ...   make a test character          coa-client-lab character --slot 2 --character Labx --race 2 --class 12 --level 30 --learn 500422
@@ -307,6 +321,12 @@ check_lab_paths() {
     return 0
 }
 
+# Make LAB_CLIENT reference the user's client as it is now (links, private copies of executables, manifest).
+sync_links() {
+    require_user_client
+    python3 "$LAB_LINKS" sync "$USER_CLIENT" "$LAB_CLIENT"
+}
+
 cmd_create() {
     [[ -z "$INSTANCE" ]] || die "create makes the base lab; use create-instance for COA_LAB_INSTANCE"
     check_lab_paths
@@ -314,13 +334,22 @@ cmd_create() {
     [[ -f "$USER_CLIENT/Ascension.exe" ]] || die "Ascension.exe not found in $USER_CLIENT"
     [[ -d "$USER_PREFIX" ]] || die "Wine prefix not found: $USER_PREFIX"
     mkdir -p "$LAB_ROOT" "$(dirname "$LAB_PREFIX")"
-    step "Copying the client and its prefix (reflink: shared blocks, no full copy)"
-    cp -a --reflink=always "$USER_CLIENT" "$LAB_CLIENT" || die "reflink copy failed (needs btrfs or xfs)"
+    step "Copying the Wine prefix (reflink: shared blocks, no full copy)"
     cp -a --reflink=always "$USER_PREFIX" "$LAB_PREFIX" || die "reflink copy failed (needs btrfs or xfs)"
-    # Mark both as ours: destroy refuses to rm -rf anything without this marker (I2).
-    touch "$LAB_ROOT/.coa-client-lab" "$LAB_PREFIX/.coa-client-lab"
-    # The user's remembered account, characters, addon settings and caches stay out of the lab.
-    rm -rf "$LAB_CLIENT/WTF/Account" "$LAB_CLIENT/WTF/Custom" "$LAB_CLIENT/Cache" "$LAB_CLIENT/Screenshots"
+    touch "$LAB_PREFIX/.coa-client-lab"
+    # Mark the root first: destroy refuses to rm -rf anything without this marker (I2), and a failed link step
+    # must leave something destroy can remove.
+    touch "$LAB_ROOT/.coa-client-lab"
+    mkdir -p "$LAB_CLIENT/Data/enUS" "$LAB_CLIENT/WTF" "$LAB_CLIENT/Interface/AddOns"
+    step "Referencing the client's launcher-managed files (links; executables copied)"
+    sync_links || die "could not reference the client from $LAB_CLIENT"
+    # Only Config.wtf is taken from the user's WTF: the remembered account, characters, addon settings, glue
+    # config and caches stay out of the lab.
+    if [[ -f "$USER_CLIENT/WTF/Config.wtf" ]]; then
+        cp -- "$USER_CLIENT/WTF/Config.wtf" "$LAB_CLIENT/WTF/Config.wtf"
+    else
+        : > "$LAB_CLIENT/WTF/Config.wtf"
+    fi
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" gxResolution "${WIDTH}x${HEIGHT}"
     # Silence: the lab client runs next to the user, and no check reads sound.
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" Sound_EnableAllSound "0"
@@ -359,7 +388,51 @@ cmd_create_instance() {
     cp -a --reflink=always "$BASE_PREFIX" "$LAB_PREFIX" || die "reflink copy failed (needs btrfs or xfs)"
     touch "$INSTANCE_DIR/.coa-client-lab" "$LAB_PREFIX/.coa-client-lab"
     rm -rf "$LAB_CLIENT/WTF/Account" "$LAB_CLIENT/Cache" "$LAB_CLIENT/Screenshots"
+    # A base lab still made by copying has no manifest: the instance then keeps copies too (convert-links).
+    if [[ -e "$LAB_CLIENT/.coa-lab-links.json" ]]; then
+        sync_links || die "could not reference the client from $LAB_CLIENT"
+    fi
     echo "instance $INSTANCE created: $LAB_CLIENT"
+}
+
+cmd_links_check() {
+    require_user_client
+    [[ -d "$LAB_CLIENT" ]] || die "no lab client: coa-client-lab create"
+    local status=0
+    python3 "$LAB_LINKS" check "$USER_CLIENT" "$LAB_CLIENT" || status=$?
+    if (( status == 1 )); then
+        if [[ -e "$LOCK" ]]; then
+            echo "the running lab client opened the files of its start; restart it to use the client's current ones:" \
+                "coa-client-lab stop, then coa-client-lab start N"
+        else
+            echo "the next coa-client-lab start references the client's current files"
+        fi
+    fi
+    return "$status"
+}
+
+# Convert a lab made by copying the client (before docs/adr/0022): the base lab and every instance.
+cmd_convert_links() {
+    [[ -z "$INSTANCE" ]] || die "convert-links converts the base lab and every instance; unset COA_LAB_INSTANCE"
+    local dry="" arg lock labs=() dir
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run) dry=--dry-run ;;
+            *) die "usage: coa-client-lab convert-links [--dry-run]" ;;
+        esac
+    done
+    check_lab_paths
+    [[ -e "$LAB_ROOT/.coa-client-lab" ]] || die "$LAB_ROOT has no .coa-client-lab marker: not a lab root"
+    [[ -f "$BASE_CLIENT/Ascension.exe" ]] || die "no base lab client: $BASE_CLIENT"
+    for lock in "$LAB_ROOT/state/lock" "$LAB_ROOT"/state/*/lock; do
+        [[ -e "$lock" ]] && die "a lab client is running or its lock is stale ($lock): coa-client-lab stop first"
+    done
+    labs+=("$BASE_CLIENT")
+    for dir in "$LAB_ROOT"/instances/*/ascension-lab; do
+        [[ -d "$dir" ]] && labs+=("$dir")
+    done
+    step "Comparing ${#labs[@]} lab client(s) with $USER_CLIENT (size, then sha256)"
+    python3 "$LAB_LINKS" convert "$USER_CLIENT" "${labs[@]}" $dry
 }
 
 cmd_destroy_instance() {
@@ -555,8 +628,16 @@ cmd_start() {
         "$PROFILE" "$DISPLAY_MODE" "$WIDTH" "$HEIGHT" "$FPS" "$OWNER" "$ETA_MINUTES" > "$STATE_DIR/profile"
     warden_status_line "$n"
 
+    # The lab references the client as it is at this start (docs/adr/0022). A lab made by copying keeps its copies
+    # until convert-links.
+    if [[ -e "$LAB_CLIENT/.coa-lab-links.json" ]]; then
+        sync_links || { rm -f "$LOCK"; die "could not reference the client from $LAB_CLIENT"; }
+    fi
     apply_profile
     set_wtf "$LAB_CLIENT/WTF/Config.wtf" realmList "$auth"
+    # Never written through a link: a realmlist.wtf link would point into the user's client.
+    rm -f "$LAB_CLIENT/Data/enUS/realmlist.wtf"
+    mkdir -p "$LAB_CLIENT/Data/enUS"
     printf 'set realmlist %s\r\n' "$auth" > "$LAB_CLIENT/Data/enUS/realmlist.wtf"
     rm -rf "$LAB_CLIENT/Cache"
     # The client only loads addon folders present at launch.
@@ -2265,6 +2346,8 @@ main() {
         destroy) cmd_destroy "$@" ;;
         create-instance) cmd_create_instance ;;
         destroy-instance) cmd_destroy_instance "$@" ;;
+        links-check) cmd_links_check ;;
+        convert-links) cmd_convert_links "$@" ;;
         start) cmd_start "$@" ;;
         status) cmd_status ;;
         type) cmd_type "$@" ;;

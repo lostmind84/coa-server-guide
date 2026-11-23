@@ -5,6 +5,17 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 
 ## Unreleased
 
+### Changed
+- The lab client references your client instead of copying it: `coa-client-lab create` links each file the CoA
+  launcher installed (`COA_CLIENT_DIR/.coa-launcher/state.json`, else `COA_LAB_LINK_PATTERNS`, minus
+  `COA_LAB_LINK_EXCLUDE`: by default `CoA64.exe`, `x64/` and the DXVK renderer files), copies the `.exe`/`.dll`,
+  and keeps `WTF`, `Cache`, logs, `Interface` and `realmlist.wtf` private. `start` re-syncs before launching, so a
+  lab client never runs older archives or an older `Extensions.dll` than your client. New `links-check` lists the
+  client files the launcher changed since the start; new `convert-links [--dry-run]` turns an existing copied lab
+  (base and instances) into links, replacing a file only when its size and sha256 equal the client's and reporting
+  the ones that differ. Expected to free the 43.6 GiB of client data the lab shares today (not measured yet). See
+  [ADR 0022](docs/adr/0022-lab-references-the-client.md).
+
 ### Fixed
 - `coa-client-lab start` finds the lab client's window again: it looked for the title "Ascension", and the current
   client titles its window "Descension", so `start` timed out with "no client window" and `login` refused to run.
