@@ -25,6 +25,10 @@ fi
 PROTON="${COA_PROTONPATH:-$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64}"
 WORKSPACE="${COA_LAB_WORKSPACE:-9}"
 WINDOW_TIMEOUT="${COA_LAB_WINDOW_TIMEOUT:-120}"
+# Optional xdotool --name regex for the client window; empty means find it by the client's process id.
+WINDOW_NAME="${COA_LAB_WINDOW_NAME:-}"
+# Executable `start` launches; its Wine process owns the client window.
+CLIENT_EXE=Ascension.exe
 STOP_TIMEOUT="${COA_LAB_STOP_TIMEOUT:-30}"
 SLEEP="${COA_LAB_SLEEP:-sleep}"
 SILENT_SINK="${COA_LAB_SILENT_SINK:-coa_client_lab_silence}"
@@ -119,7 +123,9 @@ Running (one lab client per instance):
                            COA_LAB_WIDTH/HEIGHT, COA_LAB_FPS). --owner/COA_LAB_OWNER and --eta-minutes/
                            COA_LAB_ETA_MINUTES are both optional and recorded on the lock line so a session
                            blocked by "lab client held" knows who holds it and for how long; a blocked session
-                           can also use COA_LAB_INSTANCE=1..9 create-instance instead of waiting
+                           can also use COA_LAB_INSTANCE=1..9 create-instance instead of waiting. The
+                           window is the visible one of Ascension.exe's process (any title);
+                           COA_LAB_WINDOW_NAME=REGEX looks it up by title instead
   login ACCOUNT PASSWORD [CHARACTER]
                            keyboard login and world entry; dismisses a leftover glue modal first. With
                            CHARACTER, navigates the character list to it before entering the world (falls
@@ -427,6 +433,36 @@ find_display() {
     return 1
 }
 
+# PIDs under gamescope whose argv[0] is the client executable. Wine sets argv[0] to the Windows path
+# (X:\...\Ascension.exe); umu.exe and proton only carry that path as a later argument, so they do not match.
+client_pids() {
+    local pid arg0
+    for pid in $(descendants "$1"); do
+        arg0=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -1) || continue
+        [[ "${arg0##*[\\/]}" == "$CLIENT_EXE" ]] && echo "$pid"
+    done
+    return 0
+}
+
+# The lab client's window on gamescope's display ($1, gamescope pid $2), whatever the client titles it (the old
+# client: "Ascension", the current one: "Descension"). By process id first: Wine sets _NET_WM_PID to the host pid
+# of Ascension.exe, and --onlyvisible drops its hidden "Default IME" and helper windows; WM_CLASS is no help
+# (steam_app_0 for every Proton window). Then by the known titles. COA_LAB_WINDOW_NAME replaces both with one
+# regex. See docs/adr/0021-lab-window-found-by-client-pid.md.
+find_client_window() {
+    local display="$1" pid window
+    if [[ -n "$WINDOW_NAME" ]]; then
+        DISPLAY="$display" xdotool search --name "$WINDOW_NAME" 2>/dev/null | head -1
+        return 0
+    fi
+    for pid in $(client_pids "$2"); do
+        window=$(DISPLAY="$display" xdotool search --onlyvisible --pid "$pid" 2>/dev/null | head -1) || true
+        [[ -n "$window" ]] && { echo "$window"; return 0; }
+    done
+    DISPLAY="$display" xdotool search --name '^(Ascension|Descension)$' 2>/dev/null | head -1
+    return 0
+}
+
 require_running() {
     [[ -e "$LOCK" ]] || die "the lab client is not running: coa-client-lab start N"
     gamescope_pid > /dev/null || die "lock present but gamescope is gone (the host's gamescope/Xwayland session died, seen with" \
@@ -558,7 +594,7 @@ cmd_start() {
                 starttime_recorded=1
             fi
             if display=$(find_display "$pid") \
-                && window=$(DISPLAY="$display" xdotool search --name '^Ascension$' 2>/dev/null | head -1) \
+                && window=$(find_client_window "$display" "$pid") \
                 && [[ -n "$window" ]]; then
                 echo "$display" > "$STATE_DIR/display"
                 echo "$window" > "$STATE_DIR/window"
@@ -569,7 +605,9 @@ cmd_start() {
         fi
         sleep 1
     done
-    die "no client window after ${WINDOW_TIMEOUT}s, see $STATE_DIR/client.log; then: coa-client-lab stop"
+    local looked="a visible window of $CLIENT_EXE's process, or one titled Ascension or Descension"
+    [[ -z "$WINDOW_NAME" ]] || looked="a window matching COA_LAB_WINDOW_NAME=$WINDOW_NAME"
+    die "no client window after ${WINDOW_TIMEOUT}s (looked for $looked), see $STATE_DIR/client.log; then: coa-client-lab stop"
 }
 
 # Mute only this lab client's audio streams. The in-game sound settings are rewritten by the client on exit and

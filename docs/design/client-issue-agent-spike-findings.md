@@ -41,7 +41,7 @@ Result: **yes**
 ## Q2. Does injected keyboard input reach the client without taking the user's focus?
 Result: **yes, keyboard; mouse clicks unreliable**
 
-- `DISPLAY=:1 xdotool search --name '^Ascension$'` finds the client window; `xdotool key --window <id>` and
+- `DISPLAY=:1 xdotool search --name '^Ascension$'` finds the client window (old client; the current one is titled "Descension" and `start` now finds the window by the client's pid, [ADR 0021](../adr/0021-lab-window-found-by-client-pid.md)); `xdotool key --window <id>` and
   `xdotool type --window <id> --delay 60` reach it.
 - Host active window class was identical before and after every injection (`foot`): no focus change.
 - Login: click account field, 20 `BackSpace`, type account, `Tab`, 20 `BackSpace`, type password, `Return`.

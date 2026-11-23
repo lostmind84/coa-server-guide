@@ -5,6 +5,13 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 
 ## Unreleased
 
+### Fixed
+- `coa-client-lab start` finds the lab client's window again: it looked for the title "Ascension", and the current
+  client titles its window "Descension", so `start` timed out with "no client window" and `login` refused to run.
+  The window is now the visible one of the `Ascension.exe` process (by `_NET_WM_PID`), whatever its title, with
+  the titles "Ascension" and "Descension" as a fallback. `COA_LAB_WINDOW_NAME=REGEX` looks it up by title instead.
+  See [ADR 0021](docs/adr/0021-lab-window-found-by-client-pid.md).
+
 ### Changed
 - One client folder per machine: `coa-client`, `coa-client-lab`, `coa-lab-mem` and `coa-preflight.py` read
   `COA_CLIENT_DIR`, exported or written in `~/.config/coa/client.env`, through one shared parser
