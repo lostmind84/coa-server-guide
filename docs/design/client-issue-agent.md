@@ -71,7 +71,7 @@ Modelled on `coa-slot`:
 - `stop`: stop the lab Wine process by PID (never `pkill -f` with a pattern that can match the caller's own
   command line), wait for gamescope to exit, release the lock. Always cleans up, including after errors.
 - `type "<text>"` and `key <key>`: `xdotool` on gamescope's Xwayland display (`DISPLAY=:1` during the spike;
-  read it from the client process environment), window found by `xdotool search --name '^Ascension$'`. Keyboard
+  read it from the client process environment), window found by `xdotool search --name '^Ascension$'` (old client; the current one is titled "Descension" and `start` now finds the window by the client's pid, [ADR 0021](../adr/0021-lab-window-found-by-client-pid.md)). Keyboard
   only: mouse clicks inside gamescope are unreliable.
 - `screenshot`: `magick import -window <id>` on the same display.
 - `status`.

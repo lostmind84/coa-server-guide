@@ -6,7 +6,9 @@ Part of the contributor tooling of the CoA server guide (see the [README](../../
 [`scripts/coa-client-lab`](../../scripts/coa-client-lab) runs a separate copy
 of the client so an agent can reproduce client-side issues without touching your client. The lab client runs in a
 nested gamescope window (1920x1080) on Hyprland workspace 9; you can watch it there. Keyboard input and screenshots
-go through gamescope's own X display, so your focus and mouse are never used. One lab client runs at a time: a
+go through gamescope's own X display, so your focus and mouse are never used. `start` finds the client window on
+that display by the `Ascension.exe` process, whatever the client titles it (the current client: "Descension");
+`COA_LAB_WINDOW_NAME=REGEX` looks it up by title instead ([ADR 0021](../adr/0021-lab-window-found-by-client-pid.md)). One lab client runs at a time: a
 second `start` fails with "lab client held" and the holder's lock line (`slot N since DATE`, plus `owner=` and
 `eta=Nm` when the holder set them). `status` shows the same lock line and a hint that `COA_LAB_INSTANCE=1..9
 coa-client-lab create-instance` gives a blocked session its own instance instead of waiting on this one

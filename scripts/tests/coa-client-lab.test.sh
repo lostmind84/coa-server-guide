@@ -107,7 +107,18 @@ if [[ "$1" == type && "${*: -1}" == /reload && "${FAKE_PROBE_SILENT:-}" != 1 ]];
         "$req" > "$dir/CoaProbe.lua"
 fi
 case "$1" in
-    search) [[ "${FAKE_NO_WINDOW:-}" == 1 ]] || echo 4242 ;;
+    search)
+        [[ "${FAKE_NO_WINDOW:-}" == 1 ]] && exit 1
+        # FAKE_WINDOW_BY=pid: the window answers only a --pid search for a process whose argv[0] is
+        # Ascension.exe; FAKE_WINDOW_BY=name: only a --name search (a client whose window carries no pid).
+        case "${FAKE_WINDOW_BY:-any}" in
+            pid)
+                [[ "$*" == *--pid* ]] || exit 1
+                arg0=$(tr '\0' '\n' < "/proc/${*: -1}/cmdline" 2>/dev/null | head -1)
+                [[ "$arg0" == *Ascension.exe ]] || exit 1 ;;
+            name) [[ "$*" == *--name* ]] || exit 1 ;;
+        esac
+        echo 4242 ;;
     getwindowgeometry) printf 'WINDOW=4242\nX=0\nY=0\nWIDTH=1280\nHEIGHT=720\nSCREEN=0\n' ;;
 esac
 EOF
@@ -706,6 +717,43 @@ fi
 kill -0 "$gs_pid" 2>/dev/null && kill -9 "$gs_pid" 2>/dev/null
 [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null && kill -9 "$child_pid" 2>/dev/null
 rm -f "$COA_LAB_ROOT/state/lock" "$COA_LAB_ROOT/state/gamescope.pid" "$COA_LAB_ROOT/state/gamescope.starttime"
+
+# The window is found by the client's process, whatever its title (the current client titles it
+# "Descension", the old one "Ascension"): a fake whose window answers only a --pid search for the
+# Ascension.exe process must be found, and the pid searched must be that process.
+: > "$FAKE_LOG"
+FAKE_WINDOW_BY=pid run_lab start 3
+assert_eq "window by pid: start exits 0" "$?" "0"
+assert_eq "window by pid: window recorded" "$(cat "$COA_LAB_ROOT/state/window" 2>/dev/null)" "4242"
+gs_pid=$(cat "$COA_LAB_ROOT/state/gamescope.pid" 2>/dev/null) || gs_pid=""
+child_pid=$(pgrep -P "$gs_pid" 2>/dev/null | head -1)
+assert_contains "window by pid: searched the Ascension.exe process" "$FAKE_LOG" \
+    "xdotool DISPLAY=:77 search --onlyvisible --pid $child_pid"
+run_lab stop
+
+# Without a pid on the window, the known titles are the fallback.
+: > "$FAKE_LOG"
+FAKE_WINDOW_BY=name run_lab start 3
+assert_eq "window by title: start exits 0" "$?" "0"
+assert_eq "window by title: window recorded" "$(cat "$COA_LAB_ROOT/state/window" 2>/dev/null)" "4242"
+assert_contains "window by title: both titles accepted" "$FAKE_LOG" \
+    "xdotool DISPLAY=:77 search --name ^(Ascension|Descension)\$"
+run_lab stop
+
+# COA_LAB_WINDOW_NAME replaces both lookups with its own regex.
+: > "$FAKE_LOG"
+COA_LAB_WINDOW_NAME='^Other$' FAKE_WINDOW_BY=name run_lab start 3
+assert_eq "window name override: start exits 0" "$?" "0"
+assert_contains "window name override: searched by the given regex" "$FAKE_LOG" "xdotool DISPLAY=:77 search --name ^Other\$"
+assert_not_contains "window name override: no pid search" "$FAKE_LOG" "search --onlyvisible --pid"
+run_lab stop
+if COA_LAB_WINDOW_NAME='^Other$' FAKE_NO_WINDOW=1 COA_LAB_WINDOW_TIMEOUT=1 run_lab start 3; then
+    fail "window name override: missing window refused"
+else
+    pass "window name override: missing window refused"
+fi
+assert_contains "window name override: message names the variable" "$WORK/out" "COA_LAB_WINDOW_NAME=^Other\$"
+run_lab stop
 
 # escalation must reap the whole tree, not just gamescope (fix round 1): a gamescope and child that both
 # ignore SIGTERM force the SIGKILL branch, which must not leave the child orphaned.
