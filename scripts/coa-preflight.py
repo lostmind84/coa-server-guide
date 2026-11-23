@@ -23,6 +23,10 @@ Differences that belong to work in progress are declared in an expectations file
 
 An expected difference that is absent is reported too: it usually means a patch was not installed.
 
+The client compared is --client-data, else COA_CLIENT_DIR/Data: COA_CLIENT_DIR exported or written in
+~/.config/coa/client.env (scripts/coa_client_dir.py, docs/adr/0020). There is no default: without it the script
+stops before any check, unless --skip-dbc skips the client checks.
+
 Exit status: 0 when nothing failed, 1 otherwise. Needs git, docker and mpqcli
 (https://github.com/TheGrayDot/mpqcli). Reads only: it never changes the repository, the databases, the server
 data or the client.
@@ -257,6 +261,30 @@ def load_client_dbc_tool(repo):
     return module
 
 
+def load_client_dir_module():
+    """scripts/coa_client_dir.py: the client-folder parser every tool shares (docs/adr/0020)."""
+    path = Path(__file__).resolve().parent / "coa_client_dir.py"
+    spec = importlib.util.spec_from_file_location("coa_client_dir", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def resolve_client_data(explicit):
+    """The client's Data directory: --client-data when given, else COA_CLIENT_DIR/Data. Returns (path, source)."""
+    if explicit is not None:
+        if not explicit.is_dir():
+            raise ValueError(f"--client-data {explicit} does not exist or is not a directory")
+        return explicit, "--client-data"
+    client_dir = load_client_dir_module()
+    try:
+        found = client_dir.resolve()
+    except client_dir.ClientDirError as error:
+        raise ValueError(f"{error}\nOr pass --client-data <client>/Data, or --skip-dbc to skip the client checks.") \
+            from None
+    return found.path / "Data", found.source
+
+
 def check_client(report, client_data, mpqcli):
     """Report archives a local patch replaced: the launcher keeps the untouched copy as NAME.ORIGINAL."""
     for original in sorted(client_data.rglob("*.ORIGINAL")):
@@ -334,7 +362,9 @@ def check_dbc(report, repo, client_data, server_dbc, expectations, mpqcli):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", type=Path, default=HOME / "Projects/azerothcore-wotlk-coa")
-    parser.add_argument("--client-data", type=Path, default=HOME / "CoaServer/client/ascension-live/Data")
+    parser.add_argument("--client-data", type=Path,
+                        help="the client's Data directory (default: COA_CLIENT_DIR/Data, from the environment or "
+                             "~/.config/coa/client.env; there is no fixed default)")
     parser.add_argument("--server-dbc", type=Path, default=Path("/srv/coa/server-data/dbc"))
     parser.add_argument("--expected", type=Path, default=HOME / "CoaServer/preflight-expected.txt")
     parser.add_argument("--worldserver", default="ac-worldserver")
@@ -344,7 +374,16 @@ def main():
                         help="skip the gameplay-test image check (client-lab checks never run scenarios)")
     args = parser.parse_args()
 
+    if not args.skip_dbc:
+        try:
+            args.client_data, client_source = resolve_client_data(args.client_data)
+        except ValueError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+
     report = Report()
+    if not args.skip_dbc:
+        report.line("INFO", "client", f"compared with {args.client_data} (from {client_source})")
     try:
         head = check_git(report, args.repo)
         check_server(report, head, args.worldserver)

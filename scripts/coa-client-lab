@@ -4,7 +4,9 @@
 # it is only read by `create`. Design: docs/design/client-issue-agent.md.
 set -euo pipefail
 
-USER_CLIENT="${COA_USER_CLIENT:-$HOME/CoaServer/client/ascension-live}"
+# The user's client folder (COA_CLIENT_DIR, or ~/.config/coa/client.env; no default): resolved on first use by
+# require_user_client, so the commands that never read it do not need it.
+USER_CLIENT=""
 USER_PREFIX="${COA_USER_PREFIX:-$HOME/Games/umu/coa-client}"
 LAB_ROOT="${COA_LAB_ROOT:-$HOME/CoaServer/client-lab}"
 BASE_CLIENT="$LAB_ROOT/ascension-lab"
@@ -101,8 +103,10 @@ Usage: coa-client-lab <command> [arguments]
 
 Lab copy:
   create                   reflink-copy the user's client and Wine prefix, drop accounts, glue config and cache,
-                           set 1920x1080
-  destroy --yes            remove the lab client and prefix (refused while the lab client runs)
+                           set 1920x1080. The user's client folder is COA_CLIENT_DIR, exported or written in
+                           ~/.config/coa/client.env (no default: create, destroy and the instance commands
+                           stop without it)
+  destroy --yes           remove the lab client and prefix (refused while the lab client runs)
 
 Instances (several lab clients side by side; select one with COA_LAB_INSTANCE=1..9 for every command):
   create-instance          reflink-copy the base lab client and prefix for COA_LAB_INSTANCE
@@ -270,11 +274,19 @@ apply_profile() {
     done
 }
 
+# Sets USER_CLIENT through scripts/coa_client_dir.py, the parser every tool shares (docs/adr/0020); stops with its
+# message when no client folder is configured, the folder is missing or it has no Data/.
+require_user_client() {
+    [[ -n "$USER_CLIENT" ]] && return 0
+    USER_CLIENT=$(python3 "$SCRIPT_DIR/coa_client_dir.py") || exit 1
+}
+
 # I2: shared by create and destroy. Resolve every lab and user path with `realpath -m` (symlinks, "..",
 # trailing slashes) and refuse if any lab path equals, contains or is contained by any user path, so a
 # moved COA_LAB_ROOT, a trailing-slash COA_LAB_PREFIX or a symlinked alias cannot reach the user's data.
 check_lab_paths() {
     local lab_root lab_client lab_prefix user_client user_prefix lab user
+    require_user_client
     lab_root=$(realpath -m -- "$LAB_ROOT")
     lab_client=$(realpath -m -- "$LAB_CLIENT")
     lab_prefix=$(realpath -m -- "$LAB_PREFIX")
@@ -2106,7 +2118,12 @@ cmd_stop() {
             fi
         fi
     fi
-    if [[ -e "$STATE_DIR/started" ]]; then
+    if [[ -e "$STATE_DIR/started" && -z "$USER_CLIENT" ]]; then
+        # stop never refuses to stop: without a configured client folder only this check is skipped.
+        USER_CLIENT=$(python3 "$SCRIPT_DIR/coa_client_dir.py" 2> /dev/null) \
+            || echo "WARN: no client folder configured (COA_CLIENT_DIR): the user's client was not checked for changes"
+    fi
+    if [[ -e "$STATE_DIR/started" && -n "$USER_CLIENT" ]]; then
         changed=$(cd "$USER_CLIENT" && find WTF Interface -type f -newer "$STATE_DIR/started" 2>/dev/null | head -20) || true
         if [[ -n "$changed" ]]; then
             echo "WARN: the user's client changed during the lab run (the user playing, or a defect):"

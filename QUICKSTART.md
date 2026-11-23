@@ -16,20 +16,29 @@ docker compose build
 
 ## 2. Client patch
 
+Your client folder (the one holding `Ascension.exe` and `Data/`) is set once per machine, outside the repository;
+the guide's tools stop without it (README step 6):
+
 ```bash
-cd ~/CoaServer/client
+mkdir -p ~/.config/coa
+echo 'COA_CLIENT_DIR=/path/to/your/client' > ~/.config/coa/client.env   # absolute path
+set -a; source ~/.config/coa/client.env; set +a
+```
+
+```bash
+c="$COA_CLIENT_DIR"; patch=~/CoaServer/client/CoA-Client-Patch   # patch: where you extracted it
 mkdir -p ~/CoaServer/backups/client-before-rev3
-cp -a ascension-live/Ascension.exe ascension-live/Data/patch-B.MPQ ascension-live/Data/patch-T.MPQ ~/CoaServer/backups/client-before-rev3/
-cp -a CoA-Client-Patch/Ascension.exe CoA-Client-Patch/Extensions.dll ascension-live/
-cp -a CoA-Client-Patch/Data/. ascension-live/Data/
-sha256sum ascension-live/Ascension.exe ascension-live/Extensions.dll ascension-live/Data/patch-B.MPQ ascension-live/Data/patch-T.MPQ
+cp -a "$c/Ascension.exe" "$c/Data/patch-B.MPQ" "$c/Data/patch-T.MPQ" ~/CoaServer/backups/client-before-rev3/
+cp -a "$patch/Ascension.exe" "$patch/Extensions.dll" "$c/"
+cp -a "$patch/Data/." "$c/Data/"
+sha256sum "$c/Ascension.exe" "$c/Extensions.dll" "$c/Data/patch-B.MPQ" "$c/Data/patch-T.MPQ"
 # f4b9f6fc… 97918010… e16fd42b… ad183192…
 ```
 
 Since #1498 players keep the original `patch-T.MPQ` (the patch's only archive with DBC files):
 
 ```bash
-cd ~/CoaServer/client/ascension-live/Data
+cd "$COA_CLIENT_DIR/Data"
 mkdir -p ~/CoaServer/backups/client-rev4 && mv patch-T.MPQ ~/CoaServer/backups/client-rev4/
 cp patch-T.MPQ.ORIGINAL patch-T.MPQ
 ```
@@ -44,7 +53,7 @@ echo "INSTALLED_VERSION=v20.0" > /srv/coa/server-data/data-version
 # Client DBC set (#1498), needs mpqcli (github.com/TheGrayDot/mpqcli)
 cd ~/Projects/azerothcore-wotlk-coa
 out=~/CoaServer/client-dbc/original-$(date +%F)
-python3 apps/coa-dbc/client_dbc.py extract ~/CoaServer/client/ascension-live/Data "$out" --original --mpqcli "$(command -v mpqcli)"
+python3 apps/coa-dbc/client_dbc.py extract "$COA_CLIENT_DIR/Data" "$out" --original --mpqcli "$(command -v mpqcli)"
 cp "$out"/*.dbc /srv/coa/server-data/dbc/
 ```
 
@@ -118,7 +127,7 @@ docker compose attach ac-worldserver
 ## 8. Client
 
 ```bash
-cd ~/CoaServer/client/ascension-live
+cd "$COA_CLIENT_DIR"
 WINEPREFIX="$HOME/Games/umu/coa-client" GAMEID=0 \
 PROTONPATH="$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64" \
 WINEDLLOVERRIDES="divxtac=d" \
@@ -128,7 +137,7 @@ umu-run Ascension.exe
 `divxtac=d` is required: without it the client freezes on the loading screen at 100%. Or use the launcher:
 
 ```bash
-cp ~/Projects/coa-server-guide/scripts/coa-client ~/.local/bin/ && chmod +x ~/.local/bin/coa-client
+ln -s ~/Projects/coa-server-guide/scripts/coa-client ~/.local/bin/coa-client   # a link, not a copy
 coa-client            # --debug for a Proton log, --kill to stop a frozen client
 ```
 

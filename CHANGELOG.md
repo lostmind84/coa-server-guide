@@ -6,6 +6,15 @@ grouped by pull request, newest first, and `Unreleased` collects what is merged 
 ## Unreleased
 
 ### Changed
+- One client folder per machine: `coa-client`, `coa-client-lab`, `coa-lab-mem` and `coa-preflight.py` read
+  `COA_CLIENT_DIR`, exported or written in `~/.config/coa/client.env`, through one shared parser
+  (`scripts/coa_client_dir.py`). There is no built-in default any more: a tool that needs the client stops with a
+  message naming the variable, the file and an example line, and also when the folder is missing or has no
+  `Data/`. `COA_USER_CLIENT` still works, with a deprecation warning; `--client-data` still overrides the
+  preflight, whose report now names the client data it compares with. `coa-client-lab stop` only warns when no
+  folder is configured. `coa-client --kill` matches the configured folder's name instead of `ascension-live`.
+  `coa-client` is now installed as a link (`ln -s`), not a copy: replace an old copy. See
+  [ADR 0020](docs/adr/0020-one-per-machine-client-folder.md).
 - `coa-triage-table.py` groups PvP and Battleground issues (label or title) into their own `pvp` and `battleground`
   batches, ahead of the class grouping.
 - `coa-verify` builds a server branch that carries the development profile (server PR #12170) in `build-dev` with
