@@ -252,9 +252,24 @@ assert_contains "client.env value used" "$WORK/out" "missing-from-file (from ~/.
 rm -f "$WORK/nohome/.config/coa/client.env"
 
 # create
+printf 'archive' > "$COA_CLIENT_DIR/Data/patch-A.MPQ"
+printf 'hd mod' > "$COA_CLIENT_DIR/Data/patch-ZZA.mpq"
 run_lab create
 assert_eq "create exits 0" "$?" "0"
 assert_file "lab client copied" "$COA_LAB_ROOT/ascension-lab/Ascension.exe"
+[[ -L "$COA_LAB_ROOT/ascension-lab/Data/patch-A.MPQ" ]] \
+    && pass "create links the client's archives" || fail "create links the client's archives"
+[[ -f "$COA_LAB_ROOT/ascension-lab/Ascension.exe" && ! -L "$COA_LAB_ROOT/ascension-lab/Ascension.exe" ]] \
+    && pass "create copies the executable" || fail "create copies the executable"
+assert_absent "create skips archives outside the selection" "$COA_LAB_ROOT/ascension-lab/Data/patch-ZZA.mpq"
+assert_file "create writes the links manifest" "$COA_LAB_ROOT/ascension-lab/.coa-lab-links.json"
+run_lab links-check
+assert_eq "links-check clean after create" "$?" "0"
+printf 'archive v2' > "$COA_CLIENT_DIR/Data/patch-A.MPQ.part"
+mv "$COA_CLIENT_DIR/Data/patch-A.MPQ.part" "$COA_CLIENT_DIR/Data/patch-A.MPQ"
+if run_lab links-check; then fail "links-check reports a replaced archive"; else pass "links-check reports a replaced archive"; fi
+assert_contains "links-check names the file" "$WORK/out" "CHANGED Data/patch-A.MPQ"
+assert_eq "the link reads the client's current archive" "$(cat "$COA_LAB_ROOT/ascension-lab/Data/patch-A.MPQ")" "archive v2"
 assert_file "lab prefix copied" "$COA_LAB_PREFIX/system.reg"
 assert_absent "user accounts dropped" "$COA_LAB_ROOT/ascension-lab/WTF/Account"
 assert_absent "glue config dropped" "$COA_LAB_ROOT/ascension-lab/WTF/Custom"
@@ -282,6 +297,31 @@ run_lab destroy --yes
 assert_absent "lab client removed" "$COA_LAB_ROOT"
 assert_absent "lab prefix removed" "$COA_LAB_PREFIX"
 assert_file "user client kept" "$COA_CLIENT_DIR/Ascension.exe"
+assert_eq "destroy does not follow links" "$(cat "$COA_CLIENT_DIR/Data/patch-A.MPQ")" "archive v2"
+
+# convert-links: a lab made by copying the client (before ADR 0022)
+mkdir -p "$COA_LAB_ROOT/secrets" "$COA_LAB_ROOT/instances/1/ascension-lab/Data"
+cp -a "$COA_CLIENT_DIR" "$COA_LAB_ROOT/ascension-lab"
+touch "$COA_LAB_ROOT/.coa-client-lab"
+printf 'secret' > "$COA_LAB_ROOT/secrets/account"
+printf 'local patch' > "$COA_LAB_ROOT/ascension-lab/Data/patch-A.MPQ"
+cp -a "$COA_CLIENT_DIR/Data/patch-A.MPQ" "$COA_LAB_ROOT/instances/1/ascension-lab/Data/patch-A.MPQ"
+mkdir -p "$COA_LAB_ROOT/state"; echo "slot 3 since now" > "$COA_LAB_ROOT/state/lock"
+if run_lab convert-links; then fail "convert-links refused while a lab runs"; else pass "convert-links refused while a lab runs"; fi
+rm -f "$COA_LAB_ROOT/state/lock"
+run_lab convert-links --dry-run
+assert_contains "convert-links dry run reports" "$WORK/out" "would replace"
+[[ ! -L "$COA_LAB_ROOT/instances/1/ascension-lab/Data/patch-A.MPQ" ]] \
+    && pass "dry run changes nothing" || fail "dry run changes nothing"
+if run_lab convert-links; then fail "convert-links exits 1 when a file differs"; else pass "convert-links exits 1 when a file differs"; fi
+assert_contains "convert-links reports the kept file" "$WORK/out" "KEPT"
+assert_eq "convert-links keeps a differing file" "$(cat "$COA_LAB_ROOT/ascension-lab/Data/patch-A.MPQ")" "local patch"
+[[ -L "$COA_LAB_ROOT/instances/1/ascension-lab/Data/patch-A.MPQ" ]] \
+    && pass "convert-links links an identical file in an instance" || fail "convert-links links an identical file in an instance"
+assert_eq "convert-links keeps secrets" "$(cat "$COA_LAB_ROOT/secrets/account")" "secret"
+assert_file "convert-links keeps the lab's WTF" "$COA_LAB_ROOT/ascension-lab/WTF/Config.wtf"
+assert_eq "convert-links leaves the client alone" "$(cat "$COA_CLIENT_DIR/Data/patch-A.MPQ")" "archive v2"
+rm -rf "$COA_LAB_ROOT"
 
 # same-path guard in create
 if COA_LAB_PREFIX="$COA_USER_PREFIX" run_lab create; then fail "create over user prefix refused"; else pass "create over user prefix refused"; fi

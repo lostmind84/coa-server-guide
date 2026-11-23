@@ -14,7 +14,7 @@ skills and the triage command into place (without `--check`). It was written and
 | Python 3 | `coa-preflight.py`, `coa-probe-read.py` | imports `apps/coa-dbc/client_dbc.py` from the checkout under test |
 | [mpqcli](https://github.com/TheGrayDot/mpqcli) | preflight DBC checks, step 8 | on `PATH`; without it the DBC checks FAIL (`--skip-dbc` skips them) |
 | [ConquestOfAzerothGhost](https://github.com/lostmind84/ConquestOfAzerothGhost) + Go | `coa-slot create`, e2e tests | protocol-level bot tests; `coa-slot create` derives each slot's `ghost.env` from the Ghost checkout's `.env` (see the Ghost README) |
-| btrfs or xfs | `coa-client-lab create` | the lab copy is a reflink copy of the client and its Wine prefix |
+| btrfs or xfs | `coa-client-lab create` | the lab's Wine prefix is a reflink copy; the client itself is linked ([ADR 0022](../adr/0022-lab-references-the-client.md)) |
 | Hyprland 0.56 (Lua config), gamescope, xdotool, ImageMagick | `coa-client-lab` | Hyprland only for the nested display (`hyprctl eval` on a dedicated workspace); the headless display needs gamescope alone |
 | lua5.1 | CoaProbe addon tests | tests only |
 
@@ -30,6 +30,7 @@ Every default can be overridden with an environment variable:
 | `COA_REPACK_DUMP` | `~/CoaServer/repack/CoA-Repack/Database/Clean/databases.sql.gz` | `coa-slot create`, `reset-db` |
 | `COA_CLIENT_DIR` | none: exported, or a line in `~/.config/coa/client.env` ([ADR 0020](../adr/0020-one-per-machine-client-folder.md)); `COA_USER_CLIENT` is a deprecated alias | `coa-client`, `coa-client-lab create`/`destroy`/instances, `coa-lab-mem`, `coa-preflight.py` |
 | `COA_USER_PREFIX` | `~/Games/umu/coa-client` | `coa-client-lab create` |
+| `COA_LAB_LINK_PATTERNS`, `COA_LAB_LINK_EXCLUDE`, `COA_LAB_COPY` | see [client-lab.md](client-lab.md#the-lab-references-your-client-adr-0022) | `coa-client-lab create`, `start`, `links-check`, `convert-links` |
 | `COA_LAB_ROOT`, `COA_LAB_PREFIX` | `~/CoaServer/client-lab`, `~/Games/umu/coa-client-lab` | `coa-client-lab` |
 | `COA_PROTONPATH` | `~/.local/share/Steam/compatibilitytools.d/GE-Proton11-6-x86_64` | `coa-client`, `coa-client-lab` |
 | `COA_LAB_WORKSPACE` | `9` | `coa-client-lab` |

@@ -122,8 +122,8 @@ coa-lab-packets on && coa-lab-packets auras # the server's own packet log: `.pac
   itself failing loudly) was proven without provoking an actual bad login: calling `wait_ui_ready` directly
   with a wrong expected name against a real, correctly in-world session died with `logged in as the wrong
   character: requested WrongCharacterName, the relay reports Sharea is in world`.
-- Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (reflink copy of the base lab and
-  prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
+- Several lab clients: `COA_LAB_INSTANCE=1 coa-client-lab create-instance` (copy of the base lab, whose
+  client links stay links, and reflink copy of its prefix), then the same commands with `COA_LAB_INSTANCE=1..9`, one account each. `destroy-instance --yes` removes
   one. Three headless instances ran side by side against one slot.
 - Measured footprint and design notes: [`docs/design/client-lab-level3.md`](../../docs/design/client-lab-level3.md).
 - [`scripts/coa-lab-mem`](../../scripts/coa-lab-mem) and [`scripts/coa-lab-packets`](../../scripts/coa-lab-packets) read the
